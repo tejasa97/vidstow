@@ -14,10 +14,10 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"github.com/tejasa97/youtube_dlp/apps/desktop/internal/ffmpegdetect"
-	"github.com/tejasa97/youtube_dlp/apps/desktop/internal/jobs"
-	"github.com/tejasa97/youtube_dlp/apps/desktop/internal/store"
-	"github.com/tejasa97/youtube_dlp/apps/desktop/internal/urlcheck"
+	"github.com/tejasa97/vidstow/internal/ffmpegdetect"
+	"github.com/tejasa97/vidstow/internal/jobs"
+	"github.com/tejasa97/vidstow/internal/store"
+	"github.com/tejasa97/vidstow/internal/urlcheck"
 	"github.com/tejasa97/youtube_dlp/engine"
 )
 
@@ -42,7 +42,7 @@ func (a *App) startup(ctx context.Context) {
 	statePath, err := store.DefaultPath()
 	if err != nil {
 		wailsruntime.LogErrorf(ctx, "desktop: store path: %v", err)
-		statePath = filepath.Join(os.TempDir(), "ytdlp-desktop", "state.json")
+		statePath = filepath.Join(os.TempDir(), "vidstow", "state.json")
 	}
 	st, err := store.Open(statePath)
 	if err != nil {
@@ -325,8 +325,8 @@ func (a *App) CopyDiagnostics() (string, error) {
 	status := a.ffmpegStatus()
 	settings := a.store.Settings()
 	report := strings.Builder{}
-	report.WriteString("ytdlp-desktop diagnostics\n")
-	report.WriteString("App: ytdlp-desktop v0 (Go " + runtime.Version() + ", " + runtime.GOOS + "/" + runtime.GOARCH + ")\n")
+	report.WriteString("VidStow diagnostics\n")
+	report.WriteString("App: VidStow v0 (Go " + runtime.Version() + ", " + runtime.GOOS + "/" + runtime.GOARCH + ")\n")
 	report.WriteString("Download folder: " + filepath.Base(settings.DownloadFolder) + "\n")
 	// Privacy: do not include the absolute FFmpeg path. The basename
 	// tells support which binary the user picked without disclosing

@@ -11,8 +11,8 @@ test('approved navigation and window branding are used', async () => {
   ]);
   for (const label of ['Home', 'Queue', 'Downloads', 'Settings']) assert.match(sidebar, new RegExp(`label: '${label}'`));
   for (const rejected of ['v0 · single video', 'Single public YouTube videos only', 'brand-name', 'class="logo"']) assert.doesNotMatch(sidebar, new RegExp(rejected));
-  assert.match(main, /Title:\s+"YTDLP Go Desktop"/);
-  assert.doesNotMatch(await read('../index.html'), /<title>ytdlp-desktop<\/title>/);
+  assert.match(main, /Title:\s+"VidStow"/);
+  assert.match(await read('../index.html'), /<title>VidStow<\/title>/);
 });
 
 test('page titles and subtitles match the approved V0 copy', async () => {

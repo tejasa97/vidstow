@@ -17,6 +17,19 @@ func TestStoreOpenCreatesFile(t *testing.T) {
 	}
 }
 
+func TestDefaultPathUsesVidStowIdentity(t *testing.T) {
+	path, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath: %v", err)
+	}
+	if got := filepath.Base(path); got != "state.json" {
+		t.Fatalf("state file = %q; want state.json", got)
+	}
+	if got := filepath.Base(filepath.Dir(path)); got != "vidstow" {
+		t.Fatalf("config directory = %q; want vidstow", got)
+	}
+}
+
 func TestStoreRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")

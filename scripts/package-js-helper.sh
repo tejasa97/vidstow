@@ -8,8 +8,7 @@ if [ -z "$app_path" ]; then
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-desktop_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
-repo_dir=$(CDPATH= cd -- "$desktop_dir/../.." && pwd)
+repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 
 case "$app_path" in
   */Contents/MacOS/*)
@@ -28,7 +27,7 @@ temporary_path="$helper_path.tmp.$$"
 trap 'rm -f "$temporary_path"' EXIT HUP INT TERM
 
 printf '%s\n' "package-js-helper: building sibling helper"
-(cd "$repo_dir" && CGO_ENABLED=0 go build -trimpath -o "$temporary_path" ./cmd/ytdlp-js-helper)
+(cd "$repo_dir" && CGO_ENABLED=0 go build -trimpath -o "$temporary_path" github.com/tejasa97/youtube_dlp/cmd/ytdlp-js-helper)
 chmod 755 "$temporary_path"
 mv -f "$temporary_path" "$helper_path"
 

@@ -1,7 +1,7 @@
 # Desktop Frontend
 
-The YTDLP Go Desktop frontend is a Svelte 5 and TypeScript application bundled
-by Vite and embedded into the Wails binary.
+The VidStow frontend is a Svelte 5 and TypeScript application bundled by
+Vite and embedded into the Wails binary.
 
 ## Commands
 

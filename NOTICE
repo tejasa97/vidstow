@@ -1,0 +1,10 @@
+VidStow
+Copyright 2026 Tejas Arlimatti and contributors
+
+VidStow was extracted with filtered history from the apps/desktop subtree
+of github.com/tejasa97/youtube_dlp. Relevant commit authorship is preserved in
+this repository's Git history.
+
+VidStow depends on github.com/tejasa97/youtube_dlp v0.1.0. Names and marks
+of YouTube and Google belong to their respective owners; no affiliation,
+endorsement, or sponsorship is implied.

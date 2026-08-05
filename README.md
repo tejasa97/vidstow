@@ -1,127 +1,43 @@
-# YTDLP Go Desktop — Maintainer Guide
+# VidStow
 
-This directory contains the Wails/Svelte desktop interface for `ytdlp-go`. It
-is intentionally limited to
-**single, public YouTube videos**: no playlists, channels, search, live, Shorts,
-or other sites. The desktop app is a thin front end over the existing Go
-downloader; the extraction engine is unchanged and reusable from any Go
-program.
+VidStow is a desktop app for downloading public, single-video YouTube
+content. It provides a focused Wails/Svelte workflow for analysis, quality
+selection, queued downloads, download history, and FFmpeg configuration.
+Its source repository is
+[github.com/tejasa97/vidstow](https://github.com/tejasa97/vidstow).
 
-## What you get in V0
+It uses the public provider-neutral
+[youtube_dlp](https://github.com/tejasa97/youtube_dlp) engine at
+[v0.1.0](https://github.com/tejasa97/youtube_dlp/releases/tag/v0.1.0), with
+the explicit engine + providers/youtube composition. VidStow does not use
+the broad pkg/ytdlp compatibility facade.
 
-- **Home** — paste a YouTube URL, see metadata, pick a quality (Best / 4K /
-  1440p / 1080p / 720p / Audio only), choose a destination folder, then
-  download now or add to queue.
-- **Queue** — one active download at a time (FIFO), progress bar with rolling
-  speed/ETA, cancel/retry/remove per job, clear-completed.
-- **Downloads** — persisted history with search, open, reveal in finder.
-- **Settings** — default folder, ffmpeg detection, custom ffmpeg path, copy
-  diagnostics.
-- **Modals** — FFmpeg missing, unsupported URL, generic error.
+## Scope
 
-All state (settings + download history) lives in the OS user-config directory
-(`~/Library/Application Support/ytdlp-desktop/state.json` on macOS, the
-XDG/AppData equivalent on Linux/Windows). The `pkg/ytdlp` library is used
-unchanged; persistence is owned by `apps/desktop/internal/store`.
+The current UI intentionally supports public single-video YouTube downloads.
+The existing URL validation and workflow are the product boundary; the focused
+YouTube composition itself remains capable of the complete YouTube provider
+family.
 
-## Quality presets
+Use VidStow only for content you own or are authorized to download, and
+follow applicable laws, rights-holder terms, and platform terms. VidStow is
+not affiliated with, endorsed by, or sponsored by YouTube or Google.
 
-Exactly six presets, mapped to `pkg/ytdlp` format selectors:
+## Build
 
-| Preset     | Format selector                              |
-|------------|----------------------------------------------|
-| Best       | `bv*+ba/b`                                   |
-| 4K         | `bv*[height<=2160]+ba/b[height<=2160]`       |
-| 1440p      | `bv*[height<=1440]+ba/b[height<=1440]`       |
-| 1080p      | `bv*[height<=1080]+ba/b[height<=1080]`       |
-| 720p       | `bv*[height<=720]+ba/b[height<=720]`         |
-| Audio only | `ba/b`                                       |
+Prerequisites:
 
-ETA and speed are computed locally from `pkg/ytdlp` `Bytes/Total` events; the
-core library does not emit them, so the UI derives a rolling estimate and
-hides the value when it can't be computed.
+- Go 1.25.12 or newer
+- Node.js 20 or newer with npm
+- FFmpeg available on PATH, or configured in the app
+- Wails CLI v2 for native development and packaging:
+  go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 
-## Prerequisites
+~~~sh
+go mod tidy
+go test -count=1 ./...
+go build ./...
 
-- **Go** ≥ 1.25 (matches the parent module).
-- **Node.js** ≥ 20 and **npm** ≥ 10.
-- **Wails CLI v2**:
-  `go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0`
-- **ffmpeg** on `PATH` (or a path you configure in Settings). Most YouTube
-  downloads need ffmpeg to merge separate video and audio tracks.
-
-## Run / build
-
-From `apps/desktop`:
-
-```bash
-# Install JS dependencies once.
-cd frontend && npm install && cd ..
-
-# Live-reload dev build (requires Wails CLI).
-wails dev
-
-# Production build for the host platform.
-wails build
-# Resulting binary: apps/desktop/build/bin/ytdlp-desktop
-```
-
-`wails dev` opens a native window pointing at the Vite dev server. `wails build`
-embeds the built frontend in the binary so the app runs standalone.
-
-## Project layout
-
-```
-apps/desktop/
-├── main.go            Wails entry point
-├── app.go             Bound methods exposed to the JS side
-├── wails.json         Wails project metadata
-├── go.mod             Isolated Go module; replace ../.. → parent
-├── frontend/
-│   ├── src/
-│   │   ├── App.svelte         App shell + routing
-│   │   ├── main.ts            Mount + global styles
-│   │   ├── lib/
-│   │   │   ├── api.ts         Wails-runtime call helpers
-│   │   │   ├── stores.ts      Reactive Svelte stores
-│   │   │   ├── types.ts       JS shapes mirroring the Go JSON
-│   │   │   ├── format.ts      Pure formatting helpers
-│   │   │   └── components/    Sidebar, Modal, Banner, ProgressRow, StatusBadge
-│   │   ├── pages/             Home, Queue, Downloads, Settings
-│   │   └── styles/global.css  Design tokens (dark graphite/navy + cobalt)
-│   └── package.json
-└── internal/
-    ├── urlcheck/      Single-video URL validation
-    ├── store/         Settings + history persistence (JSON)
-    ├── jobs/          FIFO queue + ytdlp.Client lifecycle
-    └── ffmpegdetect/  Path-aware ffmpeg probe
-```
-
-## How the pieces talk
-
-```
-                  Wails JS bridge
-Svelte  ─────────────────────────►  App.* (app.go)
-  │                                       │
-  │                                       ├─► jobs.Manager ─► ytdlp.Client.Run
-  │                                       │                 (Simulate or Download)
-  │                                       │
-  │                                       ├─► ffmpegdetect.Probe
-  │                                       │
-  │                                       └─► store.Open
-  │
-  └── EventsEmit("job:update" / "queue:update" / "history:update" / ...)
-```
-
-`pkg/ytdlp` is the only library import from the parent; nothing else reaches
-into `internal/`. The desktop app never embeds the extractor package
-directly.
-
-## Validation
-
-Run the Desktop Go tests after building the ignored frontend output:
-
-```sh
 cd frontend
 npm ci
 npm run check
@@ -129,21 +45,26 @@ npm run test:ui
 npm run build
 cd ..
 
-go test -count=1 ./...
-go build ./...
-```
+wails dev
+# or
+wails build
+~~~
 
-When observable behavior crosses into the parent engine, run its relevant Go
-package tests as well.
+The host binary is written below build/bin/ as vidstow (with the platform
+executable suffix where applicable). On macOS, the build hook obtains the
+matching ytdlp-js-helper from the pinned engine module and verifies it beside
+the app executable.
 
-## Release packaging boundary
+## Development
 
-`wails build` creates a host-platform developer artifact. It is not yet a
-complete public release process.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution and validation
+workflow. frontend/wailsjs/ is generated by Wails and is intentionally not
+tracked.
 
-The current `darwin/*` post-build hook packages and verifies
-`ytdlp-js-helper` for macOS output. Equivalent reviewed Windows and Linux
-helper packaging is still required. Public releases also need explicit
-FFmpeg/FFprobe installation or bundling behavior, platform signing,
-notarization where applicable, declared Linux WebKitGTK dependencies,
-checksums, notices, and clean-machine install/download verification.
+## History and license
+
+VidStow was extracted with filtered Git history from the former
+apps/desktop subtree of
+[tejasa97/youtube_dlp](https://github.com/tejasa97/youtube_dlp). The
+repository preserves the relevant Desktop commits and their original
+authorship. VidStow is licensed under [Apache-2.0](LICENSE).

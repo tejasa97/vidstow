@@ -16,7 +16,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:            "YTDLP Go Desktop",
+		Title:            "VidStow",
 		Width:            1280,
 		Height:           800,
 		MinWidth:         1000,
@@ -43,8 +43,8 @@ func main() {
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
 			About: &mac.AboutInfo{
-				Title:   "YTDLP Go Desktop",
-				Message: "A friendly wrapper around ytdlp-go for downloading public YouTube videos.",
+				Title:   "VidStow",
+				Message: "A desktop app for downloading public YouTube videos.",
 			},
 		},
 	})

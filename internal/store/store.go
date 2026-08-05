@@ -113,14 +113,14 @@ func DefaultPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "ytdlp-desktop", "state.json"), nil
+	return filepath.Join(dir, "vidstow", "state.json"), nil
 }
 
 func defaultDownloadDir() string {
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, "Downloads", "ytdlp-desktop")
+		return filepath.Join(home, "Downloads", "vidstow")
 	}
-	return filepath.Join(os.TempDir(), "ytdlp-desktop")
+	return filepath.Join(os.TempDir(), "vidstow")
 }
 
 // Settings returns a copy of the current settings.
