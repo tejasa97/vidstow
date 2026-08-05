@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/vidstow-logo.png" alt="VidStow logo" width="168">
+
 # VidStow
 
 ### Save the videos you're allowed to keep—without living in a terminal.
