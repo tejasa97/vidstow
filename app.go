@@ -240,7 +240,15 @@ func (a *App) StartDownload(req jobs.Request) (string, error) {
 	if req.Quality == "" {
 		req.Quality = jobs.QualityBest
 	}
-	if !isSupportedQuality(req.Quality) {
+	if req.PlanID != "" {
+		plan, resolveErr := a.jobs.ResolvePlan(req.VideoID, req.PlanID)
+		if resolveErr != nil {
+			return "", resolveErr
+		}
+		if plan.RequiresFFmpeg && !a.ffmpegStatus().Available {
+			return "", errors.New("this output needs FFmpeg; install FFmpeg or choose an original audio format")
+		}
+	} else if !isSupportedQuality(req.Quality) {
 		return "", fmt.Errorf("unsupported quality preset %q", req.Quality)
 	}
 	return a.jobs.Submit(req)

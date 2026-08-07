@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/youtube_dlp/engine"
 	provideryoutube "github.com/tejasa97/youtube_dlp/providers/youtube"
 )
@@ -106,6 +107,7 @@ type Request struct {
 	Title     string  `json:"title"`
 	Channel   string  `json:"channel"`
 	Quality   Quality `json:"quality"`
+	PlanID    string  `json:"planId"`
 	OutputDir string  `json:"outputDir"`
 	Duration  string  `json:"duration"`
 	Thumbnail string  `json:"thumbnail"`
@@ -113,29 +115,37 @@ type Request struct {
 
 // JobSnapshot is the immutable view of a job exposed to the UI.
 type JobSnapshot struct {
-	ID            string  `json:"id"`
-	URL           string  `json:"url"`
-	VideoID       string  `json:"videoID"`
-	Title         string  `json:"title"`
-	Channel       string  `json:"channel"`
-	Quality       Quality `json:"quality"`
-	QualityLabel  string  `json:"qualityLabel"`
-	OutputDir     string  `json:"outputDir"`
-	DurationLabel string  `json:"durationLabel"`
-	Thumbnail     string  `json:"thumbnail"`
-	Status        Status  `json:"status"`
-	CreatedAt     string  `json:"createdAt"`
-	StartedAt     string  `json:"startedAt,omitempty"`
-	CompletedAt   string  `json:"completedAt,omitempty"`
-	Bytes         int64   `json:"bytes"`
-	Total         int64   `json:"total"`
-	Progress      float64 `json:"progress"`
-	SpeedBps      float64 `json:"speedBps"`
-	ETASeconds    float64 `json:"etaSeconds"`
-	Filename      string  `json:"filename"`
-	AbsolutePath  string  `json:"absolutePath"`
-	Message       string  `json:"message"`
-	ErrorReason   string  `json:"errorReason,omitempty"`
+	ID              string          `json:"id"`
+	URL             string          `json:"url"`
+	VideoID         string          `json:"videoID"`
+	Title           string          `json:"title"`
+	Channel         string          `json:"channel"`
+	Quality         Quality         `json:"quality"`
+	QualityLabel    string          `json:"qualityLabel"`
+	PlanID          string          `json:"planId,omitempty"`
+	OutputKind      outputplan.Kind `json:"outputKind,omitempty"`
+	Container       string          `json:"container,omitempty"`
+	VideoCodec      string          `json:"videoCodec,omitempty"`
+	AudioCodec      string          `json:"audioCodec,omitempty"`
+	ApproxBytes     int64           `json:"approxBytes,omitempty"`
+	SizeApproximate bool            `json:"sizeApproximate,omitempty"`
+	RequiresFFmpeg  bool            `json:"requiresFfmpeg,omitempty"`
+	OutputDir       string          `json:"outputDir"`
+	DurationLabel   string          `json:"durationLabel"`
+	Thumbnail       string          `json:"thumbnail"`
+	Status          Status          `json:"status"`
+	CreatedAt       string          `json:"createdAt"`
+	StartedAt       string          `json:"startedAt,omitempty"`
+	CompletedAt     string          `json:"completedAt,omitempty"`
+	Bytes           int64           `json:"bytes"`
+	Total           int64           `json:"total"`
+	Progress        float64         `json:"progress"`
+	SpeedBps        float64         `json:"speedBps"`
+	ETASeconds      float64         `json:"etaSeconds"`
+	Filename        string          `json:"filename"`
+	AbsolutePath    string          `json:"absolutePath"`
+	Message         string          `json:"message"`
+	ErrorReason     string          `json:"errorReason,omitempty"`
 }
 
 // Listener receives lifecycle events. The queue preserves event order through
@@ -168,12 +178,19 @@ type Manager struct {
 	all            map[string]*jobState
 	order          []string
 	active         string
+	planCache      map[string]cachedPlans
+}
+
+type cachedPlans struct {
+	plans     []outputplan.Plan
+	expiresAt time.Time
 }
 
 type downloadRunner func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error)
 
 type jobState struct {
 	snap     JobSnapshot
+	plan     *outputplan.Plan
 	cancel   context.CancelFunc
 	ctx      context.Context
 	done     chan struct{}
@@ -191,6 +208,7 @@ func New(client *engine.Client, listener Listener) *Manager {
 		listener:    listener,
 		runDownload: defaultDownloadRunner,
 		all:         make(map[string]*jobState),
+		planCache:   make(map[string]cachedPlans),
 	}
 	if listener != nil {
 		manager.events = make(chan Event, 256)
@@ -243,10 +261,17 @@ func (m *Manager) Submit(req Request) (string, error) {
 	if req.URL == "" {
 		return "", errors.New("jobs: empty url")
 	}
-	if req.Quality == "" {
+	var selectedPlan *outputplan.Plan
+	if req.PlanID != "" {
+		plan, err := m.ResolvePlan(req.VideoID, req.PlanID)
+		if err != nil {
+			return "", err
+		}
+		selectedPlan = &plan
+	} else if req.Quality == "" {
 		req.Quality = QualityBest
 	}
-	if !isKnownQuality(req.Quality) {
+	if selectedPlan == nil && !isKnownQuality(req.Quality) {
 		return "", fmt.Errorf("jobs: unsupported quality %q", req.Quality)
 	}
 	if req.OutputDir == "" {
@@ -272,7 +297,19 @@ func (m *Manager) Submit(req Request) (string, error) {
 			Status:        StatusPending,
 			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 		},
+		plan: selectedPlan,
 		done: make(chan struct{}),
+	}
+	if selectedPlan != nil {
+		state.snap.PlanID = selectedPlan.ID
+		state.snap.QualityLabel = selectedPlan.Label
+		state.snap.OutputKind = selectedPlan.Kind
+		state.snap.Container = selectedPlan.Container
+		state.snap.VideoCodec = selectedPlan.VideoCodec
+		state.snap.AudioCodec = selectedPlan.AudioCodec
+		state.snap.ApproxBytes = selectedPlan.ApproxBytes
+		state.snap.SizeApproximate = selectedPlan.SizeIsApproximate
+		state.snap.RequiresFFmpeg = selectedPlan.RequiresFFmpeg
 	}
 
 	m.mu.Lock()
@@ -464,6 +501,21 @@ func (m *Manager) run(state *jobState) {
 		Filesystem: engine.FilesystemOptions{
 			FfmpegLocation: m.ffmpegLocation,
 		},
+	}
+	if state.plan != nil {
+		req.Format = state.plan.Selector
+		req.OutputTemplate = fmt.Sprintf("%%(title)s [%%(id)s] [%s].%%(ext)s", state.plan.Label)
+		if state.plan.Kind == outputplan.KindVideo {
+			req.MergeOutputFormat = strings.ToLower(state.plan.Container)
+		}
+		if state.plan.Container == "MP3" {
+			req.Postprocessors = []engine.Postprocessor{{
+				ExtractAudio: &engine.ExtractAudioPostprocessor{
+					Codec:   "mp3",
+					Bitrate: fmt.Sprintf("%dk", state.plan.AudioBitrateKbps),
+				},
+			}}
+		}
 	}
 	ctx := state.ctx
 	runner := m.runDownload
@@ -737,12 +789,17 @@ func isKnownQuality(quality Quality) bool {
 
 // InfoSummary is the metadata displayed on the Home page after analyse.
 type InfoSummary struct {
-	Title     string `json:"title"`
-	Channel   string `json:"channel"`
-	Duration  string `json:"duration"`
-	Thumbnail string `json:"thumbnail"`
-	VideoID   string `json:"videoId"`
-	URL       string `json:"url"`
+	Title           string            `json:"title"`
+	Channel         string            `json:"channel"`
+	Duration        string            `json:"duration"`
+	DurationSeconds int64             `json:"durationSeconds"`
+	Thumbnail       string            `json:"thumbnail"`
+	VideoID         string            `json:"videoId"`
+	URL             string            `json:"url"`
+	ViewCount       int64             `json:"viewCount"`
+	UploadDate      string            `json:"uploadDate"`
+	Description     string            `json:"description"`
+	Plans           []outputplan.Plan `json:"plans"`
 }
 
 // Analyze calls engine.Run with Simulate=true to extract metadata for
@@ -764,9 +821,22 @@ func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, erro
 	if err != nil {
 		return InfoSummary{}, err
 	}
+	summary, privatePlans, err := summarizeAnalysis(result.InfoJSON, rawURL)
+	if err != nil {
+		return InfoSummary{}, err
+	}
+	if summary.VideoID != "" && len(privatePlans) > 0 {
+		m.cachePlans(summary.VideoID, privatePlans)
+	}
+	return summary, nil
+}
+
+func summarizeAnalysis(raw json.RawMessage, rawURL string) (InfoSummary, []outputplan.Plan, error) {
 	var info map[string]any
-	if len(result.InfoJSON) > 0 {
-		_ = json.Unmarshal(result.InfoJSON, &info)
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &info); err != nil {
+			return InfoSummary{}, nil, fmt.Errorf("analyze: decode metadata: %w", err)
+		}
 	}
 	summary := InfoSummary{URL: rawURL}
 	if v, ok := info["id"].(string); ok {
@@ -781,14 +851,79 @@ func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, erro
 		summary.Channel = v
 	}
 	if v, ok := info["duration"].(float64); ok {
-		summary.Duration = formatDuration(int64(v))
+		summary.DurationSeconds = int64(v)
+		summary.Duration = formatDuration(summary.DurationSeconds)
 	} else if v, ok := info["duration_string"].(string); ok {
 		summary.Duration = v
 	}
 	if v, ok := info["thumbnail"].(string); ok {
 		summary.Thumbnail = v
 	}
-	return summary, nil
+	summary.ViewCount = metadataInteger(info["view_count"])
+	if v, ok := info["upload_date"].(string); ok {
+		summary.UploadDate = v
+	}
+	if v, ok := info["description"].(string); ok {
+		summary.Description = v
+	}
+	plans := outputplan.Build(info, summary.DurationSeconds)
+	summary.Plans = publicPlans(plans)
+	return summary, plans, nil
+}
+
+func metadataInteger(value any) int64 {
+	switch value := value.(type) {
+	case float64:
+		return int64(value)
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	}
+	return 0
+}
+
+func publicPlans(plans []outputplan.Plan) []outputplan.Plan {
+	result := make([]outputplan.Plan, len(plans))
+	copy(result, plans)
+	for index := range result {
+		result[index].Selector = ""
+		result[index].SourceFormatIDs = nil
+	}
+	return result
+}
+
+func (m *Manager) cachePlans(videoID string, plans []outputplan.Plan) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.planCache) >= 32 {
+		for key := range m.planCache {
+			delete(m.planCache, key)
+			break
+		}
+	}
+	m.planCache[videoID] = cachedPlans{plans: plans, expiresAt: time.Now().Add(30 * time.Minute)}
+}
+
+// ResolvePlan resolves a UI-visible plan ID to the private engine selector
+// created by the most recent analysis of that video.
+func (m *Manager) ResolvePlan(videoID, planID string) (outputplan.Plan, error) {
+	if videoID == "" || planID == "" {
+		return outputplan.Plan{}, errors.New("jobs: video and output plan are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cached, ok := m.planCache[videoID]
+	if !ok || time.Now().After(cached.expiresAt) {
+		delete(m.planCache, videoID)
+		return outputplan.Plan{}, errors.New("jobs: output options expired; analyze the video again")
+	}
+	for _, plan := range cached.plans {
+		if plan.ID == planID {
+			return plan, nil
+		}
+	}
+	return outputplan.Plan{}, errors.New("jobs: output option is no longer available")
 }
 
 // formatDuration renders seconds as a human-readable label.

@@ -11,8 +11,85 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/youtube_dlp/engine"
 )
+
+func TestSummarizeAnalysisBuildsPublicCuratedPlans(t *testing.T) {
+	raw := json.RawMessage(`{
+		"id":"abc123","title":"Demo","uploader":"Creator","duration":90,
+		"view_count":1234,"upload_date":"20260807","description":"Description",
+		"formats":[
+			{"format_id":"137","ext":"mp4","vcodec":"avc1.640028","acodec":"none","width":1920,"height":1080,"tbr":4000},
+			{"format_id":"140","ext":"m4a","vcodec":"none","acodec":"mp4a.40.2","abr":128}
+		]
+	}`)
+	summary, privatePlans, err := summarizeAnalysis(raw, "https://example.invalid/watch?v=abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.DurationSeconds != 90 || summary.Duration != "1:30" || summary.ViewCount != 1234 {
+		t.Fatalf("metadata = %#v; want duration and view count", summary)
+	}
+	if len(summary.Plans) == 0 || len(privatePlans) == 0 {
+		t.Fatal("expected curated output plans")
+	}
+	if summary.Plans[0].Selector != "" || len(summary.Plans[0].SourceFormatIDs) != 0 {
+		t.Fatal("public summary leaked private engine selector")
+	}
+	if privatePlans[0].Selector != "137+140" {
+		t.Fatalf("private selector = %q; want 137+140", privatePlans[0].Selector)
+	}
+}
+
+func TestPlanSubmissionUsesCachedPrivateSelectorAndMP3Postprocessor(t *testing.T) {
+	manager := New(nil, nil)
+	manager.cachePlans("abc123", []outputplan.Plan{{
+		ID: "audio-mp3-192", Kind: outputplan.KindAudio, Label: "MP3 192 kbps",
+		Container: "MP3", RequiresFFmpeg: true, AudioBitrateKbps: 192, Selector: "140",
+	}})
+	started := make(chan engine.Request, 1)
+	manager.runDownload = func(_ context.Context, req engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		started <- req
+		return engine.Result{}, nil
+	}
+
+	_, err := manager.Submit(Request{
+		URL: "https://example.invalid/watch?v=abc123", VideoID: "abc123",
+		PlanID: "audio-mp3-192", OutputDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case req := <-started:
+		if req.Format != "140" {
+			t.Fatalf("format = %q; want cached selector 140", req.Format)
+		}
+		if len(req.Postprocessors) != 1 || req.Postprocessors[0].ExtractAudio == nil {
+			t.Fatal("expected one extract-audio postprocessor")
+		}
+		if got := req.Postprocessors[0].ExtractAudio.Bitrate; got != "192k" {
+			t.Fatalf("bitrate = %q; want 192k", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("download runner did not receive a request")
+	}
+}
+
+func TestResolvePlanRejectsExpiredAndUnknownPlans(t *testing.T) {
+	manager := New(nil, nil)
+	manager.planCache["expired"] = cachedPlans{
+		plans: []outputplan.Plan{{ID: "video-1080-mp4"}}, expiresAt: time.Now().Add(-time.Second),
+	}
+	if _, err := manager.ResolvePlan("expired", "video-1080-mp4"); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired ResolvePlan() error = %v", err)
+	}
+	manager.cachePlans("current", []outputplan.Plan{{ID: "video-1080-mp4"}})
+	if _, err := manager.ResolvePlan("current", "made-up"); err == nil || !strings.Contains(err.Error(), "no longer available") {
+		t.Fatalf("unknown ResolvePlan() error = %v", err)
+	}
+}
 
 func TestHumanErrorYouTubeChallengeTimeout(t *testing.T) {
 	typed := &engine.Error{
