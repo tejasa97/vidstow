@@ -2,11 +2,11 @@
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
   import { settings, ffmpeg, showBanner, showError } from '../lib/stores.js';
+  import type { Settings } from '../lib/types.js';
 
   let folder = '';
   let ffmpegPath = '';
-  let pickingFolder = false;
-  let locating = false;
+  let saving = false;
 
   onMount(() => {
     folder = $settings.downloadFolder || '';
@@ -14,21 +14,26 @@
   });
   $: displayedFFmpegPath = ffmpegPath || $ffmpeg.path || '';
 
+  async function update(next: Settings, message = 'Settings updated') {
+    saving = true;
+    try {
+      const saved = await api.settings.update(next);
+      settings.set(saved);
+      showBanner('success', message);
+    } catch (err) { showError(err, 'Could not save settings'); }
+    finally { saving = false; }
+  }
+
   async function pickFolder() {
-    pickingFolder = true;
     try {
       const path = await api.folder.pick();
       if (!path) return;
-      const updated = await api.settings.update({ ...$settings, downloadFolder: path });
-      settings.set(updated);
-      folder = updated.downloadFolder;
-      showBanner('success', 'Default download folder updated');
+      folder = path;
+      await update({ ...$settings, downloadFolder: path }, 'Download folder updated');
     } catch (err) { showError(err, 'Could not choose folder'); }
-    finally { pickingFolder = false; }
   }
 
   async function locateFFmpeg() {
-    locating = true;
     try {
       const path = await api.ffmpeg.pickPath();
       if (!path) return;
@@ -37,57 +42,57 @@
       ffmpegPath = status.path;
       showBanner('success', 'FFmpeg configured');
     } catch (err) { showError(err, 'Could not configure FFmpeg'); }
-    finally { locating = false; }
+  }
+
+  async function recheck() {
+    try { ffmpeg.set(await api.ffmpeg.probe()); }
+    catch (err) { showError(err, 'Could not check FFmpeg'); }
   }
 
   async function copyDiagnostics() {
-    try {
-      await api.diagnostics.copy();
-      showBanner('info', 'Diagnostics copied to clipboard');
-    } catch (err) { showError(err, 'Could not copy diagnostics'); }
+    try { await api.diagnostics.copy(); showBanner('info', 'Diagnostics copied'); }
+    catch (err) { showError(err, 'Could not copy diagnostics'); }
   }
 </script>
 
 <section class="page" aria-labelledby="settings-title">
-  <header class="page-header"><h1 id="settings-title">Settings</h1><p>Configure download and tool settings.</p></header>
+  <header><h1 id="settings-title">Settings</h1><p>Configure downloads, queue behavior, and external tools.</p></header>
 
-  <section class="card" aria-labelledby="folder-title">
-    <h2 id="folder-title">Default download folder</h2>
-    <p>Downloads will be saved to this folder by default.</p>
-    <div class="control-row"><input readonly value={folder} title={folder} aria-label="Default download folder" /><button type="button" on:click={pickFolder} disabled={pickingFolder}>Choose…</button></div>
+  <section class="group" aria-labelledby="general-title">
+    <h2 id="general-title">General</h2>
+    <div class="setting path-setting">
+      <div><strong>Default download folder</strong><span>New downloads are saved here.</span></div>
+      <div class="path"><input readonly value={folder} title={folder} /><button type="button" on:click={pickFolder}>Change…</button></div>
+    </div>
+    <label class="setting check"><span><strong>Create a subfolder for each download</strong><small>Places all files for one video together.</small></span><input type="checkbox" checked={$settings.perVideoSubfolder} on:change={(e) => update({ ...$settings, perVideoSubfolder: e.currentTarget.checked })} /></label>
+    <label class="setting check"><span><strong>Confirm before starting downloads</strong><small>Shows the selected output before adding it to the queue.</small></span><input type="checkbox" checked={$settings.confirmBeforeDownload} on:change={(e) => update({ ...$settings, confirmBeforeDownload: e.currentTarget.checked })} /></label>
+    <label class="setting check"><span><strong>Restore interrupted jobs as paused</strong><small>Keeps verified partial bytes and restores work after an app restart.</small></span><input type="checkbox" checked={$settings.restoreInterruptedJobs} on:change={(e) => update({ ...$settings, restoreInterruptedJobs: e.currentTarget.checked })} /></label>
+    <label class="setting select-setting">
+      <span><strong>Concurrent downloads</strong><small>Choose from 1 to 10. Higher values use more bandwidth and system resources.</small></span>
+      <select value={$settings.downloadConcurrency} on:change={(e) => update({ ...$settings, downloadConcurrency: Number(e.currentTarget.value) })} disabled={saving}>
+        {#each Array.from({ length: 10 }, (_, index) => index + 1) as value}<option {value}>{value}</option>{/each}
+      </select>
+    </label>
+    {#if $settings.downloadConcurrency > 4}<p class="warning">More than 4 simultaneous downloads may reduce stability or trigger rate limits.</p>{/if}
   </section>
 
-  <section class="card status-card" aria-labelledby="ffmpeg-title">
+  <section class="group" aria-labelledby="ffmpeg-title">
     <h2 id="ffmpeg-title">FFmpeg</h2>
-    <p>Required for some downloads and audio extraction.</p>
-    <strong class:detected={$ffmpeg.available} class:missing={!$ffmpeg.available}>{$ffmpeg.available ? '●  Detected' : '●  Required'}</strong>
-    <span>{$ffmpeg.available ? 'FFmpeg is installed and ready to use.' : 'FFmpeg is required for certain downloads and audio conversion.'}</span>
+    <div class="setting status"><div><strong>FFmpeg status</strong><span>Used for stream merging and audio conversion.</span></div><em class:detected={$ffmpeg.available}>{$ffmpeg.available ? 'Detected' : 'Not found'}</em></div>
+    <div class="setting path-setting"><div><strong>FFmpeg path</strong><span>Choose an installed FFmpeg executable.</span></div><div class="path"><input readonly value={displayedFFmpegPath} placeholder="Not configured" /><button type="button" on:click={locateFFmpeg}>Change…</button></div></div>
+    <div class="tool-actions"><button type="button" on:click={recheck}>Recheck</button><button type="button" on:click={() => window.runtime.BrowserOpenURL('https://ffmpeg.org/download.html')}>Installation guide ↗</button></div>
   </section>
 
-  <section class="card" aria-labelledby="path-title">
-    <h2 id="path-title">FFmpeg path</h2>
-    <p>Path to the FFmpeg executable.</p>
-    <div class="control-row"><input readonly value={displayedFFmpegPath} title={displayedFFmpegPath} aria-label="FFmpeg path" placeholder="FFmpeg has not been located" /><button type="button" on:click={locateFFmpeg} disabled={locating}>Locate…</button></div>
-  </section>
-
-  <section class="card diagnostics-card" aria-labelledby="diagnostics-title">
-    <div><h2 id="diagnostics-title">Diagnostics</h2><p>Copy a privacy-safe system summary for troubleshooting.</p></div>
-    <button type="button" on:click={copyDiagnostics}>Copy Diagnostics</button>
-  </section>
+  <section class="group diagnostics"><div><h2>Diagnostics</h2><p>Copy a privacy-safe summary for troubleshooting.</p></div><button type="button" on:click={copyDiagnostics}>Copy Diagnostics</button></section>
 </section>
 
 <style>
-  .page { width:min(100%,1040px);margin:0 auto;padding:36px 30px 48px;display:flex;flex-direction:column;gap:18px; }
-  h1 { margin:0;font-size:30px;letter-spacing:-.02em; } .page-header p { margin:8px 0 8px;color:var(--text-secondary);font-size:16px; }
-  .card { padding:22px;background:linear-gradient(145deg,#151f2c,#101823);border:1px solid var(--border-default);border-radius:10px; }
-  .card h2 { margin:0;font-size:18px; } .card > p { margin:6px 0 16px;color:var(--text-secondary);font-size:15px; }
-  .control-row { display:grid;grid-template-columns:minmax(0,1fr) 120px;gap:14px;min-width:0; }
-  .control-row input { min-width:0;height:48px;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:rgba(13,20,30,.7); }
-  .control-row button { color:var(--text-primary);background:linear-gradient(180deg,#2a3545,#1d2734);border:1px solid var(--border-default);border-radius:8px;font-size:16px; }
-  .status-card strong { display:block;margin:4px 0 10px;font-size:18px; }.status-card .detected{color:#59c96b}.status-card .missing{color:var(--status-danger)}
-  .status-card > span { color:var(--text-secondary);font-size:16px; }
-  .diagnostics-card { display:flex;align-items:center;justify-content:space-between;gap:20px; }
-  .diagnostics-card > div { min-width:0; }
-  .diagnostics-card p { margin:6px 0 0;color:var(--text-secondary);font-size:15px; }
-  .diagnostics-card button { min-height:44px;padding:0 18px;white-space:nowrap;color:var(--text-primary);background:linear-gradient(180deg,#2a3545,#1d2734);border:1px solid var(--border-default);border-radius:8px;font-size:15px; }
+  .page{width:min(100%,900px);margin:0 auto;padding:34px 42px 50px}.page>header h1{margin:0;font-size:26px}.page>header p{margin:7px 0 26px;color:var(--text-secondary)}
+  .group{margin-top:20px;padding:18px 20px;border:1px solid var(--border-default);border-radius:8px;background:var(--surface-raised)}.group>h2,.diagnostics h2{margin:0 0 14px;font-size:14px}
+  .setting{min-height:58px;display:flex;align-items:center;justify-content:space-between;gap:28px;padding:12px 0;border-top:1px solid var(--border-subtle)}.group h2+.setting{border-top:0}.setting strong,.setting span,.setting small{display:block}.setting strong{font-size:13px;color:var(--text-primary)}.setting span,.setting small{margin-top:4px;color:var(--text-muted);font-size:11px}.setting>div:first-child,.setting>span{min-width:240px}
+  .path-setting{display:grid;grid-template-columns:260px minmax(0,1fr)}.path{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}.path input{height:36px;min-width:0}.path button,.tool-actions button,.diagnostics button{min-height:34px;padding:0 12px;border:1px solid var(--border-default);border-radius:6px;background:var(--surface-raised);color:var(--text-primary)}
+  .check{cursor:pointer}.check input{width:16px;height:16px;order:-1;flex:0 0 auto}.check>span{flex:1}.select-setting select{width:84px;height:34px;border:1px solid var(--border-default);border-radius:6px;background:var(--surface-raised);padding:0 8px}.warning{margin:10px 0 0;padding:10px 12px;border-radius:6px;background:#fff7ed;color:#9a3412;font-size:12px}
+  .status em{padding:4px 8px;border-radius:999px;background:#fef2f2;color:#b91c1c;font-style:normal;font-size:11px}.status em.detected{background:#ecfdf5;color:#047857}.tool-actions{display:flex;justify-content:flex-end;gap:8px;padding-top:12px;border-top:1px solid var(--border-subtle)}
+  .diagnostics{display:flex;align-items:center;justify-content:space-between}.diagnostics h2{margin-bottom:5px}.diagnostics p{margin:0;color:var(--text-muted);font-size:12px}
+  @media(max-width:700px){.page{padding:24px 18px}.path-setting{grid-template-columns:1fr}.setting{align-items:flex-start}.diagnostics{align-items:flex-start;flex-direction:column}}
 </style>

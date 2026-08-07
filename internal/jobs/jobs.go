@@ -576,6 +576,26 @@ func (m *Manager) Pause(id string) error {
 	}
 }
 
+// PauseAll pauses every pending job and every active job not currently in a
+// media-processing critical section. It returns the number accepted.
+func (m *Manager) PauseAll() int {
+	m.mu.Lock()
+	ids := make([]string, 0, len(m.all))
+	for id, state := range m.all {
+		if state.snap.Status == StatusPending || (state.snap.Status == StatusActive && !state.snap.Processing) {
+			ids = append(ids, id)
+		}
+	}
+	m.mu.Unlock()
+	paused := 0
+	for _, id := range ids {
+		if m.Pause(id) == nil {
+			paused++
+		}
+	}
+	return paused
+}
+
 // Resume returns a paused job to the FIFO. The engine's default partial-file
 // behavior resumes byte-range downloads instead of discarding existing data.
 func (m *Manager) Resume(id string) error {

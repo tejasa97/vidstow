@@ -1,58 +1,40 @@
 <script lang="ts">
-  import { jobs, showError } from '../lib/stores.js';
+  import { jobs, showBanner, showError } from '../lib/stores.js';
   import { api } from '../lib/api.js';
   import ProgressRow from '../lib/components/ProgressRow.svelte';
 
-  $: ordered = [...($jobs || [])].sort((a, b) => {
-    const rank = { active: 0, pending: 1, complete: 2, failed: 3, canceled: 4 };
-    return rank[a.status] - rank[b.status];
-  });
-  $: downloading = ordered.filter((job) => job.status === 'active').length;
-  $: completed = ordered.filter((job) => job.status === 'complete').length;
-  $: terminal = ordered.filter((job) => ['complete', 'failed', 'canceled'].includes(job.status)).length;
+  $: active = $jobs.filter((job) => ['active', 'pending', 'paused'].includes(job.status));
+  $: completed = $jobs.filter((job) => ['complete', 'failed', 'canceled'].includes(job.status));
+  $: running = $jobs.filter((job) => job.status === 'active').length;
+  $: pausable = $jobs.some((job) => job.status === 'pending' || (job.status === 'active' && job.canPause && !job.processing));
 
+  async function pauseAll() {
+    try { const count = await api.jobs.pauseAll(); showBanner('info', count ? `${count} job${count === 1 ? '' : 's'} paused` : 'No jobs can be paused right now'); }
+    catch (err) { showError(err, 'Could not pause the queue'); }
+  }
   async function clearCompleted() { try { await api.jobs.clearCompleted(); } catch (err) { showError(err); } }
 </script>
 
 <section class="page" aria-labelledby="queue-title">
   <header class="page-header">
-    <div><h1 id="queue-title">Queue</h1><p>Manage your download queue. Items will download in order from top to bottom.</p></div>
-    <div class="summary" aria-label="Queue summary">
-      <div><span>Total</span><strong>{ordered.length}</strong><small>{ordered.length === 1 ? 'item' : 'items'}</small></div>
-      <div><span>Downloading</span><strong>{downloading}</strong><small>{downloading === 1 ? 'item' : 'items'}</small></div>
-      <div><span>Completed</span><strong>{completed}</strong><small>{completed === 1 ? 'item' : 'items'}</small></div>
-    </div>
+    <div><h1 id="queue-title">Queue</h1><p>{active.length} job{active.length === 1 ? '' : 's'} · {running} running</p></div>
+    <div class="header-actions"><button type="button" on:click={pauseAll} disabled={!pausable}>Pause All</button><button type="button" on:click={clearCompleted} disabled={!completed.length}>Clear Completed</button></div>
   </header>
 
-  <section class="table-wrap" aria-label="Download queue">
-    <div class="thead" aria-hidden="true"><span>#</span><span>Title</span><span>Quality</span><span>Status</span><span>Progress</span><span>Speed / ETA</span><span>Actions</span></div>
-    {#if ordered.length}
-      {#each ordered as job, index (job.id)}
-        <ProgressRow {job} index={index + 1} />
-      {/each}
-    {:else}
-      <div class="empty">Your queue is empty. Add a video from Home to get started.</div>
-    {/if}
+  <section class="section" aria-labelledby="active-title">
+    <h2 id="active-title">Active &amp; queued <span>{active.length}</span></h2>
+    {#if active.length}<div class="job-list">{#each active as job, index (job.id)}<ProgressRow {job} index={index + 1} />{/each}</div>
+    {:else}<div class="empty">No active jobs. Add a video from Home to get started.</div>{/if}
   </section>
-  <footer class="table-footer">
-    <span>{ordered.length} {ordered.length === 1 ? 'item' : 'items'}</span>
-    <button type="button" on:click={clearCompleted} disabled={terminal === 0}>⌫&nbsp;&nbsp; Clear Completed</button>
-  </footer>
+
+  {#if completed.length}
+    <section class="section" aria-labelledby="completed-title"><h2 id="completed-title">Completed <span>{completed.length}</span></h2><div class="job-list">{#each completed as job, index (job.id)}<ProgressRow {job} index={active.length + index + 1} />{/each}</div></section>
+  {/if}
+  <footer>Jobs are saved automatically.</footer>
 </section>
 
 <style>
-  .page { width: min(100%, 1120px); margin: 0 auto; padding: 28px 28px 40px; }
-  .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 28px; margin-bottom: 22px; }
-  h1 { margin: 0; font-size: 30px; letter-spacing: -.02em; }
-  .page-header p { margin: 8px 0 0; color: var(--text-secondary); font-size: 16px; }
-  .summary { display: grid; grid-template-columns: repeat(3,108px); background: linear-gradient(145deg,#151f2c,#101823); border: 1px solid var(--border-default); border-radius: 10px; padding: 17px 4px; flex-shrink: 0; }
-  .summary div { display: flex; flex-direction: column; align-items: center; border-left: 1px solid var(--border-subtle); } .summary div:first-child { border-left: 0; }
-  .summary span,.summary small { color: var(--text-secondary); font-size: 12px; } .summary strong { font-size: 24px; margin: 6px 0 2px; }
-  .table-wrap { overflow-x: auto; background: linear-gradient(145deg,rgba(20,29,41,.97),rgba(13,21,31,.97)); border: 1px solid var(--border-default); border-radius: 10px; }
-  .thead { display: grid; grid-template-columns: 34px minmax(250px,1.45fr) 86px 120px minmax(130px,.8fr) 104px 152px; gap: 12px; min-width: 960px; min-height: 45px; padding: 0 12px; align-items: center; color: var(--text-secondary); font-size: 13px; }
-  .thead span:first-child { text-align: center; } .thead span:last-child { text-align: right; }
-  .empty { min-width: 720px; min-height: 156px; padding: 64px 24px; text-align: center; color: var(--text-muted); border-top: 1px solid var(--border-subtle); }
-  .table-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; color: var(--text-secondary); }
-  .table-footer button { min-height: 40px; padding: 0 18px; color: var(--text-primary); background: linear-gradient(180deg,#283445,#1d2734); border: 1px solid var(--border-default); border-radius: 8px; }
-  @media (max-width: 900px) { .page-header { flex-direction: column; } }
+  .page{width:min(100%,900px);margin:0 auto;padding:34px 42px 48px}.page-header{display:flex;align-items:flex-start;justify-content:space-between;gap:24px}.page-header h1{margin:0;font-size:26px}.page-header p{margin:5px 0 0;color:var(--text-muted);font-size:12px}.header-actions{display:flex;gap:8px}.header-actions button{min-height:34px;padding:0 12px;border:1px solid var(--border-default);border-radius:6px;background:#fff;font-size:11px}
+  .section{margin-top:24px}.section h2{display:flex;align-items:center;gap:7px;margin:0 0 9px;font-size:12px}.section h2 span{min-width:18px;height:18px;display:grid;place-items:center;border-radius:99px;background:var(--surface-active);color:var(--text-secondary);font-size:10px}.job-list{display:flex;flex-direction:column;gap:8px}.empty{min-height:150px;display:grid;place-items:center;border:1px dashed var(--border-default);border-radius:7px;color:var(--text-muted);font-size:12px}footer{margin-top:22px;text-align:center;color:var(--text-muted);font-size:10px}
+  @media(max-width:650px){.page{padding:24px 18px}.page-header{flex-direction:column}.header-actions{width:100%}.header-actions button{flex:1}}
 </style>

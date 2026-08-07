@@ -48,7 +48,8 @@ export interface StartRequest {
   videoId: string;
   title: string;
   channel: string;
-  quality: JobSnapshot['quality'];
+  quality?: JobSnapshot['quality'];
+  planId?: string;
   outputDir: string;
   duration: string;
   thumbnail: string;
@@ -79,6 +80,9 @@ export const api = {
     start: (req: StartRequest) => call<string>('StartDownload', req),
     list: () => call<JobSnapshot[]>('ListJobs'),
     cancel: (id: string) => call<void>('CancelJob', id),
+    pause: (id: string) => call<void>('PauseJob', id),
+    pauseAll: () => call<number>('PauseAllJobs'),
+    resume: (id: string) => call<void>('ResumeJob', id),
     retry: (id: string) => call<void>('RetryJob', id),
     remove: (id: string) => call<void>('RemoveJob', id),
     clearCompleted: () => call<void>('ClearCompletedJobs'),

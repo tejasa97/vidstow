@@ -9,6 +9,10 @@ export const settings = writable<Settings>({
   ffmpegPath: '',
   windowWidth: 1180,
   windowHeight: 760,
+  downloadConcurrency: 2,
+  perVideoSubfolder: true,
+  confirmBeforeDownload: false,
+  restoreInterruptedJobs: true,
 });
 
 export const ffmpeg = writable<FFmpegStatus>({
@@ -32,6 +36,7 @@ export const counts = derived(jobs, ($jobs) => {
     switch (job.status) {
       case 'active': active++; break;
       case 'pending': pending++; break;
+      case 'paused': pending++; break;
       case 'complete': complete++; break;
       case 'failed': failed++; break;
     }

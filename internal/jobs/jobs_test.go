@@ -334,6 +334,41 @@ func TestPauseAndResumeActiveDownloadPreservesProgress(t *testing.T) {
 	manager.Cancel(id)
 }
 
+func TestPauseAllPausesActiveAndPendingJobs(t *testing.T) {
+	manager := New(nil, nil)
+	manager.SetConcurrency(1)
+	started := make(chan struct{}, 1)
+	manager.runDownload = func(ctx context.Context, _ engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		return engine.Result{}, ctx.Err()
+	}
+	first, err := manager.Submit(Request{URL: "https://example.invalid/one", OutputDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	second, err := manager.Submit(Request{URL: "https://example.invalid/two", OutputDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.PauseAll(); got != 2 {
+		t.Fatalf("PauseAll() = %d; want 2", got)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		firstSnap, _ := manager.Find(first)
+		secondSnap, _ := manager.Find(second)
+		if firstSnap.Status == StatusPaused && secondSnap.Status == StatusPaused {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("statuses = %s/%s; want paused/paused", firstSnap.Status, secondSnap.Status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestPauseIsDisabledDuringMediaProcessing(t *testing.T) {
 	manager := New(nil, nil)
 	processing := make(chan struct{})

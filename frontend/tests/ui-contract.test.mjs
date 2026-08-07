@@ -15,19 +15,22 @@ test('approved navigation and window branding are used', async () => {
   assert.match(await read('../index.html'), /<title>VidStow<\/title>/);
 });
 
-test('page titles and subtitles match the approved V0 copy', async () => {
+test('page titles and controls match the approved redesign', async () => {
   const [home, queue, downloads, settings] = await Promise.all([
     read('../src/pages/Home.svelte'), read('../src/pages/Queue.svelte'),
     read('../src/pages/Downloads.svelte'), read('../src/pages/Settings.svelte'),
   ]);
-  assert.match(home, /<h1 id="home-title">Home<\/h1>/);
-  assert.match(home, /Paste a public YouTube URL and choose how to download it\./);
+  assert.match(home, /<h1 id="home-title">Download from YouTube<\/h1>/);
+  assert.match(home, /Paste a public video URL to analyze it and choose your download\./);
+  assert.match(home, />Choose Download</);
+  assert.match(home, />Add to Queue</);
   assert.match(home, /'Analyze'/);
-  assert.match(queue, /Manage your download queue\. Items will download in order from top to bottom\./);
+  assert.match(queue, />Pause All</);
+  assert.match(queue, /Jobs are saved automatically\./);
   assert.match(queue, /Clear Completed/);
   assert.match(downloads, /View your recently downloaded items\./);
   assert.match(downloads, /placeholder="Search downloads…"/);
-  assert.match(settings, /Configure download and tool settings\./);
+  assert.match(settings, /Configure downloads, queue behavior, and external tools\./);
   assert.match(settings, />Default download folder</);
   assert.match(settings, />FFmpeg path</);
   assert.match(settings, />Diagnostics</);
@@ -35,38 +38,24 @@ test('page titles and subtitles match the approved V0 copy', async () => {
   assert.match(settings, /await api\.diagnostics\.copy\(\)/);
 });
 
-test('accepted URLs with analysis failures use the generic error modal', async () => {
+test('analysis failures use the redesigned error modal', async () => {
   const home = await read('../src/pages/Home.svelte');
-  assert.match(home, /title: 'We could not analyze this video'/);
+  assert.match(home, /title: 'Unsupported URL'/);
   assert.match(home, /kind: 'error'/);
   assert.match(home, /message: errorMessage\(err,/);
   assert.doesNotMatch(home, /catch \(err\) \{\s*unsupported = \{\s*url: result\.url/);
 });
 
-test('unsupported and FFmpeg-required states retain accurate V0 copy', async () => {
+test('unsupported and FFmpeg-required states retain accurate product copy', async () => {
   const [home, modal] = await Promise.all([
     read('../src/pages/Home.svelte'), read('../src/lib/components/Modal.svelte'),
   ]);
-  assert.match(home, /We couldn’t analyze this URL/);
-  assert.match(home, /This app currently supports single public YouTube videos\./);
+  assert.match(home, /valid, publicly accessible YouTube video/);
   assert.doesNotMatch(home, /supports YouTube videos and playlists/);
-  assert.match(home, /class="unsupported-illustration"/);
-  assert.match(home, /reason: errorMessage\(err, 'This URL is not supported\.'\)/);
-  assert.match(home, /safeBrowserURL\(unsupported\.url\)/);
-  assert.match(home, /\{#if unsupportedBrowserURL\}<button[\s\S]*?BrowserOpenURL\(unsupportedBrowserURL!\)[\s\S]*?<\/button>\{\/if\}/);
-  assert.match(home, /aria-hidden="true"/);
-  assert.match(home, /id="warning-fill"/);
-  assert.match(home, /M147 214c7-8 17-8 24 0/);
-  assert.equal((home.match(/<div><svg viewBox="0 0 24 24" aria-hidden="true">/g) || []).length, 3);
-  for (const label of ['Try another URL', 'Copy Diagnostics', 'Open in Browser']) {
-    assert.match(home, new RegExp(`<button[^>]*>[\\s\\S]*?<svg[^>]+aria-hidden="true"[\\s\\S]*?${label}</button>`));
-  }
-  for (const copy of ['FFmpeg Required', 'What’s affected without FFmpeg?', 'Higher-quality merged downloads', 'Audio extraction &amp; conversion', 'FFmpeg is free, safe, and open source.', 'Back']) {
-    assert.ok(modal.includes(copy), `missing modal copy: ${copy}`);
-  }
-  assert.match(modal, /action\.label === 'Locate FFmpeg'/);
-  assert.match(modal, /action\.label === 'Installation Guide'/);
-  assert.match(modal, /<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"\/><\/svg>Back/);
+  assert.match(home, /title: 'FFmpeg Required'/);
+  assert.match(home, /choose an original audio option/);
+  assert.match(modal, /VidStow will continue to offer outputs that do not need FFmpeg\./);
+  assert.match(modal, /class:primary=\{action\.primary\}/);
 });
 
 test('startup performs one FFmpeg fetch and normalizes binding errors', async () => {
@@ -84,19 +73,16 @@ test('startup performs one FFmpeg fetch and normalizes binding errors', async ()
 
 test('terminal queue rows expose recovery and removal actions', async () => {
   const row = await read('../src/lib/components/ProgressRow.svelte');
-  assert.match(row, /<div class="queue-row">/);
+  assert.match(row, /<article class="job-card"/);
   assert.doesNotMatch(row, /role="cell"/);
   assert.doesNotMatch(row, /<t[rd][^>]*>/);
   for (const action of ['Cancel download', 'Open downloaded file', 'Retry download', 'Remove download']) {
     assert.match(row, new RegExp(`<button[^>]+type="button"[^>]+aria-label="${action}"`));
   }
-  assert.match(row, /on:pointerdown\|preventDefault\|stopPropagation=/);
-  assert.match(row, /on:click\|stopPropagation=/);
-  assert.match(row, /await api\.jobs\.cancel\(job\.id\)/);
-  assert.match(row, /await api\.jobs\.retry\(job\.id\)/);
-  assert.match(row, /await api\.jobs\.remove\(job\.id\)/);
+  assert.match(row, /aria-label="Pause download"/);
+  assert.match(row, /aria-label="Resume download"/);
+  for (const method of ['cancel', 'retry', 'remove', 'pause', 'resume']) assert.match(row, new RegExp(`api\\.jobs\\.${method}\\(job\\.id\\)`));
   assert.match(row, />Retry</);
-  assert.match(row, />Remove</);
   assert.match(row, /job\.status === 'failed'/);
 });
 

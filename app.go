@@ -243,6 +243,9 @@ func (a *App) StartDownload(req jobs.Request) (string, error) {
 	if req.OutputDir == "" {
 		req.OutputDir = settings.DownloadFolder
 	}
+	if settings.PerVideoSubfolder {
+		req.OutputDir = filepath.Join(req.OutputDir, videoSubfolder(req.Title, req.VideoID))
+	}
 	if req.Quality == "" {
 		req.Quality = jobs.QualityBest
 	}
@@ -268,6 +271,9 @@ func (a *App) CancelJob(id string) { a.jobs.Cancel(id) }
 
 // PauseJob preserves partial bytes and suspends a pending or active download.
 func (a *App) PauseJob(id string) error { return a.jobs.Pause(id) }
+
+// PauseAllJobs pauses every job currently safe to suspend.
+func (a *App) PauseAllJobs() int { return a.jobs.PauseAll() }
 
 // ResumeJob returns a paused download to the queue.
 func (a *App) ResumeJob(id string) error { return a.jobs.Resume(id) }
@@ -402,12 +408,16 @@ func (a *App) recordHistory(snap jobs.JobSnapshot) {
 	if snap.AbsolutePath == "" {
 		return
 	}
+	quality := string(snap.Quality)
+	if snap.QualityLabel != "" {
+		quality = snap.QualityLabel
+	}
 	entry := store.HistoryEntry{
 		ID:            snap.ID,
 		VideoID:       snap.VideoID,
 		Title:         snap.Title,
 		Channel:       snap.Channel,
-		Quality:       string(snap.Quality),
+		Quality:       quality,
 		Filename:      snap.Filename,
 		AbsolutePath:  snap.AbsolutePath,
 		SizeBytes:     snap.Bytes,
@@ -420,6 +430,27 @@ func (a *App) recordHistory(snap jobs.JobSnapshot) {
 		return
 	}
 	wailsruntime.EventsEmit(a.ctx, "history:update", a.store.History())
+}
+
+func videoSubfolder(title, videoID string) string {
+	name := strings.Map(func(r rune) rune {
+		if r < 32 || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(title))
+	runes := []rune(strings.Trim(name, " ."))
+	if len(runes) > 72 {
+		runes = runes[:72]
+	}
+	name = strings.Trim(string(runes), " .")
+	if name == "" {
+		name = "Video"
+	}
+	if videoID != "" {
+		name += " [" + videoID + "]"
+	}
+	return name
 }
 
 func expandHome(path string) (string, error) {
