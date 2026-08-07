@@ -14,14 +14,37 @@ A focused desktop downloader built with Go, Wails, and Svelte.
 [![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)](frontend/package.json)
 [![Engine](https://img.shields.io/badge/youtube__dlp-v0.1.0-20232A)](https://github.com/tejasa97/youtube_dlp/releases/tag/v0.1.0)
 
-[Features](#features) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Contributing](CONTRIBUTING.md)
+[Download](#download) · [Features](#features) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
 ![VidStow home screen](docs/assets/vidstow-home.jpeg)
 
 > [!IMPORTANT]
-> VidStow is currently an early-stage, source-built application. The UI intentionally supports public, single-video YouTube URLs; playlists, channels, search, live streams, Shorts, and other sites are not yet exposed.
+> VidStow is early-stage software. The UI intentionally supports public, single-video YouTube URLs; playlists, channels, search, live streams, Shorts, and other sites are not yet exposed. The first public builds are unsigned.
+
+## Download
+
+Grab the latest [GitHub Release](https://github.com/tejasa97/vidstow/releases/latest) once `v0.1.0` is published:
+
+| Platform | Artifact |
+| --- | --- |
+| macOS Apple Silicon | `VidStow-0.1.0-darwin-arm64.zip` |
+| macOS Intel | `VidStow-0.1.0-darwin-amd64.zip` |
+| Windows | `VidStow-0.1.0-windows-amd64.zip` (portable) or `VidStow-0.1.0-windows-amd64-installer.exe` |
+| Linux | `VidStow-0.1.0-linux-amd64.tar.gz` |
+
+Every release also ships `SHA256SUMS`.
+
+### First-run notes
+
+- **FFmpeg** — install FFmpeg and FFprobe, or point VidStow at them in Settings.
+- **macOS (unsigned)** — right-click the app → Open, or remove the quarantine attribute: `xattr -dr com.apple.quarantine /path/to/VidStow.app`.
+- **Windows (unsigned)** — SmartScreen may warn on first launch; choose More info → Run anyway.
+- **Linux** — extract the archive and run `./vidstow`. Keep `ytdlp-js-helper` beside the executable.
+- **JavaScript helper** — release packages include `ytdlp-js-helper` next to the app binary. Do not delete it.
+
+See [docs/RELEASE.md](docs/RELEASE.md) for packaging, signing status, and maintainer instructions.
 
 ## Why VidStow?
 

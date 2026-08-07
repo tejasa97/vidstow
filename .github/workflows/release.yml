@@ -1,0 +1,189 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or overwrite (for example v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.25.12"
+  WAILS_VERSION: "v2.13.0"
+  NODE_VERSION: "20"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: darwin
+            arch: arm64
+            goos: darwin
+            goarch: arm64
+            wails_platform: darwin/arm64
+          - os: macos-15-intel
+            platform: darwin
+            arch: amd64
+            goos: darwin
+            goarch: amd64
+            wails_platform: darwin/amd64
+          - os: windows-latest
+            platform: windows
+            arch: amd64
+            goos: windows
+            goarch: amd64
+            wails_platform: windows/amd64
+          - os: ubuntu-22.04
+            platform: linux
+            arch: amd64
+            goos: linux
+            goarch: amd64
+            wails_platform: linux/amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux webview dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev pkg-config
+
+      - name: Install Wails CLI
+        shell: bash
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install nsis -y
+
+      - name: Build frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          wails build -clean -platform "${{ matrix.wails_platform }}"
+          test -d "build/bin/VidStow.app"
+          test -x "build/bin/VidStow.app/Contents/MacOS/ytdlp-js-helper"
+          "build/bin/VidStow.app/Contents/MacOS/ytdlp-js-helper" --version
+
+      - name: Build Windows app + installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          wails build -clean -platform "${{ matrix.wails_platform }}" -nsis
+          test -f "build/bin/vidstow.exe"
+          test -f "build/bin/ytdlp-js-helper.exe"
+          "./build/bin/ytdlp-js-helper.exe" --version
+          ls -la build/bin
+
+      - name: Build Linux app
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          wails build -clean -platform "${{ matrix.wails_platform }}"
+          test -x "build/bin/vidstow"
+          test -x "build/bin/ytdlp-js-helper"
+          "./build/bin/ytdlp-js-helper" --version
+
+      - name: Package release archives
+        shell: bash
+        env:
+          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          chmod +x scripts/package-release-archives.sh
+          case "${{ matrix.platform }}" in
+            darwin) artifact="build/bin/VidStow.app" ;;
+            windows) artifact="build/bin/vidstow.exe" ;;
+            linux) artifact="build/bin/vidstow" ;;
+          esac
+          ./scripts/package-release-archives.sh \
+            "${VERSION#v}" \
+            "${{ matrix.platform }}" \
+            "${{ matrix.arch }}" \
+            "$artifact"
+          ls -la dist
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vidstow-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/*
+            !dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: vidstow-*
+          merge-multiple: true
+
+      - name: Prepare release directory
+        shell: bash
+        run: |
+          mkdir -p dist
+          find artifacts -maxdepth 2 -type f -print
+          cp -a artifacts/. dist/ 2>/dev/null || true
+          # When merge-multiple is true, files land directly under artifacts/
+          if [ -z "$(ls -A dist 2>/dev/null)" ]; then
+            find artifacts -type f -exec cp {} dist/ \;
+          fi
+          (
+            cd dist
+            LC_ALL=C sha256sum * > SHA256SUMS
+          )
+          ls -la dist
+          test -n "$(ls -A dist)"
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          chmod +x scripts/create-github-release.sh
+          ./scripts/create-github-release.sh "${VERSION}" dist

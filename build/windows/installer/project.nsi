@@ -96,6 +96,10 @@ Section
 
     !insertmacro wails.files
 
+    # Ship the JavaScript helper beside the app executable. The engine looks
+    # for ytdlp-js-helper.exe next to the main binary and does not search PATH.
+    File "/oname=ytdlp-js-helper.exe" "..\..\bin\ytdlp-js-helper.exe"
+
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 

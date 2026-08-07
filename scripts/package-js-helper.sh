@@ -21,20 +21,37 @@ case "$app_path" in
     ;;
 esac
 
+helper_name=ytdlp-js-helper
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    helper_name=ytdlp-js-helper.exe
+    ;;
+esac
+
+# Wails may invoke this script through bash on Windows even when GOOS=windows.
+case "$app_path" in
+  *.exe)
+    helper_name=ytdlp-js-helper.exe
+    ;;
+esac
+
 mkdir -p "$helper_dir"
-helper_path="$helper_dir/ytdlp-js-helper"
+helper_path="$helper_dir/$helper_name"
 temporary_path="$helper_path.tmp.$$"
 trap 'rm -f "$temporary_path"' EXIT HUP INT TERM
 
-printf '%s\n' "package-js-helper: building sibling helper"
-(cd "$repo_dir" && CGO_ENABLED=0 go build -trimpath -o "$temporary_path" github.com/tejasa97/youtube_dlp/cmd/ytdlp-js-helper)
-chmod 755 "$temporary_path"
+printf '%s\n' "package-js-helper: building sibling helper ($helper_name)"
+(
+  cd "$repo_dir"
+  CGO_ENABLED=0 go build -trimpath -o "$temporary_path" github.com/tejasa97/youtube_dlp/cmd/ytdlp-js-helper
+)
+chmod 755 "$temporary_path" 2>/dev/null || true
 mv -f "$temporary_path" "$helper_path"
 
 "$script_dir/verify-js-helper.sh" "$app_path"
 
 if [ "$(uname -s)" = "Darwin" ] && [ -n "$app_bundle" ] && [ -d "$app_bundle" ]; then
-  printf '%s\n' "package-js-helper: re-signing bundle after helper placement"
+  printf '%s\n' "package-js-helper: ad-hoc re-signing bundle after helper placement"
   /usr/bin/codesign --force --deep --sign - "$app_bundle"
   /usr/bin/codesign --verify --deep --strict "$app_bundle"
 fi
