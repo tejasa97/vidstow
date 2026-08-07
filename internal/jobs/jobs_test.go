@@ -173,6 +173,7 @@ func TestHandleEventMapsLifecycleCopy(t *testing.T) {
 
 func TestCancelActiveKeepsFIFOSingleActive(t *testing.T) {
 	manager := New(nil, nil)
+	manager.SetConcurrency(1)
 	started := make(chan engine.Request, 2)
 	release := make(chan struct{})
 	manager.runDownload = func(ctx context.Context, req engine.Request, _ engine.EventHandler) (engine.Result, error) {
@@ -209,6 +210,66 @@ func TestCancelActiveKeepsFIFOSingleActive(t *testing.T) {
 		t.Fatal("next FIFO job did not start after canceled worker exited")
 	}
 	manager.Cancel(second)
+}
+
+func TestDownloadConcurrencyDefaultsToTwoAndClampsToSupportedRange(t *testing.T) {
+	manager := New(nil, nil)
+	if got := manager.Concurrency(); got != 2 {
+		t.Fatalf("default concurrency = %d; want 2", got)
+	}
+	if got := manager.SetConcurrency(0); got != 1 {
+		t.Fatalf("low concurrency clamp = %d; want 1", got)
+	}
+	if got := manager.SetConcurrency(99); got != 10 {
+		t.Fatalf("high concurrency clamp = %d; want 10", got)
+	}
+}
+
+func TestMediaProcessingSchedulerCapsConcurrentFFmpegStagesAtThree(t *testing.T) {
+	manager := New(nil, nil)
+	manager.SetConcurrency(4)
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{}, 4)
+	manager.runDownload = func(ctx context.Context, _ engine.Request, handler engine.EventHandler) (engine.Result, error) {
+		if err := handler(ctx, engine.Event{Kind: engine.EventPostprocessStarting}); err != nil {
+			return engine.Result{}, err
+		}
+		entered <- struct{}{}
+		<-release
+		if err := handler(ctx, engine.Event{Kind: engine.EventPostprocessCompleted}); err != nil {
+			return engine.Result{}, err
+		}
+		return engine.Result{}, nil
+	}
+
+	for index := 0; index < 4; index++ {
+		if _, err := manager.Submit(Request{
+			URL: fmt.Sprintf("https://example.invalid/%d", index), OutputDir: t.TempDir(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := 0; index < 3; index++ {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("one of the first three processing stages did not start")
+		}
+	}
+	select {
+	case <-entered:
+		t.Fatal("fourth processing stage exceeded the hard cap of three")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release <- struct{}{}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("fourth processing stage did not start when a slot was released")
+	}
+	for index := 0; index < 3; index++ {
+		release <- struct{}{}
+	}
 }
 
 func TestDownloadRequestUsesConfiguredFFmpegLocation(t *testing.T) {

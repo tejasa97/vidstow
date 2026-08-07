@@ -38,6 +38,12 @@ const (
 	QualityAudioOnly Quality = "audio"
 )
 
+const (
+	DefaultDownloadConcurrency = 2
+	MaxDownloadConcurrency     = 10
+	MaxProcessingConcurrency   = 3
+)
+
 // AllQualities is the fixed V0 quality list.
 var AllQualities = []Quality{
 	QualityBest, Quality4K, Quality1440p, Quality1080p, Quality720p, QualityAudioOnly,
@@ -177,7 +183,9 @@ type Manager struct {
 	mu             sync.Mutex
 	all            map[string]*jobState
 	order          []string
-	active         string
+	active         map[string]struct{}
+	concurrency    int
+	processing     chan struct{}
 	planCache      map[string]cachedPlans
 }
 
@@ -208,6 +216,9 @@ func New(client *engine.Client, listener Listener) *Manager {
 		listener:    listener,
 		runDownload: defaultDownloadRunner,
 		all:         make(map[string]*jobState),
+		active:      make(map[string]struct{}),
+		concurrency: DefaultDownloadConcurrency,
+		processing:  make(chan struct{}, MaxProcessingConcurrency),
 		planCache:   make(map[string]cachedPlans),
 	}
 	if listener != nil {
@@ -345,7 +356,7 @@ func (m *Manager) Cancel(id string) {
 		m.mu.Unlock()
 		return
 	}
-	if m.active == id {
+	if _, active := m.active[id]; active {
 		if state.cancel != nil {
 			state.cancel()
 		}
@@ -453,16 +464,39 @@ func (m *Manager) Find(id string) (JobSnapshot, bool) {
 func (m *Manager) Active() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.active
+	for id := range m.active {
+		return id
+	}
+	return ""
 }
 
-// maybeStartNextLocked launches the head of the pending queue if no job
-// is currently running. Caller must hold m.mu.
-func (m *Manager) maybeStartNextLocked() {
-	if m.active != "" {
-		return
+// SetConcurrency updates the number of simultaneous downloads. Existing jobs
+// are allowed to finish when the limit is lowered.
+func (m *Manager) SetConcurrency(value int) int {
+	if value < 1 {
+		value = 1
 	}
-	for len(m.order) > 0 {
+	if value > MaxDownloadConcurrency {
+		value = MaxDownloadConcurrency
+	}
+	m.mu.Lock()
+	m.concurrency = value
+	m.maybeStartNextLocked()
+	m.emitQueueLocked()
+	m.mu.Unlock()
+	return value
+}
+
+func (m *Manager) Concurrency() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.concurrency
+}
+
+// maybeStartNextLocked fills every available download slot from the FIFO.
+// Caller must hold m.mu.
+func (m *Manager) maybeStartNextLocked() {
+	for len(m.active) < m.concurrency && len(m.order) > 0 {
 		id := m.order[0]
 		state, ok := m.all[id]
 		if !ok {
@@ -479,11 +513,10 @@ func (m *Manager) maybeStartNextLocked() {
 		state.snap.Status = StatusActive
 		state.snap.StartedAt = time.Now().UTC().Format(time.RFC3339)
 		state.snap.Message = "Preparing"
-		m.active = id
+		m.active[id] = struct{}{}
 		m.order = m.order[1:]
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 		go m.run(state)
-		return
 	}
 }
 
@@ -521,12 +554,28 @@ func (m *Manager) run(state *jobState) {
 	runner := m.runDownload
 	m.mu.Unlock()
 
+	processingHeld := false
 	handler := func(ctx context.Context, ev engine.Event) error {
+		if ev.Kind == engine.EventPostprocessStarting && !processingHeld {
+			select {
+			case m.processing <- struct{}{}:
+				processingHeld = true
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		m.handleEvent(state, ev)
+		if ev.Kind == engine.EventPostprocessCompleted && processingHeld {
+			<-m.processing
+			processingHeld = false
+		}
 		return nil
 	}
 
 	result, err := runner(ctx, req, handler)
+	if processingHeld {
+		<-m.processing
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -567,7 +616,7 @@ func (m *Manager) run(state *jobState) {
 		}
 	}
 	state.snap.CompletedAt = time.Now().UTC().Format(time.RFC3339)
-	m.active = ""
+	delete(m.active, state.snap.ID)
 	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	m.maybeStartNextLocked()
 	m.emitQueueLocked()

@@ -63,6 +63,7 @@ func (a *App) startup(ctx context.Context) {
 	})
 
 	settings := a.store.Settings()
+	a.jobs.SetConcurrency(settings.DownloadConcurrency)
 	a.jobs.SetFFmpegLocation(settings.FFmpegPath)
 	a.setFFmpegStatus(ffmpegdetect.Probe(ctx, settings.FFmpegPath))
 }
@@ -102,10 +103,14 @@ func (a *App) UpdateSettings(next store.Settings) (store.Settings, error) {
 		return store.Settings{}, fmt.Errorf("could not create folder: %w", err)
 	}
 	next.DownloadFolder = expanded
+	if next.DownloadConcurrency < 1 || next.DownloadConcurrency > jobs.MaxDownloadConcurrency {
+		return store.Settings{}, fmt.Errorf("download concurrency must be between 1 and %d", jobs.MaxDownloadConcurrency)
+	}
 	if err := a.store.SetSettings(next); err != nil {
 		return store.Settings{}, err
 	}
 	a.jobs.SetFFmpegLocation(next.FFmpegPath)
+	a.jobs.SetConcurrency(next.DownloadConcurrency)
 	a.setFFmpegStatus(ffmpegdetect.Probe(a.ctx, next.FFmpegPath))
 	wailsruntime.EventsEmit(a.ctx, "settings:update", a.store.Settings())
 	return a.store.Settings(), nil
