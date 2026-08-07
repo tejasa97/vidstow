@@ -14,6 +14,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/tejasa97/vidstow/internal/jobs"
 )
 
 // Settings is the JSON-serialized user settings document.
@@ -47,9 +49,10 @@ type HistoryEntry struct {
 // and writes through to disk on every mutation. The data set is small
 // (settings plus a bounded history) so a single JSON file is fine.
 type State struct {
-	Version  int            `json:"version"`
-	Settings Settings       `json:"settings"`
-	History  []HistoryEntry `json:"history"`
+	Version  int                 `json:"version"`
+	Settings Settings            `json:"settings"`
+	History  []HistoryEntry      `json:"history"`
+	Jobs     []jobs.PersistedJob `json:"jobs,omitempty"`
 }
 
 // Store is the thread-safe owner of the persisted State.
@@ -120,7 +123,25 @@ func defaultState() State {
 			RestoreInterruptedJobs: true,
 		},
 		History: []HistoryEntry{},
+		Jobs:    []jobs.PersistedJob{},
 	}
+}
+
+// LoadJobs returns a defensive copy of the durable non-terminal queue.
+func (s *Store) LoadJobs() ([]jobs.PersistedJob, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]jobs.PersistedJob, len(s.state.Jobs))
+	copy(result, s.state.Jobs)
+	return result, nil
+}
+
+// SaveJobs replaces the durable non-terminal queue atomically.
+func (s *Store) SaveJobs(next []jobs.PersistedJob) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Jobs = append([]jobs.PersistedJob(nil), next...)
+	return s.writeLocked()
 }
 
 func normalizeSettings(settings Settings) Settings {

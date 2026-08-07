@@ -65,6 +65,9 @@ func (a *App) startup(ctx context.Context) {
 	settings := a.store.Settings()
 	a.jobs.SetConcurrency(settings.DownloadConcurrency)
 	a.jobs.SetFFmpegLocation(settings.FFmpegPath)
+	if err := a.jobs.SetPersistence(a.store, settings.RestoreInterruptedJobs); err != nil {
+		wailsruntime.LogErrorf(ctx, "desktop: restore queue: %v", err)
+	}
 	a.setFFmpegStatus(ffmpegdetect.Probe(ctx, settings.FFmpegPath))
 }
 
@@ -74,11 +77,9 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.jobs == nil {
 		return
 	}
-	for _, snap := range a.jobs.List() {
-		if snap.Status == jobs.StatusActive || snap.Status == jobs.StatusPending {
-			a.jobs.Cancel(snap.ID)
-		}
-	}
+	shutdownCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	a.jobs.Shutdown(shutdownCtx)
 	a.jobs.Close()
 }
 
@@ -264,6 +265,12 @@ func (a *App) ListJobs() []jobs.JobSnapshot { return a.jobs.List() }
 
 // CancelJob cancels an active or pending job.
 func (a *App) CancelJob(id string) { a.jobs.Cancel(id) }
+
+// PauseJob preserves partial bytes and suspends a pending or active download.
+func (a *App) PauseJob(id string) error { return a.jobs.Pause(id) }
+
+// ResumeJob returns a paused download to the queue.
+func (a *App) ResumeJob(id string) error { return a.jobs.Resume(id) }
 
 // RetryJob re-queues a failed or canceled job.
 func (a *App) RetryJob(id string) error { return a.jobs.Retry(id) }

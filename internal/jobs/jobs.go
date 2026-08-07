@@ -101,6 +101,7 @@ type Status string
 const (
 	StatusPending  Status = "pending"
 	StatusActive   Status = "active"
+	StatusPaused   Status = "paused"
 	StatusComplete Status = "complete"
 	StatusFailed   Status = "failed"
 	StatusCanceled Status = "canceled"
@@ -136,6 +137,8 @@ type JobSnapshot struct {
 	ApproxBytes     int64           `json:"approxBytes,omitempty"`
 	SizeApproximate bool            `json:"sizeApproximate,omitempty"`
 	RequiresFFmpeg  bool            `json:"requiresFfmpeg,omitempty"`
+	CanPause        bool            `json:"canPause,omitempty"`
+	Processing      bool            `json:"processing,omitempty"`
 	OutputDir       string          `json:"outputDir"`
 	DurationLabel   string          `json:"durationLabel"`
 	Thumbnail       string          `json:"thumbnail"`
@@ -172,6 +175,20 @@ type Event struct {
 	Queue []JobSnapshot `json:"queue"`
 }
 
+// PersistedJob contains the non-terminal state needed to restore a queue.
+// PrivateSelector never crosses the Wails boundary; it is stored only in the
+// app's owner-only state file so a resumed job uses the exact analyzed format.
+type PersistedJob struct {
+	Snapshot        JobSnapshot     `json:"snapshot"`
+	Plan            outputplan.Plan `json:"plan,omitempty"`
+	PrivateSelector string          `json:"privateSelector,omitempty"`
+}
+
+type Persistence interface {
+	LoadJobs() ([]PersistedJob, error)
+	SaveJobs([]PersistedJob) error
+}
+
 // Manager owns the queue and the client used for metadata analysis. Downloads
 // use short-lived clients so each job can attach its own event handler.
 type Manager struct {
@@ -187,6 +204,10 @@ type Manager struct {
 	concurrency    int
 	processing     chan struct{}
 	planCache      map[string]cachedPlans
+	persistence    Persistence
+	persistSignal  chan struct{}
+	persistStop    chan struct{}
+	persistDone    chan struct{}
 }
 
 type cachedPlans struct {
@@ -197,13 +218,14 @@ type cachedPlans struct {
 type downloadRunner func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error)
 
 type jobState struct {
-	snap     JobSnapshot
-	plan     *outputplan.Plan
-	cancel   context.CancelFunc
-	ctx      context.Context
-	done     chan struct{}
-	startBps time.Time
-	startByt int64
+	snap           JobSnapshot
+	plan           *outputplan.Plan
+	cancel         context.CancelFunc
+	ctx            context.Context
+	done           chan struct{}
+	startBps       time.Time
+	startByt       int64
+	pauseRequested bool
 }
 
 // New creates a Manager. listener may be nil for headless tests.
@@ -241,9 +263,143 @@ func newFocusedClient(options ...engine.Option) *engine.Client {
 	return engine.NewClient(provideryoutube.NewComposition(), options...)
 }
 
-// Close releases the analysis client's helper process. In-flight download
-// clients are owned and closed by defaultDownloadRunner.
-func (m *Manager) Close() { m.client.Close() }
+// Close flushes the persisted queue and releases the analysis client.
+func (m *Manager) Close() {
+	m.FlushPersistence()
+	m.mu.Lock()
+	stop, done := m.persistStop, m.persistDone
+	m.persistStop = nil
+	m.mu.Unlock()
+	if stop != nil {
+		close(stop)
+		<-done
+	}
+	m.client.Close()
+}
+
+// SetPersistence attaches durable queue storage and restores prior jobs.
+func (m *Manager) SetPersistence(persistence Persistence, restoreInterrupted bool) error {
+	if persistence == nil {
+		return errors.New("jobs: nil persistence")
+	}
+	stored, err := persistence.LoadJobs()
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.persistence != nil {
+		m.mu.Unlock()
+		return errors.New("jobs: persistence already configured")
+	}
+	m.persistence = persistence
+	m.persistSignal = make(chan struct{}, 1)
+	m.persistStop = make(chan struct{})
+	m.persistDone = make(chan struct{})
+	if restoreInterrupted {
+		m.restoreLocked(stored)
+	}
+	signal, stop, done := m.persistSignal, m.persistStop, m.persistDone
+	m.mu.Unlock()
+	go m.persistLoop(signal, stop, done)
+	if !restoreInterrupted {
+		return persistence.SaveJobs(nil)
+	}
+	m.mu.Lock()
+	m.maybeStartNextLocked()
+	m.emitQueueLocked()
+	m.schedulePersistLocked()
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) restoreLocked(stored []PersistedJob) {
+	for _, persisted := range stored {
+		snap := persisted.Snapshot
+		if snap.ID == "" || snap.URL == "" || snap.OutputDir == "" {
+			continue
+		}
+		switch snap.Status {
+		case StatusActive:
+			snap.Status = StatusPaused
+			snap.Message = "Paused after app restart"
+		case StatusPending, StatusPaused:
+		default:
+			continue
+		}
+		state := &jobState{snap: snap, done: make(chan struct{})}
+		if persisted.PrivateSelector != "" {
+			plan := persisted.Plan
+			plan.Selector = persisted.PrivateSelector
+			state.plan = &plan
+		}
+		m.all[snap.ID] = state
+		if snap.Status == StatusPending {
+			m.order = append(m.order, snap.ID)
+		}
+	}
+}
+
+func (m *Manager) persistLoop(signal <-chan struct{}, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	for {
+		select {
+		case <-signal:
+			timer := time.NewTimer(250 * time.Millisecond)
+			select {
+			case <-timer.C:
+				m.FlushPersistence()
+			case <-stop:
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			}
+		case <-stop:
+			return
+		}
+	}
+}
+
+func (m *Manager) schedulePersistLocked() {
+	if m.persistSignal == nil {
+		return
+	}
+	select {
+	case m.persistSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Manager) persistenceSnapshotLocked() []PersistedJob {
+	result := make([]PersistedJob, 0, len(m.all))
+	for _, state := range m.all {
+		switch state.snap.Status {
+		case StatusPending, StatusActive, StatusPaused:
+		default:
+			continue
+		}
+		persisted := PersistedJob{Snapshot: state.snap}
+		if state.plan != nil {
+			persisted.Plan = *state.plan
+			persisted.PrivateSelector = state.plan.Selector
+		}
+		result = append(result, persisted)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Snapshot.CreatedAt < result[j].Snapshot.CreatedAt
+	})
+	return result
+}
+
+func (m *Manager) FlushPersistence() {
+	m.mu.Lock()
+	persistence := m.persistence
+	jobs := m.persistenceSnapshotLocked()
+	m.mu.Unlock()
+	if persistence != nil {
+		_ = persistence.SaveJobs(jobs)
+	}
+}
 
 func (m *Manager) dispatchEvents() {
 	for event := range m.events {
@@ -357,6 +513,7 @@ func (m *Manager) Cancel(id string) {
 		return
 	}
 	if _, active := m.active[id]; active {
+		state.pauseRequested = false
 		if state.cancel != nil {
 			state.cancel()
 		}
@@ -379,6 +536,101 @@ func (m *Manager) Cancel(id string) {
 		m.emitQueueLocked()
 	}
 	m.mu.Unlock()
+}
+
+// Pause suspends a pending or actively downloading job. Active processing
+// stages cannot be paused safely; their downloaded inputs are retained and
+// the control becomes available again only after processing completes.
+func (m *Manager) Pause(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.all[id]
+	if !ok {
+		return fmt.Errorf("jobs: unknown job %q", id)
+	}
+	switch state.snap.Status {
+	case StatusPending:
+		state.snap.Status = StatusPaused
+		state.snap.Message = "Paused"
+		state.snap.CanPause = false
+		m.removeFromOrderLocked(id)
+		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+		m.emitQueueLocked()
+		return nil
+	case StatusActive:
+		if state.snap.Processing {
+			return errors.New("jobs: pause is unavailable while media is being finalized")
+		}
+		state.pauseRequested = true
+		state.snap.CanPause = false
+		state.snap.Message = "Pausing"
+		if state.cancel != nil {
+			state.cancel()
+		}
+		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+		return nil
+	case StatusPaused:
+		return nil
+	default:
+		return errors.New("jobs: only pending or active jobs can be paused")
+	}
+}
+
+// Resume returns a paused job to the FIFO. The engine's default partial-file
+// behavior resumes byte-range downloads instead of discarding existing data.
+func (m *Manager) Resume(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.all[id]
+	if !ok {
+		return fmt.Errorf("jobs: unknown job %q", id)
+	}
+	if state.snap.Status != StatusPaused {
+		return errors.New("jobs: only paused jobs can be resumed")
+	}
+	state.snap.Status = StatusPending
+	state.snap.Message = "Queued"
+	state.snap.Processing = false
+	state.snap.CanPause = false
+	state.pauseRequested = false
+	state.ctx = nil
+	state.cancel = nil
+	state.done = make(chan struct{})
+	m.order = append(m.order, id)
+	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	m.maybeStartNextLocked()
+	m.emitQueueLocked()
+	return nil
+}
+
+// Shutdown converts running work to paused work, waits briefly for workers to
+// leave their critical sections, and durably records the remaining queue.
+func (m *Manager) Shutdown(ctx context.Context) {
+	m.mu.Lock()
+	done := make([]<-chan struct{}, 0, len(m.active))
+	for id := range m.active {
+		state := m.all[id]
+		if state == nil {
+			continue
+		}
+		state.pauseRequested = true
+		state.snap.CanPause = false
+		state.snap.Message = "Pausing"
+		if state.cancel != nil {
+			state.cancel()
+		}
+		done = append(done, state.done)
+	}
+	m.mu.Unlock()
+	for _, finished := range done {
+		select {
+		case <-finished:
+		case <-ctx.Done():
+			m.FlushPersistence()
+			return
+		}
+	}
+	m.FlushPersistence()
 }
 
 // Retry re-queues a failed or canceled job. It rebuilds the request
@@ -513,6 +765,7 @@ func (m *Manager) maybeStartNextLocked() {
 		state.snap.Status = StatusActive
 		state.snap.StartedAt = time.Now().UTC().Format(time.RFC3339)
 		state.snap.Message = "Preparing"
+		state.snap.CanPause = true
 		m.active[id] = struct{}{}
 		m.order = m.order[1:]
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
@@ -581,9 +834,16 @@ func (m *Manager) run(state *jobState) {
 	defer m.mu.Unlock()
 
 	if state.ctx.Err() != nil {
-		state.snap.Status = StatusCanceled
-		state.snap.Message = "Canceled"
-		state.snap.ErrorReason = "canceled"
+		if state.pauseRequested {
+			state.snap.Status = StatusPaused
+			state.snap.Message = "Paused"
+			state.snap.ErrorReason = ""
+			state.snap.CompletedAt = ""
+		} else {
+			state.snap.Status = StatusCanceled
+			state.snap.Message = "Canceled"
+			state.snap.ErrorReason = "canceled"
+		}
 	} else if err != nil {
 		state.snap.Status = StatusFailed
 		state.snap.Message = humanError(err)
@@ -615,7 +875,11 @@ func (m *Manager) run(state *jobState) {
 			state.snap.Title = state.snap.Filename
 		}
 	}
-	state.snap.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+	state.snap.CanPause = false
+	state.snap.Processing = false
+	if state.snap.Status != StatusPaused {
+		state.snap.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+	}
 	delete(m.active, state.snap.ID)
 	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	m.maybeStartNextLocked()
@@ -674,6 +938,13 @@ func (m *Manager) handleEvent(state *jobState, ev engine.Event) {
 		state.snap.Message = "Finalising"
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	case engine.EventPostprocessStarting, engine.EventPostprocessProgress:
+		state.snap.Processing = true
+		state.snap.CanPause = false
+		state.snap.Message = "Finalising"
+		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	case engine.EventPostprocessCompleted:
+		state.snap.Processing = false
+		state.snap.CanPause = state.snap.Status == StatusActive
 		state.snap.Message = "Finalising"
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	case engine.EventDownloadCancelled:
@@ -691,6 +962,7 @@ func (m *Manager) handleEvent(state *jobState, ev engine.Event) {
 // m.mu. The bounded buffer absorbs normal progress bursts; backpressure is
 // preferable to silently dropping the latest queue state.
 func (m *Manager) emitLocked(ev Event) {
+	m.schedulePersistLocked()
 	if m.listener == nil {
 		return
 	}
@@ -700,6 +972,7 @@ func (m *Manager) emitLocked(ev Event) {
 // emitQueueLocked emits a queue:update event with the current display
 // list. Caller must hold m.mu.
 func (m *Manager) emitQueueLocked() {
+	m.schedulePersistLocked()
 	if m.listener == nil {
 		return
 	}
@@ -740,14 +1013,16 @@ func statusRank(s Status) int {
 	switch s {
 	case StatusActive:
 		return 0
-	case StatusPending:
+	case StatusPaused:
 		return 1
-	case StatusFailed:
+	case StatusPending:
 		return 2
-	case StatusCanceled:
+	case StatusFailed:
 		return 3
-	case StatusComplete:
+	case StatusCanceled:
 		return 4
+	case StatusComplete:
+		return 5
 	}
 	return 5
 }
