@@ -10,6 +10,7 @@
   import Queue from './pages/Queue.svelte';
   import Downloads from './pages/Downloads.svelte';
   import Settings from './pages/Settings.svelte';
+  import About from './pages/About.svelte';
 
   let unsubAll: Array<() => void> = [];
 
@@ -56,7 +57,7 @@
     });
   }
 
-  function navigate(target: 'home' | 'queue' | 'downloads' | 'settings') {
+  function navigate(target: 'home' | 'queue' | 'downloads' | 'settings' | 'about') {
     route.set(target);
   }
 </script>
@@ -73,6 +74,8 @@
       <Downloads />
     {:else if $route === 'settings'}
       <Settings />
+    {:else if $route === 'about'}
+      <About />
     {/if}
   </div>
 </main>
@@ -87,7 +90,7 @@
     display: flex;
     flex-direction: column;
     background:
-      radial-gradient(800px 400px at 0% 0%, rgba(59,130,246,0.05), transparent 60%),
+      radial-gradient(900px 420px at 0% 0%, rgba(47,111,237,0.045), transparent 60%),
       var(--surface-bg);
   }
   .scroll {
