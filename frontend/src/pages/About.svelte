@@ -7,7 +7,7 @@
     tagline: 'A tidy, single-video YouTube downloader for the desktop.',
     description:
       'VidStow is an open-source desktop app that downloads public YouTube videos and audio. ' +
-      'Analyze a URL, pick a quality preset, and let the queue run — no account or tracking required.',
+      'Analyze a URL, pick a complete output, and let the queue run — no account or tracking required.',
     license: 'Apache-2.0',
     source: 'https://github.com/tejasa97/vidstow',
     docs: 'https://github.com/tejasa97/vidstow#readme',
