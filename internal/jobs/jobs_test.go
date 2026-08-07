@@ -402,6 +402,9 @@ func TestDownloadRequestUsesConfiguredFFmpegLocation(t *testing.T) {
 		if req.Filesystem.FfmpegLocation != configured {
 			t.Fatalf("ffmpeg location = %q; want %q", req.Filesystem.FfmpegLocation, configured)
 		}
+		if !req.Filesystem.PreservePartialOnCancel {
+			t.Fatal("desktop requests must preserve resumable partial state")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("download runner did not receive a request")
 	}

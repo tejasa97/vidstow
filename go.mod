@@ -4,7 +4,7 @@ go 1.25.12
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/tejasa97/youtube_dlp v0.1.0
+	github.com/tejasa97/youtube_dlp v0.1.1-0.20260807091708-09a8354be2be
 	github.com/wailsapp/wails/v2 v2.13.0
 )
 

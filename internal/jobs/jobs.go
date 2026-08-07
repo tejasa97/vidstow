@@ -785,7 +785,8 @@ func (m *Manager) run(state *jobState) {
 		Overwrite:      true,
 		Playlist:       engine.PlaylistOptions{Disabled: true},
 		Filesystem: engine.FilesystemOptions{
-			FfmpegLocation: m.ffmpegLocation,
+			FfmpegLocation:          m.ffmpegLocation,
+			PreservePartialOnCancel: true,
 		},
 	}
 	if state.plan != nil {
