@@ -14,14 +14,20 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/tejasa97/vidstow/internal/jobs"
 )
 
 // Settings is the JSON-serialized user settings document.
 type Settings struct {
-	DownloadFolder string `json:"downloadFolder"`
-	FFmpegPath     string `json:"ffmpegPath"`
-	WindowWidth    int    `json:"windowWidth"`
-	WindowHeight   int    `json:"windowHeight"`
+	DownloadFolder         string `json:"downloadFolder"`
+	FFmpegPath             string `json:"ffmpegPath"`
+	WindowWidth            int    `json:"windowWidth"`
+	WindowHeight           int    `json:"windowHeight"`
+	DownloadConcurrency    int    `json:"downloadConcurrency"`
+	PerVideoSubfolder      bool   `json:"perVideoSubfolder"`
+	ConfirmBeforeDownload  bool   `json:"confirmBeforeDownload"`
+	RestoreInterruptedJobs bool   `json:"restoreInterruptedJobs"`
 }
 
 // HistoryEntry is one completed download shown in the Downloads page.
@@ -43,8 +49,10 @@ type HistoryEntry struct {
 // and writes through to disk on every mutation. The data set is small
 // (settings plus a bounded history) so a single JSON file is fine.
 type State struct {
-	Settings Settings       `json:"settings"`
-	History  []HistoryEntry `json:"history"`
+	Version  int                 `json:"version"`
+	Settings Settings            `json:"settings"`
+	History  []HistoryEntry      `json:"history"`
+	Jobs     []jobs.PersistedJob `json:"jobs,omitempty"`
 }
 
 // Store is the thread-safe owner of the persisted State.
@@ -92,18 +100,68 @@ func Open(path string) (*Store, error) {
 			}
 		}
 	}
+	if s.state.Version == 0 {
+		// Version 0 predates these opt-out settings, so missing JSON booleans
+		// must migrate to the product defaults rather than false.
+		s.state.Settings.PerVideoSubfolder = true
+		s.state.Settings.RestoreInterruptedJobs = true
+		s.state.Version = 1
+	}
+	s.state.Settings = normalizeSettings(s.state.Settings)
 	return s, nil
 }
 
 func defaultState() State {
 	return State{
+		Version: 1,
 		Settings: Settings{
-			DownloadFolder: defaultDownloadDir(),
-			WindowWidth:    1180,
-			WindowHeight:   760,
+			DownloadFolder:         defaultDownloadDir(),
+			WindowWidth:            1180,
+			WindowHeight:           760,
+			DownloadConcurrency:    2,
+			PerVideoSubfolder:      true,
+			RestoreInterruptedJobs: true,
 		},
 		History: []HistoryEntry{},
+		Jobs:    []jobs.PersistedJob{},
 	}
+}
+
+// LoadJobs returns a defensive copy of the durable non-terminal queue.
+func (s *Store) LoadJobs() ([]jobs.PersistedJob, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]jobs.PersistedJob, len(s.state.Jobs))
+	copy(result, s.state.Jobs)
+	return result, nil
+}
+
+// SaveJobs replaces the durable non-terminal queue atomically.
+func (s *Store) SaveJobs(next []jobs.PersistedJob) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Jobs = append([]jobs.PersistedJob(nil), next...)
+	return s.writeLocked()
+}
+
+func normalizeSettings(settings Settings) Settings {
+	defaults := defaultState().Settings
+	if settings.DownloadFolder == "" {
+		settings.DownloadFolder = defaults.DownloadFolder
+	}
+	if settings.WindowWidth <= 0 {
+		settings.WindowWidth = defaults.WindowWidth
+	}
+	if settings.WindowHeight <= 0 {
+		settings.WindowHeight = defaults.WindowHeight
+	}
+	if settings.DownloadConcurrency <= 0 {
+		settings.DownloadConcurrency = defaults.DownloadConcurrency
+	}
+	if settings.DownloadConcurrency > 10 {
+		settings.DownloadConcurrency = 10
+	}
+	return settings
 }
 
 // DefaultPath returns the per-user JSON file path used when no explicit
@@ -134,7 +192,7 @@ func (s *Store) Settings() Settings {
 func (s *Store) SetSettings(next Settings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state.Settings = next
+	s.state.Settings = normalizeSettings(next)
 	return s.writeLocked()
 }
 

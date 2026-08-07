@@ -41,3 +41,13 @@ func TestFriendlyAnalyzeErrorOtherUnsupportedIsUnchanged(t *testing.T) {
 		t.Fatalf("friendlyAnalyzeError() = %q; want ordinary unsupported message", got)
 	}
 }
+
+func TestVideoSubfolderIsPortableAndBounded(t *testing.T) {
+	got := videoSubfolder(`  A/B: "Demo"? *Video*  `, "abc123")
+	if got != `AB Demo Video [abc123]` {
+		t.Fatalf("videoSubfolder() = %q", got)
+	}
+	if got := videoSubfolder("...", "abc123"); got != "Video [abc123]" {
+		t.Fatalf("empty videoSubfolder() = %q", got)
+	}
+}

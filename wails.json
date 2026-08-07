@@ -6,8 +6,12 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
+  "preBuildHooks": {
+    "windows/*": "go build -trimpath -o ytdlp-js-helper.exe github.com/tejasa97/youtube_dlp/cmd/ytdlp-js-helper"
+  },
   "postBuildHooks": {
-    "darwin/*": "../../scripts/package-js-helper.sh ${bin}"
+    "darwin/*": "../../scripts/package-js-helper.sh ${bin}",
+    "linux/*": "go build -trimpath -o ytdlp-js-helper github.com/tejasa97/youtube_dlp/cmd/ytdlp-js-helper"
   },
   "author": {
     "name": "VidStow contributors",
@@ -16,6 +20,7 @@
   "info": {
     "productName": "VidStow",
     "productVersion": "0.1.0",
+    "companyName": "VidStow",
     "comments": "Single-video YouTube downloader powered by youtube_dlp",
     "copyright": "Apache-2.0"
   }

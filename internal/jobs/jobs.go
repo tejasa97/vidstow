@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/youtube_dlp/engine"
 	provideryoutube "github.com/tejasa97/youtube_dlp/providers/youtube"
 )
@@ -35,6 +36,12 @@ const (
 	Quality1080p     Quality = "1080p"
 	Quality720p      Quality = "720p"
 	QualityAudioOnly Quality = "audio"
+)
+
+const (
+	DefaultDownloadConcurrency = 2
+	MaxDownloadConcurrency     = 10
+	MaxProcessingConcurrency   = 3
 )
 
 // AllQualities is the fixed V0 quality list.
@@ -94,6 +101,7 @@ type Status string
 const (
 	StatusPending  Status = "pending"
 	StatusActive   Status = "active"
+	StatusPaused   Status = "paused"
 	StatusComplete Status = "complete"
 	StatusFailed   Status = "failed"
 	StatusCanceled Status = "canceled"
@@ -106,6 +114,7 @@ type Request struct {
 	Title     string  `json:"title"`
 	Channel   string  `json:"channel"`
 	Quality   Quality `json:"quality"`
+	PlanID    string  `json:"planId"`
 	OutputDir string  `json:"outputDir"`
 	Duration  string  `json:"duration"`
 	Thumbnail string  `json:"thumbnail"`
@@ -113,29 +122,39 @@ type Request struct {
 
 // JobSnapshot is the immutable view of a job exposed to the UI.
 type JobSnapshot struct {
-	ID            string  `json:"id"`
-	URL           string  `json:"url"`
-	VideoID       string  `json:"videoID"`
-	Title         string  `json:"title"`
-	Channel       string  `json:"channel"`
-	Quality       Quality `json:"quality"`
-	QualityLabel  string  `json:"qualityLabel"`
-	OutputDir     string  `json:"outputDir"`
-	DurationLabel string  `json:"durationLabel"`
-	Thumbnail     string  `json:"thumbnail"`
-	Status        Status  `json:"status"`
-	CreatedAt     string  `json:"createdAt"`
-	StartedAt     string  `json:"startedAt,omitempty"`
-	CompletedAt   string  `json:"completedAt,omitempty"`
-	Bytes         int64   `json:"bytes"`
-	Total         int64   `json:"total"`
-	Progress      float64 `json:"progress"`
-	SpeedBps      float64 `json:"speedBps"`
-	ETASeconds    float64 `json:"etaSeconds"`
-	Filename      string  `json:"filename"`
-	AbsolutePath  string  `json:"absolutePath"`
-	Message       string  `json:"message"`
-	ErrorReason   string  `json:"errorReason,omitempty"`
+	ID              string          `json:"id"`
+	URL             string          `json:"url"`
+	VideoID         string          `json:"videoID"`
+	Title           string          `json:"title"`
+	Channel         string          `json:"channel"`
+	Quality         Quality         `json:"quality"`
+	QualityLabel    string          `json:"qualityLabel"`
+	PlanID          string          `json:"planId,omitempty"`
+	OutputKind      outputplan.Kind `json:"outputKind,omitempty"`
+	Container       string          `json:"container,omitempty"`
+	VideoCodec      string          `json:"videoCodec,omitempty"`
+	AudioCodec      string          `json:"audioCodec,omitempty"`
+	ApproxBytes     int64           `json:"approxBytes,omitempty"`
+	SizeApproximate bool            `json:"sizeApproximate,omitempty"`
+	RequiresFFmpeg  bool            `json:"requiresFfmpeg,omitempty"`
+	CanPause        bool            `json:"canPause,omitempty"`
+	Processing      bool            `json:"processing,omitempty"`
+	OutputDir       string          `json:"outputDir"`
+	DurationLabel   string          `json:"durationLabel"`
+	Thumbnail       string          `json:"thumbnail"`
+	Status          Status          `json:"status"`
+	CreatedAt       string          `json:"createdAt"`
+	StartedAt       string          `json:"startedAt,omitempty"`
+	CompletedAt     string          `json:"completedAt,omitempty"`
+	Bytes           int64           `json:"bytes"`
+	Total           int64           `json:"total"`
+	Progress        float64         `json:"progress"`
+	SpeedBps        float64         `json:"speedBps"`
+	ETASeconds      float64         `json:"etaSeconds"`
+	Filename        string          `json:"filename"`
+	AbsolutePath    string          `json:"absolutePath"`
+	Message         string          `json:"message"`
+	ErrorReason     string          `json:"errorReason,omitempty"`
 }
 
 // Listener receives lifecycle events. The queue preserves event order through
@@ -156,6 +175,20 @@ type Event struct {
 	Queue []JobSnapshot `json:"queue"`
 }
 
+// PersistedJob contains the non-terminal state needed to restore a queue.
+// PrivateSelector never crosses the Wails boundary; it is stored only in the
+// app's owner-only state file so a resumed job uses the exact analyzed format.
+type PersistedJob struct {
+	Snapshot        JobSnapshot     `json:"snapshot"`
+	Plan            outputplan.Plan `json:"plan,omitempty"`
+	PrivateSelector string          `json:"privateSelector,omitempty"`
+}
+
+type Persistence interface {
+	LoadJobs() ([]PersistedJob, error)
+	SaveJobs([]PersistedJob) error
+}
+
 // Manager owns the queue and the client used for metadata analysis. Downloads
 // use short-lived clients so each job can attach its own event handler.
 type Manager struct {
@@ -167,18 +200,32 @@ type Manager struct {
 	mu             sync.Mutex
 	all            map[string]*jobState
 	order          []string
-	active         string
+	active         map[string]struct{}
+	concurrency    int
+	processing     chan struct{}
+	planCache      map[string]cachedPlans
+	persistence    Persistence
+	persistSignal  chan struct{}
+	persistStop    chan struct{}
+	persistDone    chan struct{}
+}
+
+type cachedPlans struct {
+	plans     []outputplan.Plan
+	expiresAt time.Time
 }
 
 type downloadRunner func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error)
 
 type jobState struct {
-	snap     JobSnapshot
-	cancel   context.CancelFunc
-	ctx      context.Context
-	done     chan struct{}
-	startBps time.Time
-	startByt int64
+	snap           JobSnapshot
+	plan           *outputplan.Plan
+	cancel         context.CancelFunc
+	ctx            context.Context
+	done           chan struct{}
+	startBps       time.Time
+	startByt       int64
+	pauseRequested bool
 }
 
 // New creates a Manager. listener may be nil for headless tests.
@@ -191,6 +238,10 @@ func New(client *engine.Client, listener Listener) *Manager {
 		listener:    listener,
 		runDownload: defaultDownloadRunner,
 		all:         make(map[string]*jobState),
+		active:      make(map[string]struct{}),
+		concurrency: DefaultDownloadConcurrency,
+		processing:  make(chan struct{}, MaxProcessingConcurrency),
+		planCache:   make(map[string]cachedPlans),
 	}
 	if listener != nil {
 		manager.events = make(chan Event, 256)
@@ -212,9 +263,143 @@ func newFocusedClient(options ...engine.Option) *engine.Client {
 	return engine.NewClient(provideryoutube.NewComposition(), options...)
 }
 
-// Close releases the analysis client's helper process. In-flight download
-// clients are owned and closed by defaultDownloadRunner.
-func (m *Manager) Close() { m.client.Close() }
+// Close flushes the persisted queue and releases the analysis client.
+func (m *Manager) Close() {
+	m.FlushPersistence()
+	m.mu.Lock()
+	stop, done := m.persistStop, m.persistDone
+	m.persistStop = nil
+	m.mu.Unlock()
+	if stop != nil {
+		close(stop)
+		<-done
+	}
+	m.client.Close()
+}
+
+// SetPersistence attaches durable queue storage and restores prior jobs.
+func (m *Manager) SetPersistence(persistence Persistence, restoreInterrupted bool) error {
+	if persistence == nil {
+		return errors.New("jobs: nil persistence")
+	}
+	stored, err := persistence.LoadJobs()
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.persistence != nil {
+		m.mu.Unlock()
+		return errors.New("jobs: persistence already configured")
+	}
+	m.persistence = persistence
+	m.persistSignal = make(chan struct{}, 1)
+	m.persistStop = make(chan struct{})
+	m.persistDone = make(chan struct{})
+	if restoreInterrupted {
+		m.restoreLocked(stored)
+	}
+	signal, stop, done := m.persistSignal, m.persistStop, m.persistDone
+	m.mu.Unlock()
+	go m.persistLoop(signal, stop, done)
+	if !restoreInterrupted {
+		return persistence.SaveJobs(nil)
+	}
+	m.mu.Lock()
+	m.maybeStartNextLocked()
+	m.emitQueueLocked()
+	m.schedulePersistLocked()
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) restoreLocked(stored []PersistedJob) {
+	for _, persisted := range stored {
+		snap := persisted.Snapshot
+		if snap.ID == "" || snap.URL == "" || snap.OutputDir == "" {
+			continue
+		}
+		switch snap.Status {
+		case StatusActive:
+			snap.Status = StatusPaused
+			snap.Message = "Paused after app restart"
+		case StatusPending, StatusPaused:
+		default:
+			continue
+		}
+		state := &jobState{snap: snap, done: make(chan struct{})}
+		if persisted.PrivateSelector != "" {
+			plan := persisted.Plan
+			plan.Selector = persisted.PrivateSelector
+			state.plan = &plan
+		}
+		m.all[snap.ID] = state
+		if snap.Status == StatusPending {
+			m.order = append(m.order, snap.ID)
+		}
+	}
+}
+
+func (m *Manager) persistLoop(signal <-chan struct{}, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	for {
+		select {
+		case <-signal:
+			timer := time.NewTimer(250 * time.Millisecond)
+			select {
+			case <-timer.C:
+				m.FlushPersistence()
+			case <-stop:
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			}
+		case <-stop:
+			return
+		}
+	}
+}
+
+func (m *Manager) schedulePersistLocked() {
+	if m.persistSignal == nil {
+		return
+	}
+	select {
+	case m.persistSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Manager) persistenceSnapshotLocked() []PersistedJob {
+	result := make([]PersistedJob, 0, len(m.all))
+	for _, state := range m.all {
+		switch state.snap.Status {
+		case StatusPending, StatusActive, StatusPaused:
+		default:
+			continue
+		}
+		persisted := PersistedJob{Snapshot: state.snap}
+		if state.plan != nil {
+			persisted.Plan = *state.plan
+			persisted.PrivateSelector = state.plan.Selector
+		}
+		result = append(result, persisted)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Snapshot.CreatedAt < result[j].Snapshot.CreatedAt
+	})
+	return result
+}
+
+func (m *Manager) FlushPersistence() {
+	m.mu.Lock()
+	persistence := m.persistence
+	jobs := m.persistenceSnapshotLocked()
+	m.mu.Unlock()
+	if persistence != nil {
+		_ = persistence.SaveJobs(jobs)
+	}
+}
 
 func (m *Manager) dispatchEvents() {
 	for event := range m.events {
@@ -243,10 +428,17 @@ func (m *Manager) Submit(req Request) (string, error) {
 	if req.URL == "" {
 		return "", errors.New("jobs: empty url")
 	}
-	if req.Quality == "" {
+	var selectedPlan *outputplan.Plan
+	if req.PlanID != "" {
+		plan, err := m.ResolvePlan(req.VideoID, req.PlanID)
+		if err != nil {
+			return "", err
+		}
+		selectedPlan = &plan
+	} else if req.Quality == "" {
 		req.Quality = QualityBest
 	}
-	if !isKnownQuality(req.Quality) {
+	if selectedPlan == nil && !isKnownQuality(req.Quality) {
 		return "", fmt.Errorf("jobs: unsupported quality %q", req.Quality)
 	}
 	if req.OutputDir == "" {
@@ -272,7 +464,19 @@ func (m *Manager) Submit(req Request) (string, error) {
 			Status:        StatusPending,
 			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 		},
+		plan: selectedPlan,
 		done: make(chan struct{}),
+	}
+	if selectedPlan != nil {
+		state.snap.PlanID = selectedPlan.ID
+		state.snap.QualityLabel = selectedPlan.Label
+		state.snap.OutputKind = selectedPlan.Kind
+		state.snap.Container = selectedPlan.Container
+		state.snap.VideoCodec = selectedPlan.VideoCodec
+		state.snap.AudioCodec = selectedPlan.AudioCodec
+		state.snap.ApproxBytes = selectedPlan.ApproxBytes
+		state.snap.SizeApproximate = selectedPlan.SizeIsApproximate
+		state.snap.RequiresFFmpeg = selectedPlan.RequiresFFmpeg
 	}
 
 	m.mu.Lock()
@@ -308,7 +512,8 @@ func (m *Manager) Cancel(id string) {
 		m.mu.Unlock()
 		return
 	}
-	if m.active == id {
+	if _, active := m.active[id]; active {
+		state.pauseRequested = false
 		if state.cancel != nil {
 			state.cancel()
 		}
@@ -331,6 +536,121 @@ func (m *Manager) Cancel(id string) {
 		m.emitQueueLocked()
 	}
 	m.mu.Unlock()
+}
+
+// Pause suspends a pending or actively downloading job. Active processing
+// stages cannot be paused safely; their downloaded inputs are retained and
+// the control becomes available again only after processing completes.
+func (m *Manager) Pause(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.all[id]
+	if !ok {
+		return fmt.Errorf("jobs: unknown job %q", id)
+	}
+	switch state.snap.Status {
+	case StatusPending:
+		state.snap.Status = StatusPaused
+		state.snap.Message = "Paused"
+		state.snap.CanPause = false
+		m.removeFromOrderLocked(id)
+		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+		m.emitQueueLocked()
+		return nil
+	case StatusActive:
+		if state.snap.Processing {
+			return errors.New("jobs: pause is unavailable while media is being finalized")
+		}
+		state.pauseRequested = true
+		state.snap.CanPause = false
+		state.snap.Message = "Pausing"
+		if state.cancel != nil {
+			state.cancel()
+		}
+		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+		return nil
+	case StatusPaused:
+		return nil
+	default:
+		return errors.New("jobs: only pending or active jobs can be paused")
+	}
+}
+
+// PauseAll pauses every pending job and every active job not currently in a
+// media-processing critical section. It returns the number accepted.
+func (m *Manager) PauseAll() int {
+	m.mu.Lock()
+	ids := make([]string, 0, len(m.all))
+	for id, state := range m.all {
+		if state.snap.Status == StatusPending || (state.snap.Status == StatusActive && !state.snap.Processing) {
+			ids = append(ids, id)
+		}
+	}
+	m.mu.Unlock()
+	paused := 0
+	for _, id := range ids {
+		if m.Pause(id) == nil {
+			paused++
+		}
+	}
+	return paused
+}
+
+// Resume returns a paused job to the FIFO. The engine's default partial-file
+// behavior resumes byte-range downloads instead of discarding existing data.
+func (m *Manager) Resume(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.all[id]
+	if !ok {
+		return fmt.Errorf("jobs: unknown job %q", id)
+	}
+	if state.snap.Status != StatusPaused {
+		return errors.New("jobs: only paused jobs can be resumed")
+	}
+	state.snap.Status = StatusPending
+	state.snap.Message = "Queued"
+	state.snap.Processing = false
+	state.snap.CanPause = false
+	state.pauseRequested = false
+	state.ctx = nil
+	state.cancel = nil
+	state.done = make(chan struct{})
+	m.order = append(m.order, id)
+	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	m.maybeStartNextLocked()
+	m.emitQueueLocked()
+	return nil
+}
+
+// Shutdown converts running work to paused work, waits briefly for workers to
+// leave their critical sections, and durably records the remaining queue.
+func (m *Manager) Shutdown(ctx context.Context) {
+	m.mu.Lock()
+	done := make([]<-chan struct{}, 0, len(m.active))
+	for id := range m.active {
+		state := m.all[id]
+		if state == nil {
+			continue
+		}
+		state.pauseRequested = true
+		state.snap.CanPause = false
+		state.snap.Message = "Pausing"
+		if state.cancel != nil {
+			state.cancel()
+		}
+		done = append(done, state.done)
+	}
+	m.mu.Unlock()
+	for _, finished := range done {
+		select {
+		case <-finished:
+		case <-ctx.Done():
+			m.FlushPersistence()
+			return
+		}
+	}
+	m.FlushPersistence()
 }
 
 // Retry re-queues a failed or canceled job. It rebuilds the request
@@ -416,16 +736,39 @@ func (m *Manager) Find(id string) (JobSnapshot, bool) {
 func (m *Manager) Active() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.active
+	for id := range m.active {
+		return id
+	}
+	return ""
 }
 
-// maybeStartNextLocked launches the head of the pending queue if no job
-// is currently running. Caller must hold m.mu.
-func (m *Manager) maybeStartNextLocked() {
-	if m.active != "" {
-		return
+// SetConcurrency updates the number of simultaneous downloads. Existing jobs
+// are allowed to finish when the limit is lowered.
+func (m *Manager) SetConcurrency(value int) int {
+	if value < 1 {
+		value = 1
 	}
-	for len(m.order) > 0 {
+	if value > MaxDownloadConcurrency {
+		value = MaxDownloadConcurrency
+	}
+	m.mu.Lock()
+	m.concurrency = value
+	m.maybeStartNextLocked()
+	m.emitQueueLocked()
+	m.mu.Unlock()
+	return value
+}
+
+func (m *Manager) Concurrency() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.concurrency
+}
+
+// maybeStartNextLocked fills every available download slot from the FIFO.
+// Caller must hold m.mu.
+func (m *Manager) maybeStartNextLocked() {
+	for len(m.active) < m.concurrency && len(m.order) > 0 {
 		id := m.order[0]
 		state, ok := m.all[id]
 		if !ok {
@@ -442,11 +785,11 @@ func (m *Manager) maybeStartNextLocked() {
 		state.snap.Status = StatusActive
 		state.snap.StartedAt = time.Now().UTC().Format(time.RFC3339)
 		state.snap.Message = "Preparing"
-		m.active = id
+		state.snap.CanPause = true
+		m.active[id] = struct{}{}
 		m.order = m.order[1:]
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 		go m.run(state)
-		return
 	}
 }
 
@@ -462,27 +805,66 @@ func (m *Manager) run(state *jobState) {
 		Overwrite:      true,
 		Playlist:       engine.PlaylistOptions{Disabled: true},
 		Filesystem: engine.FilesystemOptions{
-			FfmpegLocation: m.ffmpegLocation,
+			FfmpegLocation:          m.ffmpegLocation,
+			PreservePartialOnCancel: true,
 		},
+	}
+	if state.plan != nil {
+		req.Format = state.plan.Selector
+		req.OutputTemplate = fmt.Sprintf("%%(title)s [%%(id)s] [%s].%%(ext)s", state.plan.Label)
+		if state.plan.Kind == outputplan.KindVideo {
+			req.MergeOutputFormat = strings.ToLower(state.plan.Container)
+		}
+		if state.plan.Container == "MP3" {
+			req.Postprocessors = []engine.Postprocessor{{
+				ExtractAudio: &engine.ExtractAudioPostprocessor{
+					Codec:   "mp3",
+					Bitrate: fmt.Sprintf("%dk", state.plan.AudioBitrateKbps),
+				},
+			}}
+		}
 	}
 	ctx := state.ctx
 	runner := m.runDownload
 	m.mu.Unlock()
 
+	processingHeld := false
 	handler := func(ctx context.Context, ev engine.Event) error {
+		if ev.Kind == engine.EventPostprocessStarting && !processingHeld {
+			select {
+			case m.processing <- struct{}{}:
+				processingHeld = true
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		m.handleEvent(state, ev)
+		if ev.Kind == engine.EventPostprocessCompleted && processingHeld {
+			<-m.processing
+			processingHeld = false
+		}
 		return nil
 	}
 
 	result, err := runner(ctx, req, handler)
+	if processingHeld {
+		<-m.processing
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if state.ctx.Err() != nil {
-		state.snap.Status = StatusCanceled
-		state.snap.Message = "Canceled"
-		state.snap.ErrorReason = "canceled"
+		if state.pauseRequested {
+			state.snap.Status = StatusPaused
+			state.snap.Message = "Paused"
+			state.snap.ErrorReason = ""
+			state.snap.CompletedAt = ""
+		} else {
+			state.snap.Status = StatusCanceled
+			state.snap.Message = "Canceled"
+			state.snap.ErrorReason = "canceled"
+		}
 	} else if err != nil {
 		state.snap.Status = StatusFailed
 		state.snap.Message = humanError(err)
@@ -514,8 +896,12 @@ func (m *Manager) run(state *jobState) {
 			state.snap.Title = state.snap.Filename
 		}
 	}
-	state.snap.CompletedAt = time.Now().UTC().Format(time.RFC3339)
-	m.active = ""
+	state.snap.CanPause = false
+	state.snap.Processing = false
+	if state.snap.Status != StatusPaused {
+		state.snap.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	delete(m.active, state.snap.ID)
 	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	m.maybeStartNextLocked()
 	m.emitQueueLocked()
@@ -573,6 +959,13 @@ func (m *Manager) handleEvent(state *jobState, ev engine.Event) {
 		state.snap.Message = "Finalising"
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	case engine.EventPostprocessStarting, engine.EventPostprocessProgress:
+		state.snap.Processing = true
+		state.snap.CanPause = false
+		state.snap.Message = "Finalising"
+		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	case engine.EventPostprocessCompleted:
+		state.snap.Processing = false
+		state.snap.CanPause = state.snap.Status == StatusActive
 		state.snap.Message = "Finalising"
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	case engine.EventDownloadCancelled:
@@ -590,6 +983,7 @@ func (m *Manager) handleEvent(state *jobState, ev engine.Event) {
 // m.mu. The bounded buffer absorbs normal progress bursts; backpressure is
 // preferable to silently dropping the latest queue state.
 func (m *Manager) emitLocked(ev Event) {
+	m.schedulePersistLocked()
 	if m.listener == nil {
 		return
 	}
@@ -599,6 +993,7 @@ func (m *Manager) emitLocked(ev Event) {
 // emitQueueLocked emits a queue:update event with the current display
 // list. Caller must hold m.mu.
 func (m *Manager) emitQueueLocked() {
+	m.schedulePersistLocked()
 	if m.listener == nil {
 		return
 	}
@@ -639,14 +1034,16 @@ func statusRank(s Status) int {
 	switch s {
 	case StatusActive:
 		return 0
-	case StatusPending:
+	case StatusPaused:
 		return 1
-	case StatusFailed:
+	case StatusPending:
 		return 2
-	case StatusCanceled:
+	case StatusFailed:
 		return 3
-	case StatusComplete:
+	case StatusCanceled:
 		return 4
+	case StatusComplete:
+		return 5
 	}
 	return 5
 }
@@ -737,12 +1134,17 @@ func isKnownQuality(quality Quality) bool {
 
 // InfoSummary is the metadata displayed on the Home page after analyse.
 type InfoSummary struct {
-	Title     string `json:"title"`
-	Channel   string `json:"channel"`
-	Duration  string `json:"duration"`
-	Thumbnail string `json:"thumbnail"`
-	VideoID   string `json:"videoId"`
-	URL       string `json:"url"`
+	Title           string            `json:"title"`
+	Channel         string            `json:"channel"`
+	Duration        string            `json:"duration"`
+	DurationSeconds int64             `json:"durationSeconds"`
+	Thumbnail       string            `json:"thumbnail"`
+	VideoID         string            `json:"videoId"`
+	URL             string            `json:"url"`
+	ViewCount       int64             `json:"viewCount"`
+	UploadDate      string            `json:"uploadDate"`
+	Description     string            `json:"description"`
+	Plans           []outputplan.Plan `json:"plans"`
 }
 
 // Analyze calls engine.Run with Simulate=true to extract metadata for
@@ -764,9 +1166,22 @@ func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, erro
 	if err != nil {
 		return InfoSummary{}, err
 	}
+	summary, privatePlans, err := summarizeAnalysis(result.InfoJSON, rawURL)
+	if err != nil {
+		return InfoSummary{}, err
+	}
+	if summary.VideoID != "" && len(privatePlans) > 0 {
+		m.cachePlans(summary.VideoID, privatePlans)
+	}
+	return summary, nil
+}
+
+func summarizeAnalysis(raw json.RawMessage, rawURL string) (InfoSummary, []outputplan.Plan, error) {
 	var info map[string]any
-	if len(result.InfoJSON) > 0 {
-		_ = json.Unmarshal(result.InfoJSON, &info)
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &info); err != nil {
+			return InfoSummary{}, nil, fmt.Errorf("analyze: decode metadata: %w", err)
+		}
 	}
 	summary := InfoSummary{URL: rawURL}
 	if v, ok := info["id"].(string); ok {
@@ -781,14 +1196,79 @@ func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, erro
 		summary.Channel = v
 	}
 	if v, ok := info["duration"].(float64); ok {
-		summary.Duration = formatDuration(int64(v))
+		summary.DurationSeconds = int64(v)
+		summary.Duration = formatDuration(summary.DurationSeconds)
 	} else if v, ok := info["duration_string"].(string); ok {
 		summary.Duration = v
 	}
 	if v, ok := info["thumbnail"].(string); ok {
 		summary.Thumbnail = v
 	}
-	return summary, nil
+	summary.ViewCount = metadataInteger(info["view_count"])
+	if v, ok := info["upload_date"].(string); ok {
+		summary.UploadDate = v
+	}
+	if v, ok := info["description"].(string); ok {
+		summary.Description = v
+	}
+	plans := outputplan.Build(info, summary.DurationSeconds)
+	summary.Plans = publicPlans(plans)
+	return summary, plans, nil
+}
+
+func metadataInteger(value any) int64 {
+	switch value := value.(type) {
+	case float64:
+		return int64(value)
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	}
+	return 0
+}
+
+func publicPlans(plans []outputplan.Plan) []outputplan.Plan {
+	result := make([]outputplan.Plan, len(plans))
+	copy(result, plans)
+	for index := range result {
+		result[index].Selector = ""
+		result[index].SourceFormatIDs = nil
+	}
+	return result
+}
+
+func (m *Manager) cachePlans(videoID string, plans []outputplan.Plan) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.planCache) >= 32 {
+		for key := range m.planCache {
+			delete(m.planCache, key)
+			break
+		}
+	}
+	m.planCache[videoID] = cachedPlans{plans: plans, expiresAt: time.Now().Add(30 * time.Minute)}
+}
+
+// ResolvePlan resolves a UI-visible plan ID to the private engine selector
+// created by the most recent analysis of that video.
+func (m *Manager) ResolvePlan(videoID, planID string) (outputplan.Plan, error) {
+	if videoID == "" || planID == "" {
+		return outputplan.Plan{}, errors.New("jobs: video and output plan are required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cached, ok := m.planCache[videoID]
+	if !ok || time.Now().After(cached.expiresAt) {
+		delete(m.planCache, videoID)
+		return outputplan.Plan{}, errors.New("jobs: output options expired; analyze the video again")
+	}
+	for _, plan := range cached.plans {
+		if plan.ID == planID {
+			return plan, nil
+		}
+	}
+	return outputplan.Plan{}, errors.New("jobs: output option is no longer available")
 }
 
 // formatDuration renders seconds as a human-readable label.

@@ -63,7 +63,11 @@ func (a *App) startup(ctx context.Context) {
 	})
 
 	settings := a.store.Settings()
+	a.jobs.SetConcurrency(settings.DownloadConcurrency)
 	a.jobs.SetFFmpegLocation(settings.FFmpegPath)
+	if err := a.jobs.SetPersistence(a.store, settings.RestoreInterruptedJobs); err != nil {
+		wailsruntime.LogErrorf(ctx, "desktop: restore queue: %v", err)
+	}
 	a.setFFmpegStatus(ffmpegdetect.Probe(ctx, settings.FFmpegPath))
 }
 
@@ -73,11 +77,9 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.jobs == nil {
 		return
 	}
-	for _, snap := range a.jobs.List() {
-		if snap.Status == jobs.StatusActive || snap.Status == jobs.StatusPending {
-			a.jobs.Cancel(snap.ID)
-		}
-	}
+	shutdownCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	a.jobs.Shutdown(shutdownCtx)
 	a.jobs.Close()
 }
 
@@ -102,10 +104,14 @@ func (a *App) UpdateSettings(next store.Settings) (store.Settings, error) {
 		return store.Settings{}, fmt.Errorf("could not create folder: %w", err)
 	}
 	next.DownloadFolder = expanded
+	if next.DownloadConcurrency < 1 || next.DownloadConcurrency > jobs.MaxDownloadConcurrency {
+		return store.Settings{}, fmt.Errorf("download concurrency must be between 1 and %d", jobs.MaxDownloadConcurrency)
+	}
 	if err := a.store.SetSettings(next); err != nil {
 		return store.Settings{}, err
 	}
 	a.jobs.SetFFmpegLocation(next.FFmpegPath)
+	a.jobs.SetConcurrency(next.DownloadConcurrency)
 	a.setFFmpegStatus(ffmpegdetect.Probe(a.ctx, next.FFmpegPath))
 	wailsruntime.EventsEmit(a.ctx, "settings:update", a.store.Settings())
 	return a.store.Settings(), nil
@@ -237,10 +243,21 @@ func (a *App) StartDownload(req jobs.Request) (string, error) {
 	if req.OutputDir == "" {
 		req.OutputDir = settings.DownloadFolder
 	}
+	if settings.PerVideoSubfolder {
+		req.OutputDir = filepath.Join(req.OutputDir, videoSubfolder(req.Title, req.VideoID))
+	}
 	if req.Quality == "" {
 		req.Quality = jobs.QualityBest
 	}
-	if !isSupportedQuality(req.Quality) {
+	if req.PlanID != "" {
+		plan, resolveErr := a.jobs.ResolvePlan(req.VideoID, req.PlanID)
+		if resolveErr != nil {
+			return "", resolveErr
+		}
+		if plan.RequiresFFmpeg && !a.ffmpegStatus().Available {
+			return "", errors.New("this output needs FFmpeg; install FFmpeg or choose an original audio format")
+		}
+	} else if !isSupportedQuality(req.Quality) {
 		return "", fmt.Errorf("unsupported quality preset %q", req.Quality)
 	}
 	return a.jobs.Submit(req)
@@ -251,6 +268,15 @@ func (a *App) ListJobs() []jobs.JobSnapshot { return a.jobs.List() }
 
 // CancelJob cancels an active or pending job.
 func (a *App) CancelJob(id string) { a.jobs.Cancel(id) }
+
+// PauseJob preserves partial bytes and suspends a pending or active download.
+func (a *App) PauseJob(id string) error { return a.jobs.Pause(id) }
+
+// PauseAllJobs pauses every job currently safe to suspend.
+func (a *App) PauseAllJobs() int { return a.jobs.PauseAll() }
+
+// ResumeJob returns a paused download to the queue.
+func (a *App) ResumeJob(id string) error { return a.jobs.Resume(id) }
 
 // RetryJob re-queues a failed or canceled job.
 func (a *App) RetryJob(id string) error { return a.jobs.Retry(id) }
@@ -382,12 +408,16 @@ func (a *App) recordHistory(snap jobs.JobSnapshot) {
 	if snap.AbsolutePath == "" {
 		return
 	}
+	quality := string(snap.Quality)
+	if snap.QualityLabel != "" {
+		quality = snap.QualityLabel
+	}
 	entry := store.HistoryEntry{
 		ID:            snap.ID,
 		VideoID:       snap.VideoID,
 		Title:         snap.Title,
 		Channel:       snap.Channel,
-		Quality:       string(snap.Quality),
+		Quality:       quality,
 		Filename:      snap.Filename,
 		AbsolutePath:  snap.AbsolutePath,
 		SizeBytes:     snap.Bytes,
@@ -400,6 +430,27 @@ func (a *App) recordHistory(snap jobs.JobSnapshot) {
 		return
 	}
 	wailsruntime.EventsEmit(a.ctx, "history:update", a.store.History())
+}
+
+func videoSubfolder(title, videoID string) string {
+	name := strings.Map(func(r rune) rune {
+		if r < 32 || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(title))
+	runes := []rune(strings.Trim(name, " ."))
+	if len(runes) > 72 {
+		runes = runes[:72]
+	}
+	name = strings.Trim(string(runes), " .")
+	if name == "" {
+		name = "Video"
+	}
+	if videoID != "" {
+		name += " [" + videoID + "]"
+	}
+	return name
 }
 
 func expandHome(path string) (string, error) {

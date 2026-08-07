@@ -60,14 +60,14 @@
 </section>
 
 <style>
-  .page { width: min(100%,1120px); margin: 0 auto; padding: 28px 28px 38px; }
+  .page { width: min(100%,1040px); margin: 0 auto; padding: 34px 42px 48px; }
   h1 { margin: 0; font-size: 30px; letter-spacing: -.02em; } .page-header p { margin: 8px 0 20px; color: var(--text-secondary); font-size: 16px; }
   .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 12px; }
   .search { position: relative; width: min(540px, 65%); } .search > span { position: absolute; left: 14px; top: 8px; color: var(--text-secondary); font-size: 22px; z-index: 1; }
   .search input { height: 42px; padding-left: 42px; font-size: 15px; }
   .tabs { display: grid; grid-template-columns: 84px 84px; border: 1px solid var(--border-default); border-radius: 8px; padding: 3px; }
   .tabs button { height: 34px; border-radius: 6px; color: var(--text-secondary); } .tabs button.active { color:#fff; background: linear-gradient(180deg,#347cf4,#2867d8); }
-  .table { overflow-x: auto; background: linear-gradient(145deg,rgba(20,29,41,.97),rgba(13,21,31,.97)); border: 1px solid var(--border-default); border-radius: 10px; }
+  .table { overflow-x: auto; background: var(--surface-raised); border: 1px solid var(--border-default); border-radius: 8px; }
   .thead,.tr { display: grid; grid-template-columns: minmax(320px,1.35fr) 130px 110px 130px 190px; gap: 12px; min-width: 850px; align-items: center; }
   .thead { padding: 10px 14px; color: var(--text-secondary); font-size: 13px; }
   .tr { width: 100%; min-height: 72px; padding: 8px 14px; text-align: left; border-top: 1px solid var(--border-subtle); color: var(--text-secondary); }
@@ -76,9 +76,9 @@
   .thumb { width: 80px; aspect-ratio: 16/9; border-radius: 6px; overflow:hidden; background:var(--surface-sunken); } .thumb img { width:100%;height:100%;object-fit:cover; }
   .copy { min-width:0; } .copy strong,.copy small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .copy strong { color:var(--text-primary);font-weight:500; } .copy small { color:var(--accent-400);margin-top:5px; }
   .tr em { font-style:normal; color:var(--text-primary); border:1px solid var(--border-default); border-radius:6px; padding:5px 7px; }
-  .row-actions { display:flex; justify-content:flex-end; gap:8px; } .row-actions button,.location button { min-height:34px;padding:0 12px;color:var(--text-primary);background:linear-gradient(180deg,#283445,#1d2734);border:1px solid var(--border-default);border-radius:7px; }
+  .row-actions { display:flex; justify-content:flex-end; gap:8px; } .row-actions button,.location button { min-height:32px;padding:0 10px;color:var(--text-primary);background:var(--surface-raised);border:1px solid var(--border-default);border-radius:6px; }
   .empty { padding:70px 20px;text-align:center;color:var(--text-muted);border-top:1px solid var(--border-subtle); }
-  .detail-card { display:grid;grid-template-columns:180px minmax(0,1fr);gap:20px;margin-top:14px;padding:10px;background:linear-gradient(145deg,#151f2c,#101823);border:1px solid var(--border-default);border-radius:10px;min-width:0; }
+  .detail-card { display:grid;grid-template-columns:180px minmax(0,1fr);gap:20px;margin-top:14px;padding:10px;background:var(--surface-raised);border:1px solid var(--border-default);border-radius:8px;min-width:0; }
   .detail-thumb { position:relative;aspect-ratio:16/10;border-radius:7px;overflow:hidden;background:var(--surface-sunken); } .detail-thumb img { width:100%;height:100%;object-fit:cover; } .detail-thumb span { position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.8);padding:2px 6px;border-radius:4px; }
   .detail-copy { min-width:0;padding:4px 2px; } .detail-copy h2 { margin:0;font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; } .detail-copy p { margin:4px 0;color:var(--accent-400); } .facts { display:flex;gap:9px;color:var(--text-secondary);font-size:13px; }
   .location { display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;margin-top:14px;min-width:0; } .location .location-label { color:var(--text-secondary);padding:0;border:0; } .location > span { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:7px 10px;border:1px solid var(--border-subtle);border-radius:7px;color:var(--text-secondary); }

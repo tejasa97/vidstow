@@ -8,11 +8,107 @@ import (
 	"math"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/youtube_dlp/engine"
 )
+
+type memoryPersistence struct {
+	mu   sync.Mutex
+	jobs []PersistedJob
+}
+
+func (p *memoryPersistence) LoadJobs() ([]PersistedJob, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]PersistedJob(nil), p.jobs...), nil
+}
+
+func (p *memoryPersistence) SaveJobs(jobs []PersistedJob) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.jobs = append([]PersistedJob(nil), jobs...)
+	return nil
+}
+
+func TestSummarizeAnalysisBuildsPublicCuratedPlans(t *testing.T) {
+	raw := json.RawMessage(`{
+		"id":"abc123","title":"Demo","uploader":"Creator","duration":90,
+		"view_count":1234,"upload_date":"20260807","description":"Description",
+		"formats":[
+			{"format_id":"137","ext":"mp4","vcodec":"avc1.640028","acodec":"none","width":1920,"height":1080,"tbr":4000},
+			{"format_id":"140","ext":"m4a","vcodec":"none","acodec":"mp4a.40.2","abr":128}
+		]
+	}`)
+	summary, privatePlans, err := summarizeAnalysis(raw, "https://example.invalid/watch?v=abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.DurationSeconds != 90 || summary.Duration != "1:30" || summary.ViewCount != 1234 {
+		t.Fatalf("metadata = %#v; want duration and view count", summary)
+	}
+	if len(summary.Plans) == 0 || len(privatePlans) == 0 {
+		t.Fatal("expected curated output plans")
+	}
+	if summary.Plans[0].Selector != "" || len(summary.Plans[0].SourceFormatIDs) != 0 {
+		t.Fatal("public summary leaked private engine selector")
+	}
+	if privatePlans[0].Selector != "137+140" {
+		t.Fatalf("private selector = %q; want 137+140", privatePlans[0].Selector)
+	}
+}
+
+func TestPlanSubmissionUsesCachedPrivateSelectorAndMP3Postprocessor(t *testing.T) {
+	manager := New(nil, nil)
+	manager.cachePlans("abc123", []outputplan.Plan{{
+		ID: "audio-mp3-192", Kind: outputplan.KindAudio, Label: "MP3 192 kbps",
+		Container: "MP3", RequiresFFmpeg: true, AudioBitrateKbps: 192, Selector: "140",
+	}})
+	started := make(chan engine.Request, 1)
+	manager.runDownload = func(_ context.Context, req engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		started <- req
+		return engine.Result{}, nil
+	}
+
+	_, err := manager.Submit(Request{
+		URL: "https://example.invalid/watch?v=abc123", VideoID: "abc123",
+		PlanID: "audio-mp3-192", OutputDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case req := <-started:
+		if req.Format != "140" {
+			t.Fatalf("format = %q; want cached selector 140", req.Format)
+		}
+		if len(req.Postprocessors) != 1 || req.Postprocessors[0].ExtractAudio == nil {
+			t.Fatal("expected one extract-audio postprocessor")
+		}
+		if got := req.Postprocessors[0].ExtractAudio.Bitrate; got != "192k" {
+			t.Fatalf("bitrate = %q; want 192k", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("download runner did not receive a request")
+	}
+}
+
+func TestResolvePlanRejectsExpiredAndUnknownPlans(t *testing.T) {
+	manager := New(nil, nil)
+	manager.planCache["expired"] = cachedPlans{
+		plans: []outputplan.Plan{{ID: "video-1080-mp4"}}, expiresAt: time.Now().Add(-time.Second),
+	}
+	if _, err := manager.ResolvePlan("expired", "video-1080-mp4"); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired ResolvePlan() error = %v", err)
+	}
+	manager.cachePlans("current", []outputplan.Plan{{ID: "video-1080-mp4"}})
+	if _, err := manager.ResolvePlan("current", "made-up"); err == nil || !strings.Contains(err.Error(), "no longer available") {
+		t.Fatalf("unknown ResolvePlan() error = %v", err)
+	}
+}
 
 func TestHumanErrorYouTubeChallengeTimeout(t *testing.T) {
 	typed := &engine.Error{
@@ -96,6 +192,7 @@ func TestHandleEventMapsLifecycleCopy(t *testing.T) {
 
 func TestCancelActiveKeepsFIFOSingleActive(t *testing.T) {
 	manager := New(nil, nil)
+	manager.SetConcurrency(1)
 	started := make(chan engine.Request, 2)
 	release := make(chan struct{})
 	manager.runDownload = func(ctx context.Context, req engine.Request, _ engine.EventHandler) (engine.Result, error) {
@@ -134,6 +231,192 @@ func TestCancelActiveKeepsFIFOSingleActive(t *testing.T) {
 	manager.Cancel(second)
 }
 
+func TestDownloadConcurrencyDefaultsToTwoAndClampsToSupportedRange(t *testing.T) {
+	manager := New(nil, nil)
+	if got := manager.Concurrency(); got != 2 {
+		t.Fatalf("default concurrency = %d; want 2", got)
+	}
+	if got := manager.SetConcurrency(0); got != 1 {
+		t.Fatalf("low concurrency clamp = %d; want 1", got)
+	}
+	if got := manager.SetConcurrency(99); got != 10 {
+		t.Fatalf("high concurrency clamp = %d; want 10", got)
+	}
+}
+
+func TestMediaProcessingSchedulerCapsConcurrentFFmpegStagesAtThree(t *testing.T) {
+	manager := New(nil, nil)
+	manager.SetConcurrency(4)
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{}, 4)
+	manager.runDownload = func(ctx context.Context, _ engine.Request, handler engine.EventHandler) (engine.Result, error) {
+		if err := handler(ctx, engine.Event{Kind: engine.EventPostprocessStarting}); err != nil {
+			return engine.Result{}, err
+		}
+		entered <- struct{}{}
+		<-release
+		if err := handler(ctx, engine.Event{Kind: engine.EventPostprocessCompleted}); err != nil {
+			return engine.Result{}, err
+		}
+		return engine.Result{}, nil
+	}
+
+	for index := 0; index < 4; index++ {
+		if _, err := manager.Submit(Request{
+			URL: fmt.Sprintf("https://example.invalid/%d", index), OutputDir: t.TempDir(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := 0; index < 3; index++ {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("one of the first three processing stages did not start")
+		}
+	}
+	select {
+	case <-entered:
+		t.Fatal("fourth processing stage exceeded the hard cap of three")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release <- struct{}{}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("fourth processing stage did not start when a slot was released")
+	}
+	for index := 0; index < 3; index++ {
+		release <- struct{}{}
+	}
+}
+
+func TestPauseAndResumeActiveDownloadPreservesProgress(t *testing.T) {
+	manager := New(nil, nil)
+	manager.SetConcurrency(1)
+	started := make(chan struct{}, 2)
+	manager.runDownload = func(ctx context.Context, _ engine.Request, handler engine.EventHandler) (engine.Result, error) {
+		started <- struct{}{}
+		_ = handler(ctx, engine.Event{Kind: engine.EventDownloadProgress, Bytes: 50, Total: 100})
+		<-ctx.Done()
+		return engine.Result{}, ctx.Err()
+	}
+	id, err := manager.Submit(Request{URL: "https://example.invalid/video", OutputDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := manager.Pause(id); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		snap, _ := manager.Find(id)
+		if snap.Status == StatusPaused {
+			if snap.Bytes != 50 || snap.Progress != 0.5 {
+				t.Fatalf("paused progress = %d/%f; want 50/0.5", snap.Bytes, snap.Progress)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job did not pause; final status %q", snap.Status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := manager.Resume(id); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("resumed job did not restart the engine request")
+	}
+	manager.Cancel(id)
+}
+
+func TestPauseAllPausesActiveAndPendingJobs(t *testing.T) {
+	manager := New(nil, nil)
+	manager.SetConcurrency(1)
+	started := make(chan struct{}, 1)
+	manager.runDownload = func(ctx context.Context, _ engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		return engine.Result{}, ctx.Err()
+	}
+	first, err := manager.Submit(Request{URL: "https://example.invalid/one", OutputDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	second, err := manager.Submit(Request{URL: "https://example.invalid/two", OutputDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.PauseAll(); got != 2 {
+		t.Fatalf("PauseAll() = %d; want 2", got)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		firstSnap, _ := manager.Find(first)
+		secondSnap, _ := manager.Find(second)
+		if firstSnap.Status == StatusPaused && secondSnap.Status == StatusPaused {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("statuses = %s/%s; want paused/paused", firstSnap.Status, secondSnap.Status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestPauseIsDisabledDuringMediaProcessing(t *testing.T) {
+	manager := New(nil, nil)
+	processing := make(chan struct{})
+	release := make(chan struct{})
+	manager.runDownload = func(ctx context.Context, _ engine.Request, handler engine.EventHandler) (engine.Result, error) {
+		if err := handler(ctx, engine.Event{Kind: engine.EventPostprocessStarting}); err != nil {
+			return engine.Result{}, err
+		}
+		close(processing)
+		<-release
+		return engine.Result{}, nil
+	}
+	id, err := manager.Submit(Request{URL: "https://example.invalid/video", OutputDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-processing
+	if err := manager.Pause(id); err == nil || !strings.Contains(err.Error(), "finalized") {
+		t.Fatalf("Pause() error = %v; want processing-stage rejection", err)
+	}
+	close(release)
+}
+
+func TestPersistenceRestoresInterruptedJobAsPausedWithPrivatePlan(t *testing.T) {
+	persistence := &memoryPersistence{jobs: []PersistedJob{{
+		Snapshot: JobSnapshot{
+			ID: "job-1", URL: "https://example.invalid/video", OutputDir: t.TempDir(),
+			VideoID: "abc123", PlanID: "video-1080-mp4", Status: StatusActive,
+		},
+		Plan:            outputplan.Plan{ID: "video-1080-mp4", Kind: outputplan.KindVideo, Container: "MP4"},
+		PrivateSelector: "137+140",
+	}}}
+	manager := New(nil, nil)
+	if err := manager.SetPersistence(persistence, true); err != nil {
+		t.Fatal(err)
+	}
+	snap, ok := manager.Find("job-1")
+	if !ok || snap.Status != StatusPaused {
+		t.Fatalf("restored snapshot = %#v, %v; want paused", snap, ok)
+	}
+	manager.FlushPersistence()
+	persistence.mu.Lock()
+	defer persistence.mu.Unlock()
+	if len(persistence.jobs) != 1 || persistence.jobs[0].PrivateSelector != "137+140" {
+		t.Fatalf("persisted jobs = %#v; private selector was not retained", persistence.jobs)
+	}
+}
+
 func TestDownloadRequestUsesConfiguredFFmpegLocation(t *testing.T) {
 	manager := New(nil, nil)
 	configured := filepath.Join(t.TempDir(), "ffmpeg")
@@ -153,6 +436,9 @@ func TestDownloadRequestUsesConfiguredFFmpegLocation(t *testing.T) {
 	case req := <-started:
 		if req.Filesystem.FfmpegLocation != configured {
 			t.Fatalf("ffmpeg location = %q; want %q", req.Filesystem.FfmpegLocation, configured)
+		}
+		if !req.Filesystem.PreservePartialOnCancel {
+			t.Fatal("desktop requests must preserve resumable partial state")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("download runner did not receive a request")

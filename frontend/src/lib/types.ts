@@ -12,7 +12,24 @@ export type Quality =
 
 export const QUALITIES: Quality[] = ['best', '4k', '1440p', '1080p', '720p', 'audio'];
 
-export type JobStatus = 'pending' | 'active' | 'complete' | 'failed' | 'canceled';
+export type JobStatus = 'pending' | 'active' | 'paused' | 'complete' | 'failed' | 'canceled';
+
+export interface OutputPlan {
+  id: string;
+  kind: 'video' | 'audio';
+  label: string;
+  resolution?: string;
+  container: string;
+  videoCodec?: string;
+  audioCodec?: string;
+  width?: number;
+  height?: number;
+  approxBytes?: number;
+  sizeIsApproximate?: boolean;
+  requiresFfmpeg?: boolean;
+  audioBitrateKbps?: number;
+  recommended?: boolean;
+}
 
 export interface JobSnapshot {
   id: string;
@@ -22,6 +39,16 @@ export interface JobSnapshot {
   channel: string;
   quality: Quality;
   qualityLabel: string;
+  planId?: string;
+  outputKind?: 'video' | 'audio';
+  container?: string;
+  videoCodec?: string;
+  audioCodec?: string;
+  approxBytes?: number;
+  sizeApproximate?: boolean;
+  requiresFfmpeg?: boolean;
+  canPause?: boolean;
+  processing?: boolean;
   outputDir: string;
   durationLabel: string;
   thumbnail: string;
@@ -67,6 +94,10 @@ export interface Settings {
   ffmpegPath: string;
   windowWidth: number;
   windowHeight: number;
+  downloadConcurrency: number;
+  perVideoSubfolder: boolean;
+  confirmBeforeDownload: boolean;
+  restoreInterruptedJobs: boolean;
 }
 
 export interface UrlCheckResult {
@@ -82,6 +113,11 @@ export interface InfoSummary {
   thumbnail: string;
   videoId: string;
   url: string;
+  durationSeconds: number;
+  viewCount: number;
+  uploadDate: string;
+  description: string;
+  plans: OutputPlan[];
 }
 
 export interface QueueEvent {

@@ -1,10 +1,11 @@
 <script lang="ts">
-  export let status: 'pending' | 'active' | 'complete' | 'failed' | 'canceled';
+  export let status: 'pending' | 'active' | 'paused' | 'complete' | 'failed' | 'canceled';
   export let compact = false;
 
   const labels: Record<string, string> = {
     pending: 'Queued',
     active: 'Downloading',
+    paused: 'Paused',
     complete: 'Done',
     failed: 'Failed',
     canceled: 'Canceled',
@@ -42,6 +43,7 @@
     color: var(--accent-400);
     border-color: rgba(59, 130, 246, 0.32);
   }
+  .paused { background:#fff7ed;color:#c2410c;border-color:#fed7aa; }
   .complete {
     background: var(--status-success-soft);
     color: var(--status-success);
