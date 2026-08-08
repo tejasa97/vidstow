@@ -90,6 +90,7 @@ export const api = {
   downloads: {
     list: () => call<HistoryEntry[]>('ListDownloads'),
     remove: (id: string) => call<void>('RemoveDownload', id),
+    deleteFile: (id: string) => call<void>('DeleteDownloadFile', id),
     clear: () => call<void>('ClearDownloads'),
   },
   fs: {

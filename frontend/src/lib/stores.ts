@@ -48,7 +48,7 @@ export const route = writable<'home' | 'queue' | 'downloads' | 'settings' | 'abo
 
 // Modal state — only one modal at a time.
 export interface ModalState {
-  kind: 'unsupported' | 'ffmpeg-missing' | 'error';
+  kind: 'unsupported' | 'ffmpeg-missing' | 'error' | 'confirm';
   title: string;
   message: string;
   reason?: string;

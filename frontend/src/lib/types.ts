@@ -73,12 +73,16 @@ export interface HistoryEntry {
   title: string;
   channel: string;
   quality: string;
+  container?: string;
+  videoCodec?: string;
+  audioCodec?: string;
   filename: string;
   absolutePath: string;
   sizeBytes: number;
   completedAt: string;
   durationLabel: string;
   thumbnail: string;
+  fileMissing?: boolean;
 }
 
 export interface FFmpegStatus {
