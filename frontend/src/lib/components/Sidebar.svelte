@@ -1,5 +1,6 @@
 <script lang="ts">
   import { route, counts, ffmpeg } from '../stores.js';
+  import brandMark from '../../assets/images/brand-mark.png';
   type Route = 'home' | 'queue' | 'downloads' | 'settings' | 'about';
 
   $: c = $counts;
@@ -23,7 +24,7 @@
 <aside class="sidebar" aria-label="Primary">
   <button type="button" class="brand" onclick={() => go('home')} aria-label="VidStow home">
     <span class="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11m0 0 4-4m-4 4-4-4"/><path d="M5 15v4h14v-4"/></svg>
+      <img src={brandMark} alt="" width="26" height="26" />
     </span>
     <span class="brand-title">VidStow</span>
   </button>
@@ -104,9 +105,14 @@
     width: 26px;
     height: 26px;
     border-radius: 7px;
-    color: #FFFFFF;
-    background: var(--accent-500);
+    overflow: hidden;
     flex-shrink: 0;
+  }
+  .brand-mark img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
   }
   .brand-title {
     font-size: 15px;
