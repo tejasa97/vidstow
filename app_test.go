@@ -9,6 +9,13 @@ import (
 	"github.com/tejasa97/youtube_dlp/engine"
 )
 
+func TestCurrentBuildInfoHasReleaseAndPlatformIdentity(t *testing.T) {
+	info := currentBuildInfo()
+	if info.Version != appVersion || info.EngineVersion == "" || info.OS == "" || info.Architecture == "" || info.GoVersion == "" {
+		t.Fatalf("build info = %#v; want complete release identity", info)
+	}
+}
+
 func TestFriendlyAnalyzeErrorDeadline(t *testing.T) {
 	if got := friendlyAnalyzeError(context.DeadlineExceeded); got != "Video analysis timed out — retry" {
 		t.Fatalf("friendlyAnalyzeError() = %q; want analysis-timeout message", got)

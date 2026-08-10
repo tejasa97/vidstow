@@ -41,11 +41,13 @@ test('app shell routes to the About page', async () => {
   assert.match(stores, /writable<'home' \| 'queue' \| 'downloads' \| 'settings' \| 'about'>/);
 });
 
-test('About page carries static app, version, and legal copy with external links', async () => {
+test('About page uses backend build info with legal copy and external links', async () => {
   const about = await read('../src/pages/About.svelte');
   assert.match(about, /<h1 id="about-title">About<\/h1>/);
   assert.match(about, /name: 'VidStow'/);
-  assert.match(about, /version: '0\.1\.0'/);
+  assert.match(about, /api\.app\.buildInfo\(\)/);
+  assert.match(about, /engineVersion/);
+  assert.match(about, /Copy Diagnostics/);
   assert.match(about, /license: 'Apache-2\.0'/);
   assert.match(about, /BrowserOpenURL\?\.\(url\)/);
   assert.match(about, /github\.com\/tejasa97\/vidstow/);

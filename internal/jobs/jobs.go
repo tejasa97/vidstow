@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -157,23 +158,38 @@ type JobSnapshot struct {
 	ErrorReason     string          `json:"errorReason,omitempty"`
 }
 
-// Listener receives lifecycle events. The queue preserves event order through
-// one dedicated dispatcher instead of launching an independent goroutine for
-// every snapshot.
+// Listener receives lifecycle events. Every event is delivered by one
+// dispatcher so job and queue snapshots retain their causal order.
 type Listener func(event Event)
 
 // Event names match the Wails events emitted by the app layer.
 const (
-	EventJobUpdate = "job:update"
-	EventQueue     = "queue:update"
+	EventJobUpdate   = "job:update"
+	EventQueue       = "queue:update"
+	EventPersistence = "persistence:update"
 )
 
 // Event is a single lifecycle notification.
 type Event struct {
-	Name  string        `json:"name"`
-	Job   JobSnapshot   `json:"job"`
-	Queue []JobSnapshot `json:"queue"`
+	Name        string             `json:"name"`
+	Job         JobSnapshot        `json:"job"`
+	Queue       []JobSnapshot      `json:"queue"`
+	Persistence *PersistenceStatus `json:"persistence,omitempty"`
 }
+
+// PersistenceStatus reports whether the durable queue can currently be
+// saved. Message is intentionally generic: persistence errors can contain
+// private filesystem paths, which must never cross the desktop boundary.
+type PersistenceStatus struct {
+	Available bool   `json:"available"`
+	Healthy   bool   `json:"healthy"`
+	Message   string `json:"message,omitempty"`
+}
+
+const (
+	persistenceFailureMessage     = "VidStow could not save the download queue. Check available disk space and permissions."
+	persistenceUnavailableMessage = "VidStow is using temporary in-memory storage. Download queue changes will not be saved after the app closes."
+)
 
 // PersistedJob contains the non-terminal state needed to restore a queue.
 // PrivateSelector never crosses the Wails boundary; it is stored only in the
@@ -189,25 +205,37 @@ type Persistence interface {
 	SaveJobs([]PersistedJob) error
 }
 
+// DurablePersistence is an optional capability for stores that can retain
+// queue data after this process exits. Implementations that do not expose it
+// are treated as durable for backwards compatibility.
+type DurablePersistence interface {
+	Durable() bool
+}
+
 // Manager owns the queue and the client used for metadata analysis. Downloads
 // use short-lived clients so each job can attach its own event handler.
 type Manager struct {
-	client         *engine.Client
-	listener       Listener
-	events         chan Event
-	runDownload    downloadRunner
-	ffmpegLocation string
-	mu             sync.Mutex
-	all            map[string]*jobState
-	order          []string
-	active         map[string]struct{}
-	concurrency    int
-	processing     chan struct{}
-	planCache      map[string]cachedPlans
-	persistence    Persistence
-	persistSignal  chan struct{}
-	persistStop    chan struct{}
-	persistDone    chan struct{}
+	client             *engine.Client
+	listener           Listener
+	eventSignal        chan struct{}
+	eventMu            sync.Mutex
+	pendingEvents      []Event
+	runDownload        downloadRunner
+	ffmpegLocation     string
+	mu                 sync.Mutex
+	all                map[string]*jobState
+	order              []string
+	active             map[string]struct{}
+	concurrency        int
+	processing         chan struct{}
+	planCache          map[string]cachedPlans
+	persistence        Persistence
+	persistenceDurable bool
+	persistMu          sync.Mutex
+	persistStatus      PersistenceStatus
+	persistSignal      chan struct{}
+	persistStop        chan struct{}
+	persistDone        chan struct{}
 }
 
 type cachedPlans struct {
@@ -244,7 +272,7 @@ func New(client *engine.Client, listener Listener) *Manager {
 		planCache:   make(map[string]cachedPlans),
 	}
 	if listener != nil {
-		manager.events = make(chan Event, 256)
+		manager.eventSignal = make(chan struct{}, 1)
 		go manager.dispatchEvents()
 	}
 	return manager
@@ -264,8 +292,7 @@ func newFocusedClient(options ...engine.Option) *engine.Client {
 }
 
 // Close flushes the persisted queue and releases the analysis client.
-func (m *Manager) Close() {
-	m.FlushPersistence()
+func (m *Manager) Close() error {
 	m.mu.Lock()
 	stop, done := m.persistStop, m.persistDone
 	m.persistStop = nil
@@ -274,7 +301,11 @@ func (m *Manager) Close() {
 		close(stop)
 		<-done
 	}
+	// Stop the debounce loop before the final write so its result is the one
+	// returned to shutdown and no later background flush can obscure it.
+	flushErr := m.FlushPersistence()
 	m.client.Close()
+	return flushErr
 }
 
 // SetPersistence attaches durable queue storage and restores prior jobs.
@@ -292,17 +323,23 @@ func (m *Manager) SetPersistence(persistence Persistence, restoreInterrupted boo
 		return errors.New("jobs: persistence already configured")
 	}
 	m.persistence = persistence
+	m.persistenceDurable = persistenceIsDurable(persistence)
+	m.persistStatus = persistenceStatus(m.persistenceDurable, nil)
 	m.persistSignal = make(chan struct{}, 1)
 	m.persistStop = make(chan struct{})
 	m.persistDone = make(chan struct{})
 	if restoreInterrupted {
 		m.restoreLocked(stored)
 	}
+	if !m.persistenceDurable {
+		status := m.persistStatus
+		m.emitLocked(Event{Name: EventPersistence, Persistence: &status})
+	}
 	signal, stop, done := m.persistSignal, m.persistStop, m.persistDone
 	m.mu.Unlock()
 	go m.persistLoop(signal, stop, done)
 	if !restoreInterrupted {
-		return persistence.SaveJobs(nil)
+		return m.FlushPersistence()
 	}
 	m.mu.Lock()
 	m.maybeStartNextLocked()
@@ -391,20 +428,98 @@ func (m *Manager) persistenceSnapshotLocked() []PersistedJob {
 	return result
 }
 
-func (m *Manager) FlushPersistence() {
+// FlushPersistence writes a consistent queue snapshot and records an
+// app-visible health update. Saves are serialized because shutdown can race a
+// debounce flush. The returned error lets callers log a final shutdown failure.
+func (m *Manager) FlushPersistence() error {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
+
+	// Snapshot, write, and status transition are one serialized transaction.
+	// The lock order is persistMu -> m.mu everywhere, so an older snapshot can
+	// never write after a newer flush or replace its health status.
 	m.mu.Lock()
 	persistence := m.persistence
+	durable := m.persistenceDurable
 	jobs := m.persistenceSnapshotLocked()
 	m.mu.Unlock()
-	if persistence != nil {
-		_ = persistence.SaveJobs(jobs)
+	if persistence == nil {
+		return nil
+	}
+	err := persistence.SaveJobs(jobs)
+	m.recordPersistenceResult(durable, err)
+	if err != nil {
+		return errors.New(persistenceFailureMessage)
+	}
+	return nil
+}
+
+// dispatchEvents drains a nonblocking, lossless mailbox. It is deliberately
+// unbounded: listeners perform completion side effects such as writing
+// download history, so dropping or coalescing events would corrupt behavior.
+// The production Wails listener must remain fast and nonblocking; emitters
+// never hold the manager lock while waiting for it.
+func (m *Manager) dispatchEvents() {
+	for range m.eventSignal {
+		for {
+			m.eventMu.Lock()
+			if len(m.pendingEvents) == 0 {
+				// Do not retain references through the backing array after a drain.
+				m.pendingEvents = nil
+				m.eventMu.Unlock()
+				break
+			}
+			event := m.pendingEvents[0]
+			m.pendingEvents[0] = Event{}
+			m.pendingEvents = m.pendingEvents[1:]
+			m.eventMu.Unlock()
+			m.listener(event)
+		}
 	}
 }
 
-func (m *Manager) dispatchEvents() {
-	for event := range m.events {
-		m.listener(event)
+// PersistenceStatus returns the current durable-queue health. It is safe for
+// the UI to poll at startup in case an early write failed before it subscribed.
+func (m *Manager) PersistenceStatus() PersistenceStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistStatus
+}
+
+func (m *Manager) recordPersistenceResult(durable bool, err error) {
+	next := persistenceStatus(durable, err)
+	if err != nil && durable {
+		// Persistence errors can contain a user-specific filesystem path. The
+		// generic log entry confirms the fault without disclosing it.
+		log.Printf("vidstow: queue persistence failed")
+		next.Message = persistenceFailureMessage
 	}
+	m.mu.Lock()
+	changed := m.persistStatus != next
+	m.persistStatus = next
+	if changed {
+		status := next
+		m.emitLocked(Event{Name: EventPersistence, Persistence: &status})
+	}
+	m.mu.Unlock()
+}
+
+func persistenceIsDurable(persistence Persistence) bool {
+	capability, ok := persistence.(DurablePersistence)
+	return !ok || capability.Durable()
+}
+
+func persistenceStatus(durable bool, err error) PersistenceStatus {
+	if !durable {
+		if err != nil {
+			return PersistenceStatus{Available: false, Healthy: false, Message: persistenceFailureMessage}
+		}
+		return PersistenceStatus{Available: false, Healthy: err == nil, Message: persistenceUnavailableMessage}
+	}
+	if err != nil {
+		return PersistenceStatus{Available: true, Healthy: false, Message: persistenceFailureMessage}
+	}
+	return PersistenceStatus{Available: true, Healthy: true}
 }
 
 // SetFFmpegLocation updates the per-request tool location. It is deliberately
@@ -980,25 +1095,27 @@ func (m *Manager) handleEvent(state *jobState, ev engine.Event) {
 }
 
 // emitLocked queues an immutable event for ordered delivery. Caller must hold
-// m.mu. The bounded buffer absorbs normal progress bursts; backpressure is
-// preferable to silently dropping the latest queue state.
+// m.mu, which makes append order the authoritative sequence. The dispatcher
+// never calls listeners while either manager lock is held, so a listener can
+// safely ask the manager for a fresh snapshot without deadlocking.
 func (m *Manager) emitLocked(ev Event) {
 	m.schedulePersistLocked()
 	if m.listener == nil {
 		return
 	}
-	m.events <- ev
+	m.eventMu.Lock()
+	m.pendingEvents = append(m.pendingEvents, ev)
+	m.eventMu.Unlock()
+	select {
+	case m.eventSignal <- struct{}{}:
+	default:
+	}
 }
 
 // emitQueueLocked emits a queue:update event with the current display
 // list. Caller must hold m.mu.
 func (m *Manager) emitQueueLocked() {
-	m.schedulePersistLocked()
-	if m.listener == nil {
-		return
-	}
-	ev := Event{Name: EventQueue, Queue: m.snapshotLocked()}
-	go m.listener(ev)
+	m.emitLocked(Event{Name: EventQueue, Queue: m.snapshotLocked()})
 }
 
 func (m *Manager) snapshotLocked() []JobSnapshot {
@@ -1144,7 +1261,15 @@ type InfoSummary struct {
 	ViewCount       int64             `json:"viewCount"`
 	UploadDate      string            `json:"uploadDate"`
 	Description     string            `json:"description"`
+	Access          AccessSummary     `json:"access"`
 	Plans           []outputplan.Plan `json:"plans"`
+}
+
+// AccessSummary is informational extraction metadata, not a product gate.
+// Selectable outputs remain exactly the curated plans returned by Analyze.
+type AccessSummary struct {
+	Code  string `json:"code"`
+	Label string `json:"label"`
 }
 
 // Analyze calls engine.Run with Simulate=true to extract metadata for
@@ -1211,6 +1336,7 @@ func summarizeAnalysis(raw json.RawMessage, rawURL string) (InfoSummary, []outpu
 	if v, ok := info["description"].(string); ok {
 		summary.Description = v
 	}
+	summary.Access = summarizeAccess(info)
 	plans := outputplan.Build(info, summary.DurationSeconds)
 	summary.Plans = publicPlans(plans)
 	return summary, plans, nil
@@ -1234,8 +1360,32 @@ func publicPlans(plans []outputplan.Plan) []outputplan.Plan {
 	for index := range result {
 		result[index].Selector = ""
 		result[index].SourceFormatIDs = nil
+		result[index].Available = true
 	}
 	return result
+}
+
+func summarizeAccess(info map[string]any) AccessSummary {
+	availability := strings.ToLower(strings.TrimSpace(metadataText(info, "availability")))
+	switch availability {
+	case "public":
+		return AccessSummary{Code: "public", Label: "Publicly accessible"}
+	case "unlisted":
+		return AccessSummary{Code: "unlisted", Label: "Accessible with this link"}
+	case "private":
+		return AccessSummary{Code: "restricted", Label: "Restricted access"}
+	case "needs_auth", "subscriber_only", "premium_only", "age_restricted", "login_required":
+		return AccessSummary{Code: "restricted", Label: "Sign-in or access may be required"}
+	case "", "unknown":
+		return AccessSummary{Code: "unknown", Label: "Access status not reported"}
+	default:
+		return AccessSummary{Code: "unknown", Label: "Access status not reported"}
+	}
+}
+
+func metadataText(info map[string]any, key string) string {
+	value, _ := info[key].(string)
+	return value
 }
 
 func (m *Manager) cachePlans(videoID string, plans []outputplan.Plan) {

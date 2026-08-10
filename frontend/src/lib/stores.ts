@@ -2,7 +2,7 @@
 // the slices they need; transport and error normalization stay shared.
 
 import { writable, derived } from 'svelte/store';
-import type { FFmpegStatus, HistoryEntry, JobSnapshot, Settings } from './types.js';
+import type { FFmpegStatus, HistoryEntry, JobSnapshot, PersistenceStatus, Settings } from './types.js';
 
 export const settings = writable<Settings>({
   downloadFolder: '',
@@ -25,6 +25,7 @@ export const ffmpeg = writable<FFmpegStatus>({
 
 export const jobs = writable<JobSnapshot[]>([]);
 export const history = writable<HistoryEntry[]>([]);
+export const persistence = writable<PersistenceStatus>({ available: false, healthy: true });
 
 // Derived views used by the sidebar counters.
 export const counts = derived(jobs, ($jobs) => {

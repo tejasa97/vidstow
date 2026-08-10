@@ -17,6 +17,9 @@ func TestStoreOpenCreatesFile(t *testing.T) {
 	if s.Settings().DownloadFolder == "" {
 		t.Fatalf("default settings must include a download folder")
 	}
+	if !s.Durable() {
+		t.Fatal("opened disk-backed store must report durable")
+	}
 }
 
 func TestDefaultPathUsesVidStowIdentity(t *testing.T) {
@@ -154,6 +157,60 @@ func TestStoreHistoryReportsMissingFilesAndDeletesMedia(t *testing.T) {
 	}
 }
 
+func TestDeleteHistoryFileRefusesNonRegularTargets(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	missing := filepath.Join(dir, "missing.mp4")
+	if err := s.AppendHistory(HistoryEntry{ID: "missing", AbsolutePath: missing}); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := s.DeleteHistoryFile("missing"); err != nil || !deleted {
+		t.Fatalf("missing DeleteHistoryFile = %v, %v; want history removal", deleted, err)
+	}
+
+	directory := filepath.Join(dir, "not-media")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendHistory(HistoryEntry{ID: "directory", AbsolutePath: directory}); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := s.DeleteHistoryFile("directory"); err == nil || deleted {
+		t.Fatalf("directory DeleteHistoryFile = %v, %v; want refusal", deleted, err)
+	}
+	if _, err := os.Stat(directory); err != nil {
+		t.Fatalf("directory was removed: %v", err)
+	}
+	if len(s.History()) != 1 || s.History()[0].ID != "directory" {
+		t.Fatalf("directory history was changed: %#v", s.History())
+	}
+
+	target := filepath.Join(dir, "target.mp4")
+	if err := os.WriteFile(target, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "linked.mp4")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable on this platform: %v", err)
+	}
+	if err := s.AppendHistory(HistoryEntry{ID: "symlink", AbsolutePath: link}); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := s.DeleteHistoryFile("symlink"); err == nil || deleted {
+		t.Fatalf("symlink DeleteHistoryFile = %v, %v; want refusal", deleted, err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("symlink was removed: %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("symlink target was removed: %v", err)
+	}
+}
+
 func TestStoreHistoryNewestFirst(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
@@ -201,6 +258,9 @@ func TestStoreRemoveAndClear(t *testing.T) {
 
 func TestEphemeralStoreSupportsMutationsWithoutDisk(t *testing.T) {
 	store := NewEphemeral()
+	if store.Durable() {
+		t.Fatal("ephemeral store must not report durable")
+	}
 	settings := store.Settings()
 	settings.DownloadFolder = filepath.Join(t.TempDir(), "downloads")
 	if err := store.SetSettings(settings); err != nil {

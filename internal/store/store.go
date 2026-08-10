@@ -74,6 +74,11 @@ type Store struct {
 // not persisted.
 func NewEphemeral() *Store { return &Store{state: defaultState()} }
 
+// Durable reports whether this store can survive an app restart. It is used
+// by the queue manager to avoid promising automatic recovery for fallback
+// in-memory state.
+func (s *Store) Durable() bool { return s.path != "" }
+
 // Open loads (or initialises) the store at the given file path. If the
 // directory does not exist it is created. If the file is missing or
 // corrupt the default state is written and returned.
@@ -247,8 +252,9 @@ func (s *Store) RemoveHistory(id string) (bool, error) {
 	return false, nil
 }
 
-// DeleteHistoryFile removes the on-disk media for one history entry and then
-// drops the history row. A missing file is treated as already deleted.
+// DeleteHistoryFile removes a regular media file for one history entry and
+// then drops the history row. A missing file is treated as already deleted;
+// directories and symlinks are deliberately refused without changing history.
 func (s *Store) DeleteHistoryFile(id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -257,8 +263,17 @@ func (s *Store) DeleteHistoryFile(id string) (bool, error) {
 			continue
 		}
 		if strings.TrimSpace(entry.AbsolutePath) != "" {
-			if err := os.Remove(entry.AbsolutePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return false, fmt.Errorf("store: delete file: %w", err)
+			info, err := os.Lstat(entry.AbsolutePath)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return false, fmt.Errorf("store: inspect file: %w", err)
+			}
+			if err == nil {
+				if !info.Mode().IsRegular() {
+					return false, errors.New("store: history target is not a regular media file")
+				}
+				if err := os.Remove(entry.AbsolutePath); err != nil {
+					return false, fmt.Errorf("store: delete file: %w", err)
+				}
 			}
 		}
 		s.state.History = append(s.state.History[:i], s.state.History[i+1:]...)

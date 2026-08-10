@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { api } from './lib/api.js';
-  import { errorMessage, ffmpeg, history, jobs, route, settings, modal } from './lib/stores.js';
+  import { errorMessage, ffmpeg, history, jobs, route, settings, modal, persistence, showBanner } from './lib/stores.js';
   import type { JobSnapshot } from './lib/types.js';
   import Sidebar from './lib/components/Sidebar.svelte';
   import Modal from './lib/components/Modal.svelte';
@@ -21,19 +21,25 @@
       api.events.onHistory((entries) => history.set(entries ?? [])),
       api.events.onSettings((value) => settings.set(value)),
       api.events.onFFmpeg((status) => ffmpeg.set(status)),
+      api.events.onPersistence((status) => {
+        persistence.set(status);
+        if (status.available && !status.healthy && status.message) showBanner('warning', status.message, 10_000);
+      }),
     ].filter(Boolean) as Array<() => void>;
 
     try {
-      const [savedSettings, initialJobs, savedHistory, ffmpegStatus] = await Promise.all([
+      const [savedSettings, initialJobs, savedHistory, ffmpegStatus, persistenceStatus] = await Promise.all([
         api.settings.get(),
         api.jobs.list(),
         api.downloads.list(),
         api.ffmpeg.status(),
+        api.app.persistenceStatus(),
       ]);
       settings.set(savedSettings);
       jobs.set(initialJobs ?? []);
       history.set(savedHistory ?? []);
       ffmpeg.set(ffmpegStatus);
+      persistence.set(persistenceStatus);
     } catch (err) {
       modal.set({
         kind: 'error',
