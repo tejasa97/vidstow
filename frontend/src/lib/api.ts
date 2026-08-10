@@ -6,10 +6,12 @@
 // directly here. Wails injects these globals at app startup.
 
 import type {
+  BuildInfo,
   FFmpegStatus,
   HistoryEntry,
   InfoSummary,
   JobSnapshot,
+  PersistenceStatus,
   QueueEvent,
   Settings,
   UrlCheckResult,
@@ -67,6 +69,10 @@ export const api = {
     clear: () => call<FFmpegStatus>('ClearFFmpegPath'),
     pickPath: () => call<string>('PickFFmpegPath'),
   },
+  app: {
+    buildInfo: () => call<BuildInfo>('GetBuildInfo'),
+    persistenceStatus: () => call<PersistenceStatus>('GetPersistenceStatus'),
+  },
   folder: {
     pick: () => call<string>('PickDownloadFolder'),
   },
@@ -115,6 +121,10 @@ export const api = {
       window.runtime?.EventsOn?.('settings:update', (settings: Settings) => cb(settings)),
     onFFmpeg: (cb: (status: FFmpegStatus) => void) =>
       window.runtime?.EventsOn?.('ffmpeg:update', (status: FFmpegStatus) => cb(status)),
+    onPersistence: (cb: (status: PersistenceStatus) => void) =>
+      window.runtime?.EventsOn?.('persistence:update', (event: QueueEvent) => {
+        if (event?.persistence) cb(event.persistence);
+      }),
     off: (event: string) => window.runtime?.EventsOff?.(event),
   },
 };

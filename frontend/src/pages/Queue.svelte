@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { jobs, showBanner, showError } from '../lib/stores.js';
+  import { jobs, persistence, showBanner, showError } from '../lib/stores.js';
   import { api } from '../lib/api.js';
   import ProgressRow from '../lib/components/ProgressRow.svelte';
 
@@ -30,11 +30,19 @@
   {#if completed.length}
     <section class="section" aria-labelledby="completed-title"><h2 id="completed-title">Completed <span>{completed.length}</span></h2><div class="job-list">{#each completed as job, index (job.id)}<ProgressRow {job} index={active.length + index + 1} />{/each}</div></section>
   {/if}
-  <footer>Jobs are saved automatically.</footer>
+  <footer class:warning={!$persistence.available || !$persistence.healthy}>
+    {#if !$persistence.available}
+      {$persistence.message || 'VidStow is using temporary in-memory storage.'}
+    {:else if !$persistence.healthy}
+      {$persistence.message || 'VidStow could not save the download queue.'}
+    {:else}
+      Jobs are saved automatically.
+    {/if}
+  </footer>
 </section>
 
 <style>
   .page{width:min(100%,900px);margin:0 auto;padding:34px 42px 48px}.page-header{display:flex;align-items:flex-start;justify-content:space-between;gap:24px}.page-header h1{margin:0;font-size:26px}.page-header p{margin:5px 0 0;color:var(--text-muted);font-size:12px}.header-actions{display:flex;gap:8px}.header-actions button{min-height:34px;padding:0 12px;border:1px solid var(--border-default);border-radius:6px;background:#fff;font-size:11px}
-  .section{margin-top:24px}.section h2{display:flex;align-items:center;gap:7px;margin:0 0 9px;font-size:12px}.section h2 span{min-width:18px;height:18px;display:grid;place-items:center;border-radius:99px;background:var(--surface-active);color:var(--text-secondary);font-size:10px}.job-list{display:flex;flex-direction:column;gap:8px}.empty{min-height:150px;display:grid;place-items:center;border:1px dashed var(--border-default);border-radius:7px;color:var(--text-muted);font-size:12px}footer{margin-top:22px;text-align:center;color:var(--text-muted);font-size:10px}
+  .section{margin-top:24px}.section h2{display:flex;align-items:center;gap:7px;margin:0 0 9px;font-size:12px}.section h2 span{min-width:18px;height:18px;display:grid;place-items:center;border-radius:99px;background:var(--surface-active);color:var(--text-secondary);font-size:10px}.job-list{display:flex;flex-direction:column;gap:8px}.empty{min-height:150px;display:grid;place-items:center;border:1px dashed var(--border-default);border-radius:7px;color:var(--text-muted);font-size:12px}footer{margin-top:22px;text-align:center;color:var(--text-muted);font-size:10px}footer.warning{color:#9a3412}
   @media(max-width:650px){.page{padding:24px 18px}.page-header{flex-direction:column}.header-actions{width:100%}.header-actions button{flex:1}}
 </style>

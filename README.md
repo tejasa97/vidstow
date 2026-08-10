@@ -12,7 +12,7 @@ A focused desktop downloader built with Go, Wails, and Svelte.
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](go.mod)
 [![Wails](https://img.shields.io/badge/Wails-v2-CB2D3E)](https://wails.io/)
 [![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)](frontend/package.json)
-[![Engine](https://img.shields.io/badge/youtube__dlp-v0.1.0-20232A)](https://github.com/tejasa97/youtube_dlp/releases/tag/v0.1.0)
+[![Engine](https://img.shields.io/badge/youtube__dlp-09a8354-20232A)](https://github.com/tejasa97/youtube_dlp/commit/09a8354be2be)
 
 [Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Contributing](CONTRIBUTING.md)
 
@@ -143,7 +143,7 @@ flowchart LR
     FFmpeg --> Files["Local media files"]
 ```
 
-VidStow consumes the provider-neutral [`youtube_dlp`](https://github.com/tejasa97/youtube_dlp) engine at [`v0.1.0`](https://github.com/tejasa97/youtube_dlp/releases/tag/v0.1.0). Both metadata analysis and downloads use the same explicit YouTube composition.
+VidStow pins the provider-neutral [`youtube_dlp`](https://github.com/tejasa97/youtube_dlp) engine at immutable Go module pseudo-version [`v0.1.1-0.20260807091708-09a8354be2be`](https://github.com/tejasa97/youtube_dlp/commit/09a8354be2be). Both metadata analysis and downloads use the same explicit YouTube composition.
 
 The UI is the product boundary: if a workflow appears in VidStow, it is supported by VidStow. The underlying provider package can evolve independently without silently exposing new workflows in the desktop application.
 

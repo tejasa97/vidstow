@@ -35,6 +35,9 @@ type Plan struct {
 	RequiresFFmpeg    bool   `json:"requiresFfmpeg,omitempty"`
 	AudioBitrateKbps  int    `json:"audioBitrateKbps,omitempty"`
 	Recommended       bool   `json:"recommended,omitempty"`
+	// Available is informational. A returned curated plan remains the sole
+	// product contract for whether the UI may offer it.
+	Available bool `json:"available"`
 
 	Selector        string   `json:"-"`
 	SourceFormatIDs []string `json:"-"`
@@ -198,6 +201,7 @@ func bestVideoPlan(videos, audios []mediaFormat, duration int64) (Plan, bool) {
 		ApproxBytes:       approxBytes,
 		SizeIsApproximate: approximate,
 		RequiresFFmpeg:    requiresFFmpeg,
+		Available:         true,
 		Selector:          selector,
 		SourceFormatIDs:   ids,
 	}, true
@@ -262,6 +266,7 @@ func originalAudioPlan(audio mediaFormat, label string, duration int64) Plan {
 		AudioCodec:        displayAudioCodec(audio.acodec),
 		ApproxBytes:       bytes,
 		SizeIsApproximate: approximate,
+		Available:         true,
 		Selector:          audio.id,
 		SourceFormatIDs:   []string{audio.id},
 	}
@@ -282,6 +287,7 @@ func mp3Plan(source mediaFormat, bitrate int, duration int64) Plan {
 		SizeIsApproximate: bytes > 0,
 		RequiresFFmpeg:    true,
 		AudioBitrateKbps:  bitrate,
+		Available:         true,
 		Selector:          source.id,
 		SourceFormatIDs:   []string{source.id},
 	}

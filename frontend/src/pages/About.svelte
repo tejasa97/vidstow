@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { Card, Button } from '../lib/components/ui/index.js';
+  import { api } from '../lib/api.js';
+  import { showBanner, showError } from '../lib/stores.js';
+  import type { BuildInfo } from '../lib/types.js';
 
   const APP = {
     name: 'VidStow',
-    version: '0.1.0',
     tagline: 'A tidy, single-video YouTube downloader for the desktop.',
     description:
       'VidStow is an open-source desktop app that downloads public YouTube videos and audio. ' +
@@ -21,8 +24,22 @@
     { name: 'FFmpeg', url: 'https://ffmpeg.org' },
   ];
 
+  let build: BuildInfo = {
+    version: 'Loading…', engineVersion: 'Loading…', os: '', architecture: '', goVersion: '',
+  };
+
+  onMount(async () => {
+    try { build = await api.app.buildInfo(); }
+    catch (err) { showError(err, 'Could not read build information'); }
+  });
+
   function open(url: string) {
     if (url) window.runtime?.BrowserOpenURL?.(url);
+  }
+
+  async function copyDiagnostics() {
+    try { await api.diagnostics.copy(); showBanner('info', 'Diagnostics copied'); }
+    catch (err) { showError(err, 'Could not copy diagnostics'); }
   }
 </script>
 
@@ -33,15 +50,20 @@
   </header>
 
   <div class="grid">
-    <Card title={APP.name} description={`Version ${APP.version} · ${APP.license}`}>
+    <Card title={APP.name} description={`Version ${build.version} · ${APP.license}`}>
       <div class="intro">
         <p class="tagline">{APP.tagline}</p>
         <p class="description">{APP.description}</p>
       </div>
-  <div class="actions">
-    <Button variant="primary" label="View source" onclick={() => open(APP.source)}>View source</Button>
-    <Button variant="secondary" label="Read the docs" onclick={() => open(APP.docs)}>Read the docs</Button>
-  </div>
+      <dl class="build-info">
+        <div><dt>Engine</dt><dd>youtube_dlp {build.engineVersion}</dd></div>
+        <div><dt>Platform</dt><dd>{build.os && build.architecture ? `${build.os}/${build.architecture}` : 'Loading…'}</dd></div>
+      </dl>
+      <div class="actions">
+        <Button variant="primary" label="View source" onclick={() => open(APP.source)}>View source</Button>
+        <Button variant="secondary" label="Read the docs" onclick={() => open(APP.docs)}>Read the docs</Button>
+        <Button variant="secondary" label="Copy Diagnostics" onclick={copyDiagnostics}>Copy Diagnostics</Button>
+      </div>
     </Card>
 
     <Card title="Built with open source" description="VidStow depends on these projects.">
@@ -89,6 +111,10 @@
   .intro { display: flex; flex-direction: column; gap: var(--sp-2); }
   .tagline { margin: 0; font-size: var(--fs-md); font-weight: 600; color: var(--text-primary); }
   .description { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.55; }
+  .build-info { margin: var(--sp-3) 0 0; display: grid; gap: var(--sp-1); font-size: var(--fs-xs); color: var(--text-secondary); }
+  .build-info div { display: flex; gap: var(--sp-2); }
+  .build-info dt { color: var(--text-muted); }
+  .build-info dd { margin: 0; overflow-wrap: anywhere; }
   .actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); flex-wrap: wrap; }
 
   .stack { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
