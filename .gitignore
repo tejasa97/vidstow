@@ -1,5 +1,6 @@
 build/bin
 build/ffmpeg-minimal/
+scripts/build-ffmpeg-minimal.sh
 dist/
 node_modules
 frontend/dist

@@ -10,7 +10,8 @@ test('approved navigation and window branding are used', async () => {
     read('../../main.go'),
   ]);
   for (const label of ['Home', 'Queue', 'Downloads', 'Settings']) assert.match(sidebar, new RegExp(`label: '${label}'`));
-  for (const rejected of ['v0 · single video', 'Single public YouTube videos only', 'brand-name', 'class="logo"']) assert.doesNotMatch(sidebar, new RegExp(rejected));
+  assert.match(sidebar, /brand-mark\.png/);
+  for (const rejected of ['v0 · single video', 'Single public YouTube videos only', 'brand-name', 'class="logo"', 'logo-universal']) assert.doesNotMatch(sidebar, new RegExp(rejected));
   assert.match(main, /Title:\s+"VidStow"/);
   assert.match(await read('../index.html'), /<title>VidStow<\/title>/);
 });
@@ -91,6 +92,14 @@ test('download history actions remain native accessible buttons', async () => {
   assert.doesNotMatch(downloads, /role="(?:table|row|cell)"/);
   assert.match(downloads, /<button[^>]+aria-label="Open downloaded file"/);
   assert.match(downloads, /<button[^>]+aria-label="Show in Finder"/);
+  assert.match(downloads, /aria-label="Remove from history"/);
+  assert.match(downloads, /aria-label="Delete downloaded file"/);
   assert.match(downloads, /await api\.fs\.open\(entry\.absolutePath\)/);
   assert.match(downloads, /await api\.fs\.reveal\(entry\.absolutePath\)/);
+  assert.match(downloads, /api\.downloads\.remove\(entry\.id\)/);
+  assert.match(downloads, /api\.downloads\.deleteFile\(entry\.id\)/);
+  assert.match(downloads, /entry\.fileMissing/);
+  assert.match(downloads, /File missing/);
+  assert.match(downloads, /formatLabel\(entry\)/);
+  assert.match(downloads, /container/);
 });

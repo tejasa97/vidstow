@@ -16,13 +16,13 @@ application.
   `ytdlp-js-helper.exe`.
 - Launch and signing documentation for the first public release.
 
-## [0.1.0] - TBD
+## [0.1.0] - 2026-08-10
 
 ### Added
 
 - First public VidStow desktop release for public single-video YouTube URLs.
 - Analyze, quality presets, download queue, history, and FFmpeg diagnostics.
-- Sibling `ytdlp-js-helper` packaging beside the app on every platform.
+- Packaged `ytdlp-js-helper` runtime on every platform.
 - Unsigned-install guidance for Gatekeeper and SmartScreen.
 
 [Unreleased]: https://github.com/tejasa97/vidstow/compare/v0.1.0...HEAD

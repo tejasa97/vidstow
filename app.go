@@ -291,16 +291,29 @@ func (a *App) ClearCompletedJobs() { a.jobs.ClearTerminal() }
 // Downloads (history)
 // ---------------------------------------------------------------------------
 
-// ListDownloads returns the persisted history.
+// ListDownloads returns the persisted history with live file-presence status.
 func (a *App) ListDownloads() []store.HistoryEntry { return a.store.History() }
 
-// RemoveDownload deletes one history entry.
+// RemoveDownload deletes one history entry without touching the media file.
 func (a *App) RemoveDownload(id string) error {
 	removed, err := a.store.RemoveHistory(id)
 	if err == nil && removed {
 		wailsruntime.EventsEmit(a.ctx, "history:update", a.store.History())
 	}
 	return err
+}
+
+// DeleteDownloadFile deletes the media file for one history entry and then
+// removes that history row. History-only removal stays on RemoveDownload.
+func (a *App) DeleteDownloadFile(id string) error {
+	deleted, err := a.store.DeleteHistoryFile(id)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		wailsruntime.EventsEmit(a.ctx, "history:update", a.store.History())
+	}
+	return nil
 }
 
 // ClearDownloads empties the persisted history.
@@ -324,6 +337,9 @@ func (a *App) OpenFile(path string) error {
 		return err
 	}
 	if _, err := os.Stat(expanded); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("That downloaded file is no longer on disk.")
+		}
 		return err
 	}
 	return launchWithOS(expanded)
@@ -339,6 +355,9 @@ func (a *App) RevealInFinder(path string) error {
 		return err
 	}
 	if _, err := os.Stat(expanded); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("That downloaded file is no longer on disk.")
+		}
 		return err
 	}
 	return revealWithOS(expanded)
@@ -352,7 +371,7 @@ func (a *App) CopyDiagnostics() (string, error) {
 	settings := a.store.Settings()
 	report := strings.Builder{}
 	report.WriteString("VidStow diagnostics\n")
-	report.WriteString("App: VidStow v0 (Go " + runtime.Version() + ", " + runtime.GOOS + "/" + runtime.GOARCH + ")\n")
+	report.WriteString("App: VidStow v0.1.0 (Go " + runtime.Version() + ", " + runtime.GOOS + "/" + runtime.GOARCH + ")\n")
 	report.WriteString("Download folder: " + filepath.Base(settings.DownloadFolder) + "\n")
 	// Privacy: do not include the absolute FFmpeg path. The basename
 	// tells support which binary the user picked without disclosing
@@ -418,6 +437,9 @@ func (a *App) recordHistory(snap jobs.JobSnapshot) {
 		Title:         snap.Title,
 		Channel:       snap.Channel,
 		Quality:       quality,
+		Container:     snap.Container,
+		VideoCodec:    snap.VideoCodec,
+		AudioCodec:    snap.AudioCodec,
 		Filename:      snap.Filename,
 		AbsolutePath:  snap.AbsolutePath,
 		SizeBytes:     snap.Bytes,

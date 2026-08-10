@@ -59,9 +59,9 @@ case "$os_name" in
     (
       cd "$staging_root"
       if command -v ditto >/dev/null 2>&1; then
-        ditto -c -k --sequesterRsrc --keepParent VidStow "$dist_dir/$archive_name"
+        COPYFILE_DISABLE=1 ditto -c -k --norsrc --keepParent VidStow "$dist_dir/$archive_name"
       else
-        zip -qry "$dist_dir/$archive_name" VidStow
+        COPYFILE_DISABLE=1 zip -qry -X "$dist_dir/$archive_name" VidStow
       fi
     )
     ;;

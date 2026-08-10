@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,12 +38,17 @@ type HistoryEntry struct {
 	Title         string `json:"title"`
 	Channel       string `json:"channel"`
 	Quality       string `json:"quality"`
+	Container     string `json:"container,omitempty"`
+	VideoCodec    string `json:"videoCodec,omitempty"`
+	AudioCodec    string `json:"audioCodec,omitempty"`
 	Filename      string `json:"filename"`
 	AbsolutePath  string `json:"absolutePath"`
 	SizeBytes     int64  `json:"sizeBytes"`
 	CompletedAt   string `json:"completedAt"`
 	DurationLabel string `json:"durationLabel"`
 	Thumbnail     string `json:"thumbnail,omitempty"`
+	// FileMissing is computed at read time and never persisted.
+	FileMissing bool `json:"fileMissing,omitempty"`
 }
 
 // State bundles settings and history. The store holds a copy in memory
@@ -203,6 +209,9 @@ func (s *Store) History() []HistoryEntry {
 	out := make([]HistoryEntry, len(s.state.History))
 	copy(out, s.state.History)
 	sort.Slice(out, func(i, j int) bool { return out[i].CompletedAt > out[j].CompletedAt })
+	for i := range out {
+		out[i].FileMissing = !fileExists(out[i].AbsolutePath)
+	}
 	return out
 }
 
@@ -212,6 +221,7 @@ func (s *Store) AppendHistory(entry HistoryEntry) error {
 	if entry.CompletedAt == "" {
 		entry.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	}
+	entry.FileMissing = false
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state.History = append([]HistoryEntry{entry}, s.state.History...)
@@ -237,6 +247,26 @@ func (s *Store) RemoveHistory(id string) (bool, error) {
 	return false, nil
 }
 
+// DeleteHistoryFile removes the on-disk media for one history entry and then
+// drops the history row. A missing file is treated as already deleted.
+func (s *Store) DeleteHistoryFile(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, entry := range s.state.History {
+		if entry.ID != id {
+			continue
+		}
+		if strings.TrimSpace(entry.AbsolutePath) != "" {
+			if err := os.Remove(entry.AbsolutePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return false, fmt.Errorf("store: delete file: %w", err)
+			}
+		}
+		s.state.History = append(s.state.History[:i], s.state.History[i+1:]...)
+		return true, s.writeLocked()
+	}
+	return false, nil
+}
+
 // ClearHistory removes every history entry.
 func (s *Store) ClearHistory() error {
 	s.mu.Lock()
@@ -251,6 +281,10 @@ func (s *Store) writeLocked() error {
 	if s.path == "" {
 		return nil
 	}
+	// Presence is ephemeral UI state and must not be written to disk.
+	for i := range s.state.History {
+		s.state.History[i].FileMissing = false
+	}
 	data, err := json.MarshalIndent(s.state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("store: marshal: %w", err)
@@ -263,4 +297,12 @@ func (s *Store) writeLocked() error {
 		return fmt.Errorf("store: rename: %w", err)
 	}
 	return nil
+}
+
+func fileExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }

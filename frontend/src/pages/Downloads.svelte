@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { history, showError } from '../lib/stores.js';
+  import { history, modal, showBanner, showError } from '../lib/stores.js';
   import { api } from '../lib/api.js';
   import { formatBytes, formatRelative, qualityLabel } from '../lib/format.js';
   import type { HistoryEntry } from '../lib/types.js';
@@ -8,11 +8,88 @@
   let view: 'recent' | 'all' = 'recent';
   let selected: HistoryEntry | null = null;
   $: source = view === 'recent' ? $history.slice(0, 10) : $history;
-  $: filtered = source.filter((entry) => [entry.title, entry.channel, entry.filename].some((value) => value.toLowerCase().includes(query.trim().toLowerCase())));
+  $: filtered = source.filter((entry) =>
+    [entry.title, entry.channel, entry.filename, entry.quality, entry.container || '']
+      .some((value) => value.toLowerCase().includes(query.trim().toLowerCase())),
+  );
   $: if (!selected || !filtered.some((entry) => entry.id === selected?.id)) selected = filtered[0] || null;
 
-  const open = async (entry: HistoryEntry) => { try { await api.fs.open(entry.absolutePath); } catch (err) { showError(err); } };
-  const reveal = async (entry: HistoryEntry) => { try { await api.fs.reveal(entry.absolutePath); } catch (err) { showError(err); } };
+  function formatLabel(entry: HistoryEntry): string {
+    const quality = qualityLabel(entry.quality);
+    return entry.container ? `${quality} · ${entry.container}` : quality;
+  }
+
+  function codecSummary(entry: HistoryEntry): string {
+    return [entry.videoCodec, entry.audioCodec].filter(Boolean).join(' · ');
+  }
+
+  const open = async (entry: HistoryEntry) => {
+    if (entry.fileMissing) {
+      showBanner('warning', 'That downloaded file is no longer on disk.');
+      return;
+    }
+    try {
+      await api.fs.open(entry.absolutePath);
+    } catch (err) {
+      showError(err, 'Could not open the downloaded file');
+    }
+  };
+
+  const reveal = async (entry: HistoryEntry) => {
+    if (entry.fileMissing) {
+      showBanner('warning', 'That downloaded file is no longer on disk.');
+      return;
+    }
+    try {
+      await api.fs.reveal(entry.absolutePath);
+    } catch (err) {
+      showError(err, 'Could not show the downloaded file');
+    }
+  };
+
+  function confirmRemoveHistory(entry: HistoryEntry) {
+    modal.set({
+      kind: 'confirm',
+      title: 'Remove from history?',
+      message: `Remove “${entry.title}” from Downloads. The media file on disk stays untouched.`,
+      actions: [
+        {
+          label: 'Remove from history',
+          primary: true,
+          action: async () => {
+            try {
+              await api.downloads.remove(entry.id);
+              showBanner('info', 'Removed from history');
+            } catch (err) {
+              showError(err, 'Could not remove the history entry');
+            }
+          },
+        },
+      ],
+    });
+  }
+
+  function confirmDeleteFile(entry: HistoryEntry) {
+    modal.set({
+      kind: 'confirm',
+      title: 'Delete downloaded file?',
+      message: `Permanently delete “${entry.filename || entry.title}” from disk and remove it from history.`,
+      actions: [
+        {
+          label: 'Delete file',
+          primary: true,
+          action: async () => {
+            try {
+              await api.downloads.deleteFile(entry.id);
+              showBanner('info', 'Deleted downloaded file');
+            } catch (err) {
+              showError(err, 'Could not delete the downloaded file');
+            }
+          },
+        },
+      ],
+    });
+  }
 </script>
 
 <section class="page" aria-labelledby="downloads-title">
@@ -29,17 +106,21 @@
   <div class="table" aria-label="Downloaded videos">
     <div class="thead"><span>Title</span><span>Format</span><span>Size</span><span>Finished</span><span>Actions</span></div>
     {#each filtered as entry (entry.id)}
-      <div class="tr" class:selected={selected?.id === entry.id}>
+      <div class="tr" class:selected={selected?.id === entry.id} class:missing={entry.fileMissing}>
         <button class="title-cell" type="button" aria-label={`Select ${entry.title}`} on:click={() => selected = entry}>
           <span class="thumb">{#if entry.thumbnail}<img src={entry.thumbnail} alt="" />{/if}</span>
-          <span class="copy"><strong title={entry.title}>{entry.title}</strong><small>{entry.channel || 'YouTube'}</small></span>
+          <span class="copy">
+            <strong title={entry.title}>{entry.title}</strong>
+            <small>{entry.channel || 'YouTube'}{#if entry.fileMissing} · File missing{/if}</small>
+          </span>
         </button>
-        <span><em>{qualityLabel(entry.quality)}</em></span>
+        <span><em>{formatLabel(entry)}</em>{#if codecSummary(entry)}<small class="codec">{codecSummary(entry)}</small>{/if}</span>
         <span>{formatBytes(entry.sizeBytes)}</span>
         <span>{formatRelative(entry.completedAt)}</span>
         <span class="row-actions">
-          <button type="button" aria-label="Open downloaded file" on:click={() => open(entry)}>↗&nbsp; Open</button>
-          <button type="button" aria-label="Show in Finder" on:click={() => reveal(entry)}>▭</button>
+          <button type="button" aria-label="Open downloaded file" disabled={entry.fileMissing} on:click={() => open(entry)}>↗&nbsp; Open</button>
+          <button type="button" aria-label="Show in Finder" disabled={entry.fileMissing} on:click={() => reveal(entry)}>▭</button>
+          <button type="button" aria-label="Remove from history" on:click={() => confirmRemoveHistory(entry)}>×</button>
         </span>
       </div>
     {/each}
@@ -52,8 +133,26 @@
       <div class="detail-copy">
         <h2 title={selected.title}>{selected.title}</h2>
         <p>{selected.channel || 'YouTube'}</p>
-        <div class="facts"><span>{qualityLabel(selected.quality)}</span><span>·</span><span>{formatBytes(selected.sizeBytes)}</span><span>·</span><span>{formatRelative(selected.completedAt)}</span></div>
-        <div class="location"><span class="location-label">File location:</span><span title={selected.absolutePath}>▭ &nbsp;{selected.absolutePath}</span><button type="button" on:click={() => reveal(selected!)}>Show in Finder</button></div>
+        <div class="facts">
+          <span>{formatLabel(selected)}</span>
+          {#if codecSummary(selected)}<span>·</span><span>{codecSummary(selected)}</span>{/if}
+          <span>·</span>
+          <span>{formatBytes(selected.sizeBytes)}</span>
+          <span>·</span>
+          <span>{formatRelative(selected.completedAt)}</span>
+        </div>
+        {#if selected.fileMissing}
+          <p class="missing-note">This file is no longer on disk. You can still remove the history entry.</p>
+        {/if}
+        <div class="location">
+          <span class="location-label">File location:</span>
+          <span title={selected.absolutePath}>▭ &nbsp;{selected.absolutePath}</span>
+          <button type="button" disabled={selected.fileMissing} on:click={() => reveal(selected!)}>Show in Finder</button>
+        </div>
+        <div class="detail-actions">
+          <button type="button" aria-label="Remove from history" on:click={() => confirmRemoveHistory(selected!)}>Remove from history</button>
+          <button type="button" class="danger" aria-label="Delete downloaded file" disabled={selected.fileMissing} on:click={() => confirmDeleteFile(selected!)}>Delete file</button>
+        </div>
       </div>
     </section>
   {/if}
@@ -68,19 +167,25 @@
   .tabs { display: grid; grid-template-columns: 84px 84px; border: 1px solid var(--border-default); border-radius: 8px; padding: 3px; }
   .tabs button { height: 34px; border-radius: 6px; color: var(--text-secondary); } .tabs button.active { color:#fff; background: linear-gradient(180deg,#347cf4,#2867d8); }
   .table { overflow-x: auto; background: var(--surface-raised); border: 1px solid var(--border-default); border-radius: 8px; }
-  .thead,.tr { display: grid; grid-template-columns: minmax(320px,1.35fr) 130px 110px 130px 190px; gap: 12px; min-width: 850px; align-items: center; }
+  .thead,.tr { display: grid; grid-template-columns: minmax(300px,1.35fr) 150px 110px 130px 220px; gap: 12px; min-width: 900px; align-items: center; }
   .thead { padding: 10px 14px; color: var(--text-secondary); font-size: 13px; }
   .tr { width: 100%; min-height: 72px; padding: 8px 14px; text-align: left; border-top: 1px solid var(--border-subtle); color: var(--text-secondary); }
   .tr:hover,.tr.selected { background: rgba(42,57,76,.3); }
+  .tr.missing { opacity: 0.82; }
   .title-cell { display: grid; grid-template-columns: 80px minmax(0,1fr); align-items:center; gap: 12px; min-width:0; }
   .thumb { width: 80px; aspect-ratio: 16/9; border-radius: 6px; overflow:hidden; background:var(--surface-sunken); } .thumb img { width:100%;height:100%;object-fit:cover; }
   .copy { min-width:0; } .copy strong,.copy small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .copy strong { color:var(--text-primary);font-weight:500; } .copy small { color:var(--accent-400);margin-top:5px; }
-  .tr em { font-style:normal; color:var(--text-primary); border:1px solid var(--border-default); border-radius:6px; padding:5px 7px; }
-  .row-actions { display:flex; justify-content:flex-end; gap:8px; } .row-actions button,.location button { min-height:32px;padding:0 10px;color:var(--text-primary);background:var(--surface-raised);border:1px solid var(--border-default);border-radius:6px; }
+  .tr em { font-style:normal; color:var(--text-primary); border:1px solid var(--border-default); border-radius:6px; padding:5px 7px; display:inline-block; }
+  .codec { display:block; margin-top:4px; color:var(--text-muted); font-size:11px; }
+  .row-actions { display:flex; justify-content:flex-end; gap:8px; } .row-actions button,.location button,.detail-actions button { min-height:32px;padding:0 10px;color:var(--text-primary);background:var(--surface-raised);border:1px solid var(--border-default);border-radius:6px; }
+  .row-actions button:disabled,.location button:disabled,.detail-actions button:disabled { opacity:0.45; cursor:not-allowed; }
   .empty { padding:70px 20px;text-align:center;color:var(--text-muted);border-top:1px solid var(--border-subtle); }
   .detail-card { display:grid;grid-template-columns:180px minmax(0,1fr);gap:20px;margin-top:14px;padding:10px;background:var(--surface-raised);border:1px solid var(--border-default);border-radius:8px;min-width:0; }
   .detail-thumb { position:relative;aspect-ratio:16/10;border-radius:7px;overflow:hidden;background:var(--surface-sunken); } .detail-thumb img { width:100%;height:100%;object-fit:cover; } .detail-thumb span { position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.8);padding:2px 6px;border-radius:4px; }
-  .detail-copy { min-width:0;padding:4px 2px; } .detail-copy h2 { margin:0;font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; } .detail-copy p { margin:4px 0;color:var(--accent-400); } .facts { display:flex;gap:9px;color:var(--text-secondary);font-size:13px; }
+  .detail-copy { min-width:0;padding:4px 2px; } .detail-copy h2 { margin:0;font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; } .detail-copy p { margin:4px 0;color:var(--accent-400); } .facts { display:flex;flex-wrap:wrap;gap:9px;color:var(--text-secondary);font-size:13px; }
+  .missing-note { margin:10px 0 0; color: var(--status-warning); font-size: 12px; }
   .location { display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;margin-top:14px;min-width:0; } .location .location-label { color:var(--text-secondary);padding:0;border:0; } .location > span { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:7px 10px;border:1px solid var(--border-subtle);border-radius:7px;color:var(--text-secondary); }
-  @media(max-width:800px){.detail-card{grid-template-columns:1fr}.detail-thumb{max-width:240px}.location{grid-template-columns:1fr}.search{width:100%}}
+  .detail-actions { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  .detail-actions .danger { color:#b91c1c; border-color:#fecaca; background:#fef2f2; }
+  @media(max-width:800px){.detail-card{grid-template-columns:1fr}.detail-thumb{max-width:240px}.location{grid-template-columns:1fr}.search{width:100%}.thead,.tr{grid-template-columns:minmax(240px,1.2fr) 140px 90px 110px 200px}}
 </style>

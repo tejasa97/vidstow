@@ -8,8 +8,8 @@ or machine.
 
 | Platform | Artifact | Contents |
 | --- | --- | --- |
-| macOS Apple Silicon | `VidStow-0.1.0-darwin-arm64.zip` | `VidStow.app` + sibling `ytdlp-js-helper` |
-| macOS Intel | `VidStow-0.1.0-darwin-amd64.zip` | `VidStow.app` + sibling `ytdlp-js-helper` |
+| macOS Apple Silicon | `VidStow-0.1.0-darwin-arm64.zip` | `VidStow.app` with embedded `ytdlp-js-helper` |
+| macOS Intel | `VidStow-0.1.0-darwin-amd64.zip` | `VidStow.app` with embedded `ytdlp-js-helper` |
 | Windows x64 | `VidStow-0.1.0-windows-amd64.zip` | portable `vidstow.exe` + `ytdlp-js-helper.exe` |
 | Windows x64 installer | `VidStow-0.1.0-windows-amd64-installer.exe` | NSIS installer that also installs the helper |
 | Linux x64 | `VidStow-0.1.0-linux-amd64.tar.gz` | `vidstow` + `ytdlp-js-helper` |
@@ -35,8 +35,8 @@ wails build -platform linux/amd64 -clean
 ./scripts/package-release-archives.sh 0.1.0 linux amd64 build/bin/vidstow
 ```
 
-Post-build hooks package and verify `ytdlp-js-helper` beside the app on all
-three platforms. On macOS the helper is placed inside the app bundle and the
+Post-build hooks package and verify `ytdlp-js-helper` beside the executable on
+Windows and Linux. On macOS the helper is placed inside the app bundle and the
 bundle is ad-hoc re-signed.
 
 ## Unsigned v0.1 policy

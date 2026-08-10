@@ -14,11 +14,11 @@ A focused desktop downloader built with Go, Wails, and Svelte.
 [![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)](frontend/package.json)
 [![Engine](https://img.shields.io/badge/youtube__dlp-v0.1.0-20232A)](https://github.com/tejasa97/youtube_dlp/releases/tag/v0.1.0)
 
-[Download](#download) · [Features](#features) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Contributing](CONTRIBUTING.md)
+[Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
-![VidStow home screen](docs/assets/vidstow-home.jpeg)
+![VidStow showing video download options](docs/assets/screenshots/video-options.jpg)
 
 > [!IMPORTANT]
 > VidStow is early-stage software. The UI intentionally supports public, single-video YouTube URLs; playlists, channels, search, live streams, Shorts, and other sites are not yet exposed. The first public builds are unsigned.
@@ -69,6 +69,30 @@ Downloading a video should not require memorising command-line flags. VidStow wr
 | Diagnose | FFmpeg status, configurable binary path, and privacy-conscious diagnostics |
 
 VidStow stores settings and download history in the operating system's user-config directory. It does not require an account or a hosted VidStow service.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%">
+      <strong>Audio formats</strong><br>
+      Choose original audio or convert it to a familiar MP3 bitrate.<br><br>
+      <img src="docs/assets/screenshots/audio-options.jpg" alt="VidStow audio format options">
+    </td>
+    <td width="50%">
+      <strong>Persistent queue</strong><br>
+      Track active and queued downloads from one focused workspace.<br><br>
+      <img src="docs/assets/screenshots/queue.jpg" alt="VidStow download queue">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <strong>Desktop settings</strong><br>
+      Configure the output folder, concurrency, recovery behavior, and FFmpeg installation.<br><br>
+      <img src="docs/assets/screenshots/settings.jpg" alt="VidStow settings">
+    </td>
+  </tr>
+</table>
 
 ## Quick start
 

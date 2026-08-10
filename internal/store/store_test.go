@@ -1,6 +1,8 @@
 package store
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -44,13 +46,20 @@ func TestStoreRoundtrip(t *testing.T) {
 		t.Fatalf("SetSettings: %v", err)
 	}
 
+	mediaPath := filepath.Join(dir, "video.mp4")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 	entry := HistoryEntry{
 		ID:           "abc",
 		Title:        "Test",
 		Channel:      "Ch",
-		Quality:      "best",
+		Quality:      "1080p",
+		Container:    "MP4",
+		VideoCodec:   "avc1",
+		AudioCodec:   "mp4a",
 		Filename:     "video.mp4",
-		AbsolutePath: filepath.Join(dir, "video.mp4"),
+		AbsolutePath: mediaPath,
 		SizeBytes:    12345,
 		CompletedAt:  "2025-01-01T00:00:00Z",
 	}
@@ -75,6 +84,73 @@ func TestStoreRoundtrip(t *testing.T) {
 	}
 	if got := s2.History()[0].Title; got != "Test" {
 		t.Fatalf("history title = %q, want Test", got)
+	}
+	if got := s2.History()[0].Container; got != "MP4" {
+		t.Fatalf("history container = %q, want MP4", got)
+	}
+	if got := s2.History()[0].VideoCodec; got != "avc1" {
+		t.Fatalf("history videoCodec = %q, want avc1", got)
+	}
+	if got := s2.History()[0].AudioCodec; got != "mp4a" {
+		t.Fatalf("history audioCodec = %q, want mp4a", got)
+	}
+	if s2.History()[0].FileMissing {
+		t.Fatal("expected existing history file to report FileMissing=false")
+	}
+}
+
+func TestStoreHistoryReportsMissingFilesAndDeletesMedia(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	missingPath := filepath.Join(dir, "gone.mp4")
+	if err := s.AppendHistory(HistoryEntry{
+		ID:           "missing",
+		Title:        "Missing",
+		Quality:      "720p",
+		Container:    "MP4",
+		AbsolutePath: missingPath,
+		CompletedAt:  "2025-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("AppendHistory missing: %v", err)
+	}
+	history := s.History()
+	if len(history) != 1 || !history[0].FileMissing {
+		t.Fatalf("missing history = %#v; want FileMissing=true", history)
+	}
+
+	existingPath := filepath.Join(dir, "keep.mp4")
+	if err := os.WriteFile(existingPath, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := s.AppendHistory(HistoryEntry{
+		ID:           "present",
+		Title:        "Present",
+		Quality:      "1080p",
+		Container:    "MP4",
+		AbsolutePath: existingPath,
+		CompletedAt:  "2025-01-02T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("AppendHistory present: %v", err)
+	}
+	history = s.History()
+	if len(history) != 2 || history[0].ID != "present" || history[0].FileMissing {
+		t.Fatalf("present history = %#v; want present first and FileMissing=false", history)
+	}
+
+	deleted, err := s.DeleteHistoryFile("present")
+	if err != nil || !deleted {
+		t.Fatalf("DeleteHistoryFile: deleted=%v err=%v", deleted, err)
+	}
+	if _, err := os.Stat(existingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected media file removed, got %v", err)
+	}
+	if got := len(s.History()); got != 1 || s.History()[0].ID != "missing" {
+		t.Fatalf("history after delete = %#v; want only missing entry", s.History())
 	}
 }
 
