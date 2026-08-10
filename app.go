@@ -371,7 +371,7 @@ func (a *App) CopyDiagnostics() (string, error) {
 	settings := a.store.Settings()
 	report := strings.Builder{}
 	report.WriteString("VidStow diagnostics\n")
-	report.WriteString("App: VidStow v0 (Go " + runtime.Version() + ", " + runtime.GOOS + "/" + runtime.GOARCH + ")\n")
+	report.WriteString("App: VidStow v0.1.0 (Go " + runtime.Version() + ", " + runtime.GOOS + "/" + runtime.GOARCH + ")\n")
 	report.WriteString("Download folder: " + filepath.Base(settings.DownloadFolder) + "\n")
 	// Privacy: do not include the absolute FFmpeg path. The basename
 	// tells support which binary the user picked without disclosing
