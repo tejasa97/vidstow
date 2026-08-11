@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tejasa97/vidstow/internal/outputplan"
+	"github.com/tejasa97/vidstow/internal/reservation"
 	"github.com/tejasa97/youtube_dlp/engine"
 	provideryoutube "github.com/tejasa97/youtube_dlp/providers/youtube"
 )
@@ -100,6 +101,17 @@ func (q Quality) outputTemplate() string {
 	return fmt.Sprintf("%%(title)s [%%(id)s] [%s].%%(ext)s", q.Label())
 }
 
+// OutputTemplateForPlan is the exact basename template used by a curated
+// output plan. Admission uses the same template before choosing a durable
+// reservation, so the queue and the engine do not drift on filenames.
+func OutputTemplateForPlan(plan outputplan.Plan) string {
+	label := plan.Label
+	if label == "" {
+		label = plan.ID
+	}
+	return fmt.Sprintf("%%(title)s [%%(id)s] [%s].%%(ext)s", label)
+}
+
 // Status is the lifecycle state of a job.
 type Status string
 
@@ -123,6 +135,13 @@ type Request struct {
 	OutputDir string  `json:"outputDir"`
 	Duration  string  `json:"duration"`
 	Thumbnail string  `json:"thumbnail"`
+}
+
+// AdmittedOutput is the internal admission-to-manager contract. The basename
+// comes from the committed reservation and is used as a literal engine output
+// template for this attempt; it is not part of the UI request model.
+type AdmittedOutput struct {
+	Basename string
 }
 
 // JobSnapshot is the immutable view of a job exposed to the UI.
@@ -266,6 +285,7 @@ type analyzeRunner func(context.Context, engine.Request) (engine.Result, error)
 type jobState struct {
 	snap           JobSnapshot
 	plan           *outputplan.Plan
+	outputTemplate string
 	cancel         context.CancelFunc
 	ctx            context.Context
 	done           chan struct{}
@@ -655,11 +675,40 @@ func (m *Manager) ffmpegLocationSnapshot() string {
 // Submit enqueues a new job and returns its id. The job starts as soon
 // as it reaches the head of the FIFO queue.
 func (m *Manager) Submit(req Request) (string, error) {
+	return m.submit(uuid.NewString(), req, nil, nil)
+}
+
+// SubmitAdmitted enqueues a job whose durable admission transaction has
+// already committed. The supplied id is preserved so the live FIFO row and
+// the State v2 row refer to the same logical job. The manager still owns all
+// existing validation, queue ordering, occupancy, and worker startup rules.
+// Callers must pass the exact plan used to render and reserve the output.
+func (m *Manager) SubmitAdmitted(id string, req Request, selectedPlan *outputplan.Plan, output AdmittedOutput) (string, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", errors.New("jobs: admitted job id is required")
+	}
+	if selectedPlan == nil || strings.TrimSpace(req.PlanID) == "" {
+		return "", errors.New("jobs: admitted output plan is required")
+	}
+	outputTemplate, err := literalOutputTemplate(output.Basename)
+	if err != nil {
+		return "", err
+	}
+	return m.submit(id, req, selectedPlan, &outputTemplate)
+}
+
+func (m *Manager) submit(id string, req Request, admittedPlan *outputplan.Plan, admittedOutputTemplate *string) (string, error) {
 	if req.URL == "" {
 		return "", errors.New("jobs: empty url")
 	}
 	var selectedPlan *outputplan.Plan
-	if req.PlanID != "" {
+	if admittedPlan != nil {
+		if req.PlanID == "" || admittedPlan.ID != req.PlanID {
+			return "", errors.New("jobs: admitted output plan does not match request")
+		}
+		plan := *admittedPlan
+		selectedPlan = &plan
+	} else if req.PlanID != "" {
 		plan, err := m.ResolvePlan(req.VideoID, req.PlanID)
 		if err != nil {
 			return "", err
@@ -678,7 +727,6 @@ func (m *Manager) Submit(req Request) (string, error) {
 		return "", fmt.Errorf("jobs: prepare output dir: %w", err)
 	}
 
-	id := uuid.NewString()
 	state := &jobState{
 		snap: JobSnapshot{
 			ID:            id,
@@ -694,8 +742,12 @@ func (m *Manager) Submit(req Request) (string, error) {
 			Status:        StatusPending,
 			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 		},
-		plan: selectedPlan,
-		done: make(chan struct{}),
+		plan:           selectedPlan,
+		outputTemplate: "",
+		done:           make(chan struct{}),
+	}
+	if admittedOutputTemplate != nil {
+		state.outputTemplate = *admittedOutputTemplate
 	}
 	if selectedPlan != nil {
 		state.snap.PlanID = selectedPlan.ID
@@ -713,6 +765,10 @@ func (m *Manager) Submit(req Request) (string, error) {
 	if m.closing || m.closed {
 		m.mu.Unlock()
 		return "", ErrClosed
+	}
+	if _, exists := m.all[id]; exists {
+		m.mu.Unlock()
+		return "", errors.New("jobs: duplicate admitted job id")
 	}
 	m.all[id] = state
 	m.order = append(m.order, id)
@@ -1083,7 +1139,11 @@ func (m *Manager) run(state *jobState) {
 	}
 	if state.plan != nil {
 		req.Format = state.plan.Selector
-		req.OutputTemplate = fmt.Sprintf("%%(title)s [%%(id)s] [%s].%%(ext)s", state.plan.Label)
+		if state.outputTemplate != "" {
+			req.OutputTemplate = state.outputTemplate
+		} else {
+			req.OutputTemplate = OutputTemplateForPlan(*state.plan)
+		}
 		if state.plan.Kind == outputplan.KindVideo {
 			req.MergeOutputFormat = strings.ToLower(state.plan.Container)
 		}
@@ -1177,6 +1237,17 @@ func (m *Manager) run(state *jobState) {
 	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	m.maybeStartNextLocked()
 	m.emitQueueLocked()
+}
+
+func literalOutputTemplate(basename string) (string, error) {
+	if err := reservation.ValidateBasename(basename); err != nil {
+		return "", fmt.Errorf("jobs: admitted output basename: %w", err)
+	}
+	encoded := strings.ReplaceAll(basename, "%", "%%")
+	if len(encoded) > reservation.MaxBasenameBytes*2 {
+		return "", errors.New("jobs: admitted output template exceeds size bound")
+	}
+	return encoded, nil
 }
 
 func (m *Manager) handleEvent(state *jobState, ev engine.Event) {
