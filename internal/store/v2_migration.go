@@ -1,9 +1,10 @@
 package store
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,10 +16,27 @@ import (
 )
 
 type legacyStateV1 struct {
-	Version  int                     `json:"version"`
-	Settings legacySettingsV1        `json:"settings"`
-	History  []jobmodel.HistoryEntry `json:"history"`
-	Jobs     []legacyPersistedJobV1  `json:"jobs"`
+	Version  int                    `json:"version"`
+	Settings legacySettingsV1       `json:"settings"`
+	History  []legacyHistoryV1      `json:"history"`
+	Jobs     []legacyPersistedJobV1 `json:"jobs"`
+}
+
+type legacyHistoryV1 struct {
+	ID            string `json:"id"`
+	VideoID       string `json:"videoId"`
+	Title         string `json:"title"`
+	Channel       string `json:"channel"`
+	Quality       string `json:"quality"`
+	Container     string `json:"container"`
+	VideoCodec    string `json:"videoCodec"`
+	AudioCodec    string `json:"audioCodec"`
+	Filename      string `json:"filename"`
+	AbsolutePath  string `json:"absolutePath"`
+	SizeBytes     int64  `json:"sizeBytes"`
+	CompletedAt   string `json:"completedAt"`
+	DurationLabel string `json:"durationLabel"`
+	Thumbnail     string `json:"thumbnail,omitempty"`
 }
 
 type legacySettingsV1 struct {
@@ -34,39 +52,68 @@ type legacySettingsV1 struct {
 }
 
 type legacyPersistedJobV1 struct {
-	Snapshot legacySnapshotV1 `json:"snapshot"`
-	Plan     legacyPlanV1     `json:"plan"`
+	Snapshot        legacySnapshotV1 `json:"snapshot"`
+	Plan            legacyPlanV1     `json:"plan"`
+	PrivateSelector string           `json:"privateSelector,omitempty"`
 }
 
 type legacySnapshotV1 struct {
-	ID            string `json:"id"`
-	URL           string `json:"url"`
-	VideoID       string `json:"videoID"`
-	Title         string `json:"title"`
-	Channel       string `json:"channel"`
-	Quality       string `json:"quality"`
-	PlanID        string `json:"planId"`
-	OutputDir     string `json:"outputDir"`
-	DurationLabel string `json:"durationLabel"`
-	Thumbnail     string `json:"thumbnail"`
-	Status        string `json:"status"`
-	CreatedAt     string `json:"createdAt"`
-	Filename      string `json:"filename"`
+	ID              string  `json:"id"`
+	URL             string  `json:"url"`
+	VideoID         string  `json:"videoID"`
+	Title           string  `json:"title"`
+	Channel         string  `json:"channel"`
+	Quality         string  `json:"quality"`
+	PlanID          string  `json:"planId"`
+	OutputDir       string  `json:"outputDir"`
+	DurationLabel   string  `json:"durationLabel"`
+	Thumbnail       string  `json:"thumbnail"`
+	Status          string  `json:"status"`
+	CreatedAt       string  `json:"createdAt"`
+	Filename        string  `json:"filename"`
+	QualityLabel    string  `json:"qualityLabel"`
+	OutputKind      string  `json:"outputKind"`
+	Container       string  `json:"container"`
+	VideoCodec      string  `json:"videoCodec"`
+	AudioCodec      string  `json:"audioCodec"`
+	ApproxBytes     int64   `json:"approxBytes"`
+	SizeApproximate bool    `json:"sizeApproximate"`
+	RequiresFFmpeg  bool    `json:"requiresFfmpeg"`
+	CanPause        bool    `json:"canPause"`
+	Processing      bool    `json:"processing"`
+	StartedAt       string  `json:"startedAt"`
+	CompletedAt     string  `json:"completedAt"`
+	Bytes           int64   `json:"bytes"`
+	Total           int64   `json:"total"`
+	Progress        float64 `json:"progress"`
+	SpeedBps        float64 `json:"speedBps"`
+	ETASeconds      float64 `json:"etaSeconds"`
+	AbsolutePath    string  `json:"absolutePath"`
+	Message         string  `json:"message"`
+	ErrorReason     string  `json:"errorReason"`
 }
 
 type legacyPlanV1 struct {
-	ID             string `json:"id"`
-	Kind           string `json:"kind"`
-	Label          string `json:"label"`
-	Container      string `json:"container"`
-	VideoCodec     string `json:"videoCodec"`
-	AudioCodec     string `json:"audioCodec"`
-	RequiresFFmpeg bool   `json:"requiresFfmpeg"`
+	ID                string `json:"id"`
+	Kind              string `json:"kind"`
+	Label             string `json:"label"`
+	Container         string `json:"container"`
+	VideoCodec        string `json:"videoCodec"`
+	AudioCodec        string `json:"audioCodec"`
+	RequiresFFmpeg    bool   `json:"requiresFfmpeg"`
+	Resolution        string `json:"resolution"`
+	Width             int64  `json:"width"`
+	Height            int64  `json:"height"`
+	ApproxBytes       int64  `json:"approxBytes"`
+	SizeIsApproximate bool   `json:"sizeIsApproximate"`
+	AudioBitrateKbps  int    `json:"audioBitrateKbps"`
+	Recommended       bool   `json:"recommended"`
+	Available         bool   `json:"available"`
 }
 
 func migrateV1(path string, data []byte) (jobmodel.State, error) {
 	var legacy legacyStateV1
-	if err := json.Unmarshal(data, &legacy); err != nil {
+	if err := decodeStrict(data, &legacy); err != nil {
 		return jobmodel.State{}, fmt.Errorf("store: decode v1: %w", err)
 	}
 	if legacy.Version != 1 && legacy.Version != 0 {
@@ -87,7 +134,9 @@ func migrateV1(path string, data []byte) (jobmodel.State, error) {
 		ConfirmBeforeDownload: legacy.Settings.ConfirmBeforeDownload,
 	}
 	state.Settings = normalizeV2Settings(state.Settings)
-	state.History = append([]jobmodel.HistoryEntry(nil), legacy.History...)
+	for _, old := range legacy.History {
+		state.History = append(state.History, jobmodel.HistoryEntry{ID: old.ID, VideoID: old.VideoID, Title: old.Title, Channel: old.Channel, Quality: old.Quality, Container: old.Container, VideoCodec: old.VideoCodec, AudioCodec: old.AudioCodec, Filename: old.Filename, AbsolutePath: old.AbsolutePath, SizeBytes: old.SizeBytes, CompletedAt: normalizeLegacyTimestamp(old.CompletedAt), DurationLabel: old.DurationLabel})
+	}
 
 	for _, old := range legacy.Jobs {
 		job := migrateLegacyJob(old)
@@ -99,44 +148,62 @@ func migrateV1(path string, data []byte) (jobmodel.State, error) {
 }
 
 func migrateLegacyJob(old legacyPersistedJobV1) jobmodel.DurableJob {
-	now := utcNow()
+	now := utcNow().UTC()
 	created, err := time.Parse(time.RFC3339, old.Snapshot.CreatedAt)
 	if err != nil || created.IsZero() {
 		created = now
+	} else {
+		created = created.UTC()
+		if !validTime(created) {
+			created = now
+		}
+	}
+	updated := now
+	if updated.Before(created) {
+		updated = created
 	}
 	job := jobmodel.DurableJob{
 		ID:        nonEmptyID(old.Snapshot.ID),
 		Revision:  1,
 		AttemptID: uuid.NewString(),
-		SessionID: uuid.NewString(),
+		SessionID: newSessionID(),
 		Lifecycle: jobmodel.LifecyclePaused,
 		Phase:     jobmodel.PhasePreparing,
 		Desired:   jobmodel.DesiredPaused,
 		Request: jobmodel.PersistedRequest{
-			SourceURL: safeSourceURL(old.Snapshot.URL), VideoID: old.Snapshot.VideoID,
+			SourceURL: safeSourceURL(old.Snapshot.URL, old.Snapshot.VideoID), VideoID: old.Snapshot.VideoID,
 			Title: old.Snapshot.Title, Channel: old.Snapshot.Channel, Quality: old.Snapshot.Quality,
 			PlanID: old.Snapshot.PlanID, Duration: old.Snapshot.DurationLabel,
 		},
 		Plan: jobmodel.PersistedPlan{
 			ID: old.Plan.ID, Kind: old.Plan.Kind, Label: old.Plan.Label, Container: old.Plan.Container,
-			VideoCodec: old.Plan.VideoCodec, AudioCodec: old.Plan.AudioCodec, RequiresFFmpeg: old.Plan.RequiresFFmpeg,
+			VideoCodec: old.Plan.VideoCodec, AudioCodec: old.Plan.AudioCodec, RequiresFFmpeg: old.Plan.RequiresFFmpeg, PrivateSelector: safePrivateSelector(old.PrivateSelector),
 		},
 		RetryMode: jobmodel.RetryModeRestartNewSession,
 		CreatedAt: created,
-		UpdatedAt: now,
+		UpdatedAt: updated,
 	}
-	if root, basename, ok := legacyReservation(old.Snapshot.OutputDir, old.Snapshot.Filename); ok {
-		job.OutputRoot = root
-		job.Reservation = jobmodel.ReservationSet{
-			GroupID: job.ID, Directory: root,
-			Artifacts: []jobmodel.ReservedArtifact{{Kind: "primary", Identity: "primary", Basename: basename}},
-		}
-	} else {
-		job.Lifecycle = jobmodel.LifecycleActionRequired
-		job.Phase = jobmodel.PhaseReadyToPublish
-		job.ActionRequiredCode = "migration-destination-unverified"
+	// V0 has no public engine renderer or root-identity API. A legacy filename
+	// cannot prove the exact artifact set or reservation, so every migrated row
+	// awaits re-analysis/admission instead of inventing publication authority.
+	job.Lifecycle = jobmodel.LifecycleActionRequired
+	job.Phase = jobmodel.PhasePreparing
+	job.ActionRequiredCode = "migration-reanalysis-required"
+	if old.PrivateSelector != "" && job.Plan.PrivateSelector == "" {
+		job.ActionRequiredCode = "migration-private-plan-unverified"
 	}
 	return job
+}
+
+func normalizeLegacyTimestamp(value string) string {
+	if value == "" {
+		return ""
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return value
+	}
+	return parsed.UTC().Format(time.RFC3339Nano)
 }
 
 func normalizeV2Settings(settings jobmodel.Settings) jobmodel.Settings {
@@ -159,31 +226,49 @@ func normalizeV2Settings(settings jobmodel.Settings) jobmodel.Settings {
 	return settings
 }
 
-func legacyReservation(outputDir, filename string) (jobmodel.OutputRootRef, string, bool) {
-	if strings.TrimSpace(outputDir) == "" || strings.TrimSpace(filename) == "" {
-		return jobmodel.OutputRootRef{}, "", false
-	}
-	root, err := filepath.Abs(outputDir)
-	if err != nil {
-		return jobmodel.OutputRootRef{}, "", false
-	}
-	basename := filepath.Base(filename)
-	if basename == "." || basename == string(filepath.Separator) || basename != filename || strings.ContainsAny(basename, `\\/`) {
-		return jobmodel.OutputRootRef{}, "", false
-	}
-	canonical := filepath.Clean(root)
-	return jobmodel.OutputRootRef{CanonicalPath: canonical, Identity: canonical}, basename, true
-}
-
-func safeSourceURL(raw string) string {
-	// Legacy UI requests are page URLs. Query strings, fragments, and userinfo
-	// can carry credentials and are not needed for durable identity.
+func safeSourceURL(raw, videoID string) string {
+	// Legacy UI requests are page URLs. Keep only the canonical public watch
+	// identity reconstructed from the validated video ID; discard tracking,
+	// fragments, userinfo, and every other query parameter.
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.User != nil || parsed.Port() != "" || parsed.Opaque != "" {
 		return ""
 	}
-	parsed.RawQuery, parsed.Fragment, parsed.User = "", "", nil
-	return parsed.String()
+	host := strings.ToLower(parsed.Hostname())
+	if host != "youtube.com" && host != "www.youtube.com" && host != "m.youtube.com" && host != "youtu.be" {
+		return ""
+	}
+	if !safeVideoID(videoID) {
+		return ""
+	}
+	query, queryErr := url.ParseQuery(parsed.RawQuery)
+	if queryErr != nil {
+		return ""
+	}
+	if host == "youtu.be" {
+		if strings.Trim(parsed.Path, "/") != videoID {
+			return ""
+		}
+		if len(query["v"]) != 0 {
+			return ""
+		}
+	} else {
+		if parsed.Path != "/watch" || len(query["v"]) != 1 || query["v"][0] != videoID {
+			return ""
+		}
+	}
+	return "https://www.youtube.com/watch?v=" + videoID
+}
+
+func safePrivateSelector(value string) string {
+	if !validPrivateSelector(value) {
+		return ""
+	}
+	return value
+}
+
+func newSessionID() string {
+	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }
 
 func nonEmptyID(value string) string {
@@ -195,12 +280,36 @@ func nonEmptyID(value string) string {
 
 func backupPreV2(path string, data []byte) error {
 	backup := path + ".pre-v2.bak"
-	f, err := os.OpenFile(backup, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if !validPath(backup) {
+		return errors.New("store: pre-v2 backup path exceeds limit")
+	}
+	f, err := createPrivateExclusive(backup)
+	if errors.Is(err, os.ErrExist) {
+		existing, readErr := openPrivateRead(backup)
+		if readErr != nil {
+			return fmt.Errorf("store: inspect pre-v2 backup: %w", readErr)
+		}
+		defer existing.Close()
+		old, readErr := io.ReadAll(io.LimitReader(existing, maxStateBytes+1))
+		if readErr != nil || len(old) > maxStateBytes {
+			return fmt.Errorf("store: read pre-v2 backup: %w", readErr)
+		}
+		if !bytes.Equal(old, data) {
+			return errors.New("store: pre-v2 backup conflicts with source state")
+		}
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("store: create pre-v2 backup: %w", err)
 	}
-	if err := f.Chmod(0o600); err == nil {
-		_, err = f.Write(data)
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(backup)
+		return fmt.Errorf("store: set pre-v2 backup permissions: %w", err)
+	}
+	var written int
+	if written, err = f.Write(data); err == nil && written != len(data) {
+		err = io.ErrShortWrite
 	}
 	if err == nil {
 		err = f.Sync()

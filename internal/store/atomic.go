@@ -11,8 +11,10 @@ import (
 type osAtomicReplacer struct{}
 
 func (osAtomicReplacer) Replace(tempPath, targetPath string) replaceResult {
-	if err := replaceLocal(tempPath, targetPath); err != nil {
-		return replaceResult{err: fmt.Errorf("store: atomic replace: %w", err)}
+	result := replaceLocal(tempPath, targetPath)
+	if result.err != nil {
+		result.err = fmt.Errorf("store: atomic replace: %w", result.err)
+		return result
 	}
 	if err := syncParent(filepath.Dir(targetPath)); err != nil {
 		return replaceResult{err: fmt.Errorf("store: sync state parent: %w", err), committed: true}

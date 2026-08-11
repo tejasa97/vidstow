@@ -108,7 +108,6 @@ type PersistedRequest struct {
 	Quality   string `json:"quality"`
 	PlanID    string `json:"planId"`
 	Duration  string `json:"duration"`
-	Thumbnail string `json:"thumbnail,omitempty"`
 }
 
 type PersistedPlan struct {
@@ -119,6 +118,9 @@ type PersistedPlan struct {
 	VideoCodec     string `json:"videoCodec,omitempty"`
 	AudioCodec     string `json:"audioCodec,omitempty"`
 	RequiresFFmpeg bool   `json:"requiresFfmpeg,omitempty"`
+	// PrivateSelector is an owner-only reviewed format selector. It never
+	// crosses the desktop boundary and is rejected if it looks credential-like.
+	PrivateSelector string `json:"privateSelector,omitempty"`
 }
 
 type OutputRootRef struct {
@@ -163,7 +165,6 @@ type HistoryEntry struct {
 	SizeBytes     int64  `json:"sizeBytes"`
 	CompletedAt   string `json:"completedAt"`
 	DurationLabel string `json:"durationLabel"`
-	Thumbnail     string `json:"thumbnail,omitempty"`
 }
 
 // CloneState returns a complete, independent copy for transactional mutation.

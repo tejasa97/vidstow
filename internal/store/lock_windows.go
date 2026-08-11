@@ -3,29 +3,25 @@
 package store
 
 import (
-	"errors"
 	"fmt"
 	"os"
+	"sync"
 
 	"golang.org/x/sys/windows"
 )
 
 type stateLock struct {
+	mu         sync.Mutex
 	file       *os.File
 	overlapped windows.Overlapped
 }
 
+var releaseStateLock = func(lock *stateLock) error { return lock.Close() }
+
 func acquireStateLock(path string) (*stateLock, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	if errors.Is(err, os.ErrNotExist) {
-		f, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
-	}
+	f, err := openPrivateLock(path)
 	if err != nil {
 		return nil, fmt.Errorf("store: open state lock: %w", err)
-	}
-	if err := validatePrivateRegularFile(path); err != nil {
-		f.Close()
-		return nil, err
 	}
 	l := &stateLock{file: f}
 	if err := windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &l.overlapped); err != nil {
@@ -36,13 +32,22 @@ func acquireStateLock(path string) (*stateLock, error) {
 }
 
 func (l *stateLock) Close() error {
-	if l == nil || l.file == nil {
+	if l == nil {
 		return nil
 	}
-	err := windows.UnlockFileEx(windows.Handle(l.file.Fd()), 0, 1, 0, &l.overlapped)
-	closeErr := l.file.Close()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file == nil {
+		return nil
+	}
+	f := l.file
+	err := windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, &l.overlapped)
 	if err != nil {
 		return err
+	}
+	closeErr := f.Close()
+	if closeErr == nil {
+		l.file = nil
 	}
 	return closeErr
 }
