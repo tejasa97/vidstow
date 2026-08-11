@@ -8,6 +8,7 @@
     type LifecycleJobEventDetail,
     type LifecycleJobEventName,
     type LifecycleJobViewModel,
+    isValidCommandToken,
   } from './types.js';
 
   export interface LifecycleJobRowEvents {
@@ -50,6 +51,7 @@
   );
 
   function enabled(action: LifecycleJobAction): boolean {
+    if (!isValidCommandToken(job.commandToken)) return false;
     const capabilities = job.capabilities;
     if (!capabilities) return false;
     switch (action) {
@@ -61,7 +63,8 @@
   }
 
   function trigger(action: LifecycleJobEventName): void {
-    const detail = { jobId: job.id };
+    if (!isValidCommandToken(job.commandToken)) return;
+    const detail = { jobId: job.id, commandToken: job.commandToken };
     dispatch(action, detail);
     onAction?.({ ...detail, action });
   }

@@ -18,6 +18,10 @@
     <span>{summary.waitingJobs} waiting</span>
     <span aria-hidden="true" class="divider"></span>
     <span>{summary.pausedJobs} paused</span>
+    {#if summary.processingLimit !== undefined}
+      <span aria-hidden="true" class="divider"></span>
+      <span>{summary.processingOccupied ?? 0} of {summary.processingLimit} processing</span>
+    {/if}
   </div>
 </div>
 

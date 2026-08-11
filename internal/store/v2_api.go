@@ -34,30 +34,24 @@ func (s *V2Store) DataDirectory() string {
 	return filepath.Dir(s.path)
 }
 
-// Settings projects the durable State v2 settings into the compatibility
-// desktop shape. RestoreInterruptedJobs is always true in this projection: it
-// was removed from the durable model and the first-release policy always
-// restores interrupted work as paused.
+// Settings projects the durable State v2 settings into the desktop shape.
 func (s *V2Store) Settings() Settings {
 	if s == nil || !s.Status().Healthy() {
 		return Settings{}
 	}
 	state := s.Snapshot()
 	return Settings{
-		DownloadFolder:         state.Settings.DownloadFolder,
-		FFmpegPath:             state.Settings.FFmpegPath,
-		WindowWidth:            state.Settings.WindowWidth,
-		WindowHeight:           state.Settings.WindowHeight,
-		DownloadConcurrency:    state.Settings.DownloadConcurrency,
-		PerVideoSubfolder:      state.Settings.PerVideoSubfolder,
-		ConfirmBeforeDownload:  state.Settings.ConfirmBeforeDownload,
-		RestoreInterruptedJobs: true,
+		DownloadFolder:        state.Settings.DownloadFolder,
+		FFmpegPath:            state.Settings.FFmpegPath,
+		WindowWidth:           state.Settings.WindowWidth,
+		WindowHeight:          state.Settings.WindowHeight,
+		DownloadConcurrency:   state.Settings.DownloadConcurrency,
+		PerVideoSubfolder:     state.Settings.PerVideoSubfolder,
+		ConfirmBeforeDownload: state.Settings.ConfirmBeforeDownload,
 	}
 }
 
-// SetSettings writes only fields represented by the State v2 schema. The
-// legacy restoration preference is deliberately ignored rather than allowing
-// a caller to disable the fixed paused-restoration policy.
+// SetSettings writes only fields represented by the State v2 schema.
 func (s *V2Store) SetSettings(next Settings) error {
 	if s == nil {
 		return errors.New("store: nil v2 store")

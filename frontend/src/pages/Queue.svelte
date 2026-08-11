@@ -1,48 +1,68 @@
 <script lang="ts">
-  import { jobs, persistence, showBanner, showError } from '../lib/stores.js';
   import { api } from '../lib/api.js';
-  import ProgressRow from '../lib/components/ProgressRow.svelte';
+  import { queueView, showBanner, showError } from '../lib/stores.js';
+  import QueueOverview from '../lib/lifecycle-ui/QueueOverview.svelte';
+  import type { LifecycleJobEventDetail, QueueOverviewViewModel, QueueView } from '../lib/lifecycle-ui/types.js';
+  import { newestQueueView } from '../lib/queue-view.js';
 
-  $: active = $jobs.filter((job) => ['active', 'pending', 'paused'].includes(job.status));
-  $: completed = $jobs.filter((job) => ['complete', 'failed', 'canceled'].includes(job.status));
-  $: running = $jobs.filter((job) => job.status === 'active').length;
-  $: pausable = $jobs.some((job) => job.status === 'pending' || (job.status === 'active' && job.canPause && !job.processing));
+  function modelFrom(view: QueueView | null): QueueOverviewViewModel {
+    const persistence = view?.persistence;
+    const writable = persistence?.available === true && persistence.healthy === true;
+    return {
+      summary: view?.summary ?? { totalJobs: 0, runningJobs: 0, occupiedSlots: 0, slotLimit: 2, processingOccupied: 0, processingLimit: 3, waitingJobs: 0, pausedJobs: 0 },
+      jobs: writable ? (view?.rows ?? []) : (view?.rows ?? []).map((row) => ({ ...row, capabilities: {}, commandToken: undefined })),
+      canPauseAll: writable && view?.capabilities?.pauseAll === true,
+      canClearCompleted: writable && view?.capabilities?.clearCompleted === true,
+      commandToken: writable ? view?.capabilities?.commandToken : undefined,
+      notice: !persistence?.available
+        ? (persistence?.message || 'Download state is unavailable. Queue actions are disabled.')
+        : !persistence.healthy
+          ? (persistence.message || 'VidStow could not save the download queue.')
+          : undefined,
+      noticeTone: 'warning',
+      footerText: persistence?.available && persistence.healthy ? 'Jobs are saved automatically.' : 'Queue changes require healthy saved state.',
+    };
+  }
+
+  $: model = modelFrom($queueView);
+
+  async function refresh(): Promise<void> {
+    const next = await api.queue.get();
+    queueView.update((current) => newestQueueView(current, next));
+  }
+
+  async function action(detail: LifecycleJobEventDetail, operation: (id: string, token: string) => Promise<unknown>, fallback: string, success?: string) {
+    try {
+      await operation(detail.jobId, detail.commandToken);
+      await refresh();
+      if (success) showBanner('info', success);
+    } catch (err) { showError(err, fallback); }
+  }
 
   async function pauseAll() {
-    try { const count = await api.jobs.pauseAll(); showBanner('info', count ? `${count} job${count === 1 ? '' : 's'} paused` : 'No jobs can be paused right now'); }
-    catch (err) { showError(err, 'Could not pause the queue'); }
+    try {
+      const count = await api.queue.pauseAll(model.commandToken ?? '');
+      await refresh();
+      showBanner('info', count ? `Pause requested for ${count} job${count === 1 ? '' : 's'}.` : 'No jobs can be paused right now.');
+    } catch (err) { showError(err, 'Could not pause the queue'); }
   }
-  async function clearCompleted() { try { await api.jobs.clearCompleted(); } catch (err) { showError(err); } }
+
+  async function clearCompleted() {
+    try { await api.queue.clearCompleted(model.commandToken ?? ''); await refresh(); }
+    catch (err) { showError(err, 'Could not clear completed downloads'); }
+  }
 </script>
 
-<section class="page" aria-labelledby="queue-title">
-  <header class="page-header">
-    <div><h1 id="queue-title">Queue</h1><p>{active.length} job{active.length === 1 ? '' : 's'} · {running} running</p></div>
-    <div class="header-actions"><button type="button" on:click={pauseAll} disabled={!pausable}>Pause All</button><button type="button" on:click={clearCompleted} disabled={!completed.length}>Clear Completed</button></div>
-  </header>
-
-  <section class="section" aria-labelledby="active-title">
-    <h2 id="active-title">Active &amp; queued <span>{active.length}</span></h2>
-    {#if active.length}<div class="job-list">{#each active as job, index (job.id)}<ProgressRow {job} index={index + 1} />{/each}</div>
-    {:else}<div class="empty">No active jobs. Add a video from Home to get started.</div>{/if}
-  </section>
-
-  {#if completed.length}
-    <section class="section" aria-labelledby="completed-title"><h2 id="completed-title">Completed <span>{completed.length}</span></h2><div class="job-list">{#each completed as job, index (job.id)}<ProgressRow {job} index={active.length + index + 1} />{/each}</div></section>
-  {/if}
-  <footer class:warning={!$persistence.available || !$persistence.healthy}>
-    {#if !$persistence.available}
-      {$persistence.message || 'VidStow is using temporary in-memory storage.'}
-    {:else if !$persistence.healthy}
-      {$persistence.message || 'VidStow could not save the download queue.'}
-    {:else}
-      Jobs are saved automatically.
-    {/if}
-  </footer>
-</section>
-
-<style>
-  .page{width:min(100%,900px);margin:0 auto;padding:34px 42px 48px}.page-header{display:flex;align-items:flex-start;justify-content:space-between;gap:24px}.page-header h1{margin:0;font-size:26px}.page-header p{margin:5px 0 0;color:var(--text-muted);font-size:12px}.header-actions{display:flex;gap:8px}.header-actions button{min-height:34px;padding:0 12px;border:1px solid var(--border-default);border-radius:6px;background:#fff;font-size:11px}
-  .section{margin-top:24px}.section h2{display:flex;align-items:center;gap:7px;margin:0 0 9px;font-size:12px}.section h2 span{min-width:18px;height:18px;display:grid;place-items:center;border-radius:99px;background:var(--surface-active);color:var(--text-secondary);font-size:10px}.job-list{display:flex;flex-direction:column;gap:8px}.empty{min-height:150px;display:grid;place-items:center;border:1px dashed var(--border-default);border-radius:7px;color:var(--text-muted);font-size:12px}footer{margin-top:22px;text-align:center;color:var(--text-muted);font-size:10px}footer.warning{color:#9a3412}
-  @media(max-width:650px){.page{padding:24px 18px}.page-header{flex-direction:column}.header-actions{width:100%}.header-actions button{flex:1}}
-</style>
+<QueueOverview
+  {model}
+  onPauseAll={pauseAll}
+  onClearCompleted={clearCompleted}
+  onAction={(event) => {
+    if (event.action === 'pause') action(event, api.queue.pause, 'Could not pause the download');
+    else if (event.action === 'cancel') action(event, api.queue.cancel, 'Could not cancel the download');
+    else if (event.action === 'resume') action(event, api.queue.resume, 'Could not resume the download', 'Download resumed.');
+    else if (event.action === 'retry') action(event, api.queue.retry, 'Could not retry the download', 'Retry added to the queue.');
+    else if (event.action === 'open') action(event, api.queue.open, 'Could not open the downloaded file');
+    else if (event.action === 'remove') action(event, api.queue.remove, 'Could not remove the download');
+  }}
+/>

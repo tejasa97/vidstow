@@ -469,6 +469,75 @@ func (a *App) ListJobs() []jobs.JobSnapshot {
 	return a.jobs.List()
 }
 
+// GetQueueView is the authoritative V4 frontend contract. The legacy
+// ListJobs binding remains for non-queue compatibility surfaces only.
+func (a *App) GetQueueView() jobs.QueueView {
+	if a.jobs == nil {
+		return jobs.QueueView{Persistence: jobs.PersistenceStatus{Available: false, Healthy: false, Message: "Download state requires recovery."}}
+	}
+	return a.jobs.QueueView()
+}
+
+func (a *App) PauseQueueJob(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueuePause(id, token)
+}
+
+func (a *App) CancelQueueJob(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueCancel(id, token)
+}
+
+func (a *App) ResumeQueueJob(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueResume(id, token)
+}
+
+func (a *App) RetryQueueJob(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueRetry(id, token)
+}
+
+func (a *App) RemoveQueueJob(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueRemove(id, token)
+}
+
+func (a *App) OpenQueueJob(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	path, err := a.jobs.QueueOpenPath(id, token)
+	if err != nil {
+		return err
+	}
+	return a.OpenFile(path)
+}
+
+func (a *App) PauseAllQueueJobs(token string) (int, error) {
+	if err := a.requireReady(); err != nil {
+		return 0, err
+	}
+	return a.jobs.QueuePauseAll(token)
+}
+
+func (a *App) ClearCompletedQueueJobs(token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueClearCompleted(token)
+}
+
 // CancelJob cancels an active or pending job.
 func (a *App) CancelJob(id string) {
 	if a.jobs != nil {

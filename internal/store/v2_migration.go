@@ -47,7 +47,8 @@ type legacySettingsV1 struct {
 	DownloadConcurrency   int    `json:"downloadConcurrency"`
 	PerVideoSubfolder     bool   `json:"perVideoSubfolder"`
 	ConfirmBeforeDownload bool   `json:"confirmBeforeDownload"`
-	// RestoreInterruptedJobs is intentionally read and discarded.
+	// Private migration input only. Historical V1 state must decode this key,
+	// but the value is deliberately discarded because restoration is fixed.
 	RestoreInterruptedJobs bool `json:"restoreInterruptedJobs"`
 }
 

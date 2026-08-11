@@ -3,6 +3,7 @@
 
 import { writable, derived } from 'svelte/store';
 import type { FFmpegStatus, HistoryEntry, JobSnapshot, PersistenceStatus, Settings } from './types.js';
+import type { QueueView } from './lifecycle-ui/types.js';
 
 export const settings = writable<Settings>({
   downloadFolder: '',
@@ -12,7 +13,6 @@ export const settings = writable<Settings>({
   downloadConcurrency: 2,
   perVideoSubfolder: true,
   confirmBeforeDownload: false,
-  restoreInterruptedJobs: true,
 });
 
 export const ffmpeg = writable<FFmpegStatus>({
@@ -24,6 +24,7 @@ export const ffmpeg = writable<FFmpegStatus>({
 });
 
 export const jobs = writable<JobSnapshot[]>([]);
+export const queueView = writable<QueueView | null>(null);
 export const history = writable<HistoryEntry[]>([]);
 export const persistence = writable<PersistenceStatus>({ available: false, healthy: true });
 

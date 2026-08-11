@@ -18,6 +18,7 @@ import type {
   StartupStatus,
   UrlCheckResult,
 } from './types';
+import type { QueueView } from './lifecycle-ui/types.js';
 
 declare global {
   interface Window {
@@ -99,6 +100,17 @@ export const api = {
     remove: (id: string) => call<void>('RemoveJob', id),
     clearCompleted: () => call<void>('ClearCompletedJobs'),
   },
+  queue: {
+    get: () => call<QueueView>('GetQueueView'),
+    pause: (id: string, token: string) => call<void>('PauseQueueJob', id, token),
+    cancel: (id: string, token: string) => call<void>('CancelQueueJob', id, token),
+    resume: (id: string, token: string) => call<void>('ResumeQueueJob', id, token),
+    retry: (id: string, token: string) => call<void>('RetryQueueJob', id, token),
+    open: (id: string, token: string) => call<void>('OpenQueueJob', id, token),
+    remove: (id: string, token: string) => call<void>('RemoveQueueJob', id, token),
+    pauseAll: (token: string) => call<number>('PauseAllQueueJobs', token),
+    clearCompleted: (token: string) => call<void>('ClearCompletedQueueJobs', token),
+  },
   downloads: {
     list: () => call<HistoryEntry[]>('ListDownloads'),
     remove: (id: string) => call<void>('RemoveDownload', id),
@@ -120,6 +132,14 @@ export const api = {
     onQueue: (cb: (jobs: JobSnapshot[]) => void) =>
       window.runtime?.EventsOn?.('queue:update', (event: QueueEvent) => {
         if (event?.queue) cb(event.queue);
+      }),
+    onQueueView: (cb: (view: QueueView) => void) =>
+      window.runtime?.EventsOn?.('queue:update', (event: QueueEvent & { queueView?: QueueView }) => {
+        if (event?.queueView) cb(event.queueView);
+      }),
+    onJobQueueView: (cb: (view: QueueView) => void) =>
+      window.runtime?.EventsOn?.('job:update', (event: QueueEvent & { queueView?: QueueView }) => {
+        if (event?.queueView) cb(event.queueView);
       }),
     onHistory: (cb: (entries: HistoryEntry[]) => void) =>
       window.runtime?.EventsOn?.('history:update', (entries: HistoryEntry[]) => cb(entries ?? [])),

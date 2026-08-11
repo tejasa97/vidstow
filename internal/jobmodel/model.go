@@ -56,8 +56,8 @@ const (
 	CleanupQuarantined CleanupState = "quarantined"
 )
 
-// Settings intentionally has no RestoreInterruptedJobs field. Interrupted
-// jobs are restored as paused by the product contract, not by preference.
+// Settings has no restoration preference. Interrupted jobs are restored as
+// paused by the product contract, not by preference.
 type Settings struct {
 	DownloadFolder        string `json:"downloadFolder"`
 	FFmpegPath            string `json:"ffmpegPath"`
