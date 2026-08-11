@@ -11,6 +11,11 @@ The first-release product decisions are recorded in
 must add a superseding decision record rather than silently rewriting this
 baseline.
 
+The first-release protocol boundary is recorded in
+[Decision 0002](decisions/0002-vidstow-v1-protocol-scope.md): direct,
+multi-track/FFmpeg, finite HLS VOD, and static DASH are in scope; experimental
+SABR/UMP and live workflows are not VidStow V1 dependencies or release gates.
+
 The cross-repository implementation is specified separately in the draft
 [technical implementation plan](CONCURRENCY_LIFECYCLE_TECHNICAL_PLAN.md).
 
