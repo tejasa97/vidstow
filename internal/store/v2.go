@@ -51,13 +51,10 @@ type StartupStatus struct {
 
 func (s StartupStatus) Healthy() bool { return s.Mode == StartupHealthy }
 
-type JobPrecondition struct {
-	ID         string
-	Revision   uint64
-	Lifecycle  jobmodel.Lifecycle
-	SessionID  string
-	OutputRoot jobmodel.OutputRootRef
-}
+// JobPrecondition remains exported from store for the V1 admission seam.
+// The canonical definition lives in jobmodel so the jobs package can depend
+// on the transaction contract without introducing a store import cycle.
+type JobPrecondition = jobmodel.JobPrecondition
 
 var ErrStaleRevision = errors.New("store: job precondition did not match")
 var ErrDurabilityUncertain = errors.New("store: durability evidence unresolved")
@@ -693,7 +690,7 @@ func checkPreconditions(state jobmodel.State, conditions []JobPrecondition) erro
 				continue
 			}
 			found = true
-			if job.Revision != want.Revision || job.Lifecycle != want.Lifecycle || job.SessionID != want.SessionID || job.OutputRoot != want.OutputRoot {
+			if job.Revision != want.Revision || job.Lifecycle != want.Lifecycle || (want.AttemptID != "" && job.AttemptID != want.AttemptID) || job.SessionID != want.SessionID || job.OutputRoot != want.OutputRoot {
 				return ErrStaleRevision
 			}
 			break
@@ -1013,7 +1010,7 @@ func validatePreconditionsInput(values []JobPrecondition) error {
 			return errors.New("store: duplicate job precondition")
 		}
 		seen[value.ID] = struct{}{}
-		if !validID(value.ID) || !validLifecycle(value.Lifecycle) || !validSessionID(value.SessionID) || value.Revision == 0 || value.Revision > maxDurableCounter || !validOutputPath(value.OutputRoot.CanonicalPath) || !validText(value.OutputRoot.Identity, maxVolumeIdentityBytes, true) {
+		if !validID(value.ID) || !validLifecycle(value.Lifecycle) || (value.AttemptID != "" && !validID(value.AttemptID)) || !validSessionID(value.SessionID) || value.Revision == 0 || value.Revision > maxDurableCounter || !validOutputPath(value.OutputRoot.CanonicalPath) || !validText(value.OutputRoot.Identity, maxVolumeIdentityBytes, true) {
 			return errors.New("store: invalid job precondition")
 		}
 	}

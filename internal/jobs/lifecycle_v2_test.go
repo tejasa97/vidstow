@@ -1,0 +1,497 @@
+package jobs
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/tejasa97/vidstow/internal/jobmodel"
+	"github.com/tejasa97/vidstow/internal/outputplan"
+	"github.com/tejasa97/youtube_dlp/engine"
+)
+
+type v2MemoryStore struct {
+	mu       sync.Mutex
+	state    jobmodel.State
+	failNext error
+	calls    int
+}
+
+func (s *v2MemoryStore) Snapshot() jobmodel.State {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return jobmodel.CloneState(s.state)
+}
+
+func (s *v2MemoryStore) Transaction(preconditions []jobmodel.JobPrecondition, mutate func(*jobmodel.State) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.failNext != nil {
+		err := s.failNext
+		s.failNext = nil
+		return err
+	}
+	next := jobmodel.CloneState(s.state)
+	for _, want := range preconditions {
+		found := false
+		for _, job := range next.Jobs {
+			if job.ID != want.ID {
+				continue
+			}
+			found = true
+			if job.Revision != want.Revision || job.Lifecycle != want.Lifecycle || (want.AttemptID != "" && job.AttemptID != want.AttemptID) || job.SessionID != want.SessionID || job.OutputRoot != want.OutputRoot {
+				return errors.New("v2 test store: stale revision")
+			}
+		}
+		if !found {
+			return errors.New("v2 test store: missing row")
+		}
+	}
+	if err := mutate(&next); err != nil {
+		return err
+	}
+	next.StoreRevision++
+	s.state = next
+	return nil
+}
+
+func newV2TestStore(t *testing.T, ids ...string) (*v2MemoryStore, string, outputplan.Plan) {
+	t.Helper()
+	root := t.TempDir()
+	plan := outputplan.Plan{
+		ID: "video-1080-mp4", Kind: outputplan.KindVideo, Label: "1080p", Container: "MP4", Selector: "137+140",
+	}
+	now := time.Now().UTC()
+	state := jobmodel.State{
+		Version: jobmodel.StateVersion, NextQueueOrdinal: uint64(len(ids) + 1),
+		Settings: jobmodel.Settings{DownloadConcurrency: 2},
+		Jobs:     make([]jobmodel.DurableJob, 0, len(ids)), History: []jobmodel.HistoryEntry{}, Cleanup: []jobmodel.CleanupTombstone{},
+	}
+	for index, id := range ids {
+		state.Jobs = append(state.Jobs, jobmodel.DurableJob{
+			ID: id, Revision: 1, AttemptID: "attempt-" + id, SessionID: "0123456789abcdef0123456789abcde" + string('0'+byte(index)),
+			QueueOrdinal: uint64(index + 1), Lifecycle: jobmodel.LifecyclePending, Phase: jobmodel.PhasePreparing, Desired: jobmodel.DesiredRunning,
+			Request:     jobmodel.PersistedRequest{SourceURL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", Channel: "Creator", Quality: "best", PlanID: plan.ID},
+			Plan:        jobmodel.PersistedPlan{ID: plan.ID, Kind: string(plan.Kind), Label: plan.Label, Container: plan.Container, PrivateSelector: plan.Selector},
+			OutputRoot:  jobmodel.OutputRootRef{CanonicalPath: root, Identity: "volume-test"},
+			Reservation: jobmodel.ReservationSet{GroupID: id, Directory: jobmodel.OutputRootRef{CanonicalPath: root, Identity: "volume-test"}, Artifacts: []jobmodel.ReservedArtifact{{Kind: string(engine.ArtifactKindPrimary), Identity: "primary", Basename: "Demo [abc123] [1080p].mp4"}}},
+			RetryMode:   jobmodel.RetryModeNone, CreatedAt: now, UpdatedAt: now,
+		})
+	}
+	return &v2MemoryStore{state: state}, root, plan
+}
+
+func waitForV2Job(t *testing.T, store *v2MemoryStore, id string, want jobmodel.Lifecycle) jobmodel.DurableJob {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, job := range store.Snapshot().Jobs {
+			if job.ID == id && job.Lifecycle == want {
+				return job
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for _, job := range store.Snapshot().Jobs {
+		if job.ID == id {
+			t.Fatalf("job %s lifecycle = %s; want %s", id, job.Lifecycle, want)
+		}
+	}
+	t.Fatalf("job %s missing", id)
+	return jobmodel.DurableJob{}
+}
+
+func TestV2PauseKeepsSlotUntilRunnerExitAndUsesAttemptSession(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-one", "job-two")
+	manager := New(nil, nil)
+	defer manager.Close()
+	manager.SetConcurrency(1)
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan engine.Request, 2)
+	release := make(chan struct{})
+	manager.runDownload = func(ctx context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		started <- request
+		<-ctx.Done()
+		<-release
+		return engine.Result{}, ctx.Err()
+	}
+
+	firstPlan := plan
+	if _, err := manager.SubmitAdmitted("job-one", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &firstPlan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	request := <-started
+	if request.Overwrite || request.Filesystem.Resume.SessionID == "" || len(request.Filesystem.Resume.CommitTargets) != 1 {
+		t.Fatalf("session request = %#v; want no-replace session target", request)
+	}
+	active := waitForV2Job(t, store, "job-one", jobmodel.LifecycleActive)
+	if active.AttemptID == "" || active.SessionID != request.Filesystem.Resume.SessionID {
+		t.Fatalf("active identity = %#v; request session = %q", active, request.Filesystem.Resume.SessionID)
+	}
+	if _, err := manager.SubmitAdmitted("job-two", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &firstPlan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	manager.Cancel("job-one")
+	select {
+	case <-started:
+		t.Fatal("second FIFO runner started before first runner exited")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	waitForV2Job(t, store, "job-one", jobmodel.LifecycleCanceled)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("second FIFO runner did not start after first exit")
+	}
+	if got := manager.Active(); got != "job-two" {
+		t.Fatalf("active job = %q; want job-two", got)
+	}
+}
+
+func TestV2CompletionAndHistoryShareOneTerminalTransaction(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-complete")
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	manager.runDownload = func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error) {
+		return engine.Result{Filename: filepath.Join(root, "Demo [abc123] [1080p].mp4"), Bytes: 42}, nil
+	}
+	if _, err := manager.SubmitAdmitted("job-complete", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	job := waitForV2Job(t, store, "job-complete", jobmodel.LifecycleCompleted)
+	state := store.Snapshot()
+	if len(state.History) != 1 || state.History[0].ID != job.ID || state.History[0].SizeBytes != 42 {
+		t.Fatalf("State v2 terminal image = %#v; want one completion/history image", state)
+	}
+	if job.Revision < 3 {
+		t.Fatalf("completed revision = %d; want admission, active, and terminal transitions", job.Revision)
+	}
+}
+
+func TestV2FailedRetryChangesAttemptAndSessionButKeepsLogicalID(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-failed")
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	attempts := make(chan string, 2)
+	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		calls++
+		attempts <- request.Filesystem.Resume.SessionID
+		if calls == 1 {
+			return engine.Result{}, errors.New("network failed")
+		}
+		return engine.Result{}, nil
+	}
+	if _, err := manager.SubmitAdmitted("job-failed", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	first := waitForV2Job(t, store, "job-failed", jobmodel.LifecycleFailed)
+	if err := manager.Retry("job-failed"); err != nil {
+		t.Fatal(err)
+	}
+	second := waitForV2Job(t, store, "job-failed", jobmodel.LifecycleCompleted)
+	if first.ID != second.ID || first.AttemptID == second.AttemptID || first.SessionID == second.SessionID {
+		t.Fatalf("retry identities first=%#v second=%#v; want same job/new attempt/session", first, second)
+	}
+	if first.QueueOrdinal >= second.QueueOrdinal {
+		t.Fatalf("retry ordinal first=%d second=%d; want FIFO tail", first.QueueOrdinal, second.QueueOrdinal)
+	}
+	if len(store.Snapshot().History) != 1 {
+		t.Fatalf("history after failed retry = %#v; want one successful row", store.Snapshot().History)
+	}
+	_ = <-attempts
+	_ = <-attempts
+}
+
+func TestV2DownloadAgainKeepsCanceledRowAndFreshReservationGroup(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-canceled", "job-blocker")
+	store.mu.Lock()
+	store.state.Jobs[1].Request.Title = "Blocker"
+	store.state.Jobs[1].Reservation.Artifacts[0].Basename = "Blocker [abc123] [1080p].mp4"
+	store.mu.Unlock()
+	manager := New(nil, nil)
+	defer manager.Close()
+	manager.SetConcurrency(1)
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	releaseCanceled := make(chan struct{})
+	releaseBlocker := make(chan struct{})
+	started := make(chan int, 3)
+	var runs int
+	manager.runDownload = func(ctx context.Context, _ engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		runs++
+		started <- runs
+		switch runs {
+		case 1:
+			<-ctx.Done()
+			<-releaseCanceled
+			return engine.Result{}, ctx.Err()
+		case 2:
+			<-releaseBlocker
+			return engine.Result{}, nil
+		default:
+			return engine.Result{}, nil
+		}
+	}
+	if _, err := manager.SubmitAdmitted("job-canceled", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-started; got != 1 {
+		t.Fatalf("first runner number = %d; want 1", got)
+	}
+	if _, err := manager.SubmitAdmitted("job-blocker", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Blocker", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Blocker [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	manager.Cancel("job-canceled")
+	close(releaseCanceled)
+	waitForV2Job(t, store, "job-canceled", jobmodel.LifecycleCanceled)
+	select {
+	case got := <-started:
+		if got != 2 {
+			t.Fatalf("blocker runner number = %d; want 2", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocker runner did not occupy the FIFO slot")
+	}
+	newID, err := manager.DownloadAgain("job-canceled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newID == "job-canceled" {
+		t.Fatal("DownloadAgain reused canceled logical job ID")
+	}
+	state := store.Snapshot()
+	var old, replacement jobmodel.DurableJob
+	for _, job := range state.Jobs {
+		switch job.ID {
+		case "job-canceled":
+			old = job
+		case newID:
+			replacement = job
+		}
+	}
+	if old.Lifecycle != jobmodel.LifecycleCanceled || replacement.Lifecycle != jobmodel.LifecyclePending {
+		t.Fatalf("old/replacement lifecycle = %s/%s", old.Lifecycle, replacement.Lifecycle)
+	}
+	if old.AttemptID == replacement.AttemptID || old.SessionID == replacement.SessionID || old.Reservation.GroupID == replacement.Reservation.GroupID {
+		t.Fatalf("download-again identities/groups reused: old=%#v replacement=%#v", old, replacement)
+	}
+	if len(state.Jobs) != 3 {
+		t.Fatalf("State v2 jobs after DownloadAgain = %d; want blocker, canceled history, and replacement", len(state.Jobs))
+	}
+	snapshot, ok := manager.Find(newID)
+	if !ok || snapshot.Status != StatusPending || snapshot.Lifecycle != jobmodel.LifecyclePending || snapshot.Phase != jobmodel.PhasePreparing || snapshot.Desired != jobmodel.DesiredRunning {
+		t.Fatalf("replacement pre-start snapshot = %#v, %v; want pending/preparing/running", snapshot, ok)
+	}
+	if replacement.Lifecycle != jobmodel.LifecyclePending || replacement.Phase != jobmodel.PhasePreparing || replacement.Desired != jobmodel.DesiredRunning {
+		t.Fatalf("replacement pre-start durable row = %#v; want pending/preparing/running", replacement)
+	}
+	close(releaseBlocker)
+	waitForV2Job(t, store, newID, jobmodel.LifecycleCompleted)
+}
+
+func TestV2StartTransitionFailureDoesNotRewritePendingDurableRow(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-pending")
+	store.failNext = errors.New("disk unavailable")
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	manager.runDownload = func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error) {
+		t.Fatal("runner started after failed durable activation")
+		return engine.Result{}, nil
+	}
+	if _, err := manager.SubmitAdmitted("job-pending", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		job := store.Snapshot().Jobs[0]
+		if job.Lifecycle == jobmodel.LifecyclePending {
+			if job.Revision != 1 {
+				t.Fatalf("failed activation changed pending revision to %d", job.Revision)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("pending durable row did not remain unchanged: %#v", store.Snapshot().Jobs)
+}
+
+func TestV2PauseAllUsesOneRevisionCheckedBatchAndKeepsActiveSlot(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-one", "job-two")
+	manager := New(nil, nil)
+	defer manager.Close()
+	manager.SetConcurrency(1)
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	manager.runDownload = func(ctx context.Context, _ engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		<-release
+		return engine.Result{}, ctx.Err()
+	}
+	for _, id := range []string{"job-one", "job-two"} {
+		if _, err := manager.SubmitAdmitted(id, Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-started
+	waitForV2Job(t, store, "job-one", jobmodel.LifecycleActive)
+	store.mu.Lock()
+	callsBefore := store.calls
+	store.mu.Unlock()
+	if got := manager.PauseAll(); got != 2 {
+		t.Fatalf("PauseAll() = %d; want two accepted rows", got)
+	}
+	store.mu.Lock()
+	callsAfter := store.calls
+	store.mu.Unlock()
+	if callsAfter != callsBefore+1 {
+		t.Fatalf("PauseAll State transactions = %d; want one batch transaction", callsAfter-callsBefore)
+	}
+	waitForV2Job(t, store, "job-two", jobmodel.LifecyclePaused)
+	if got := manager.Active(); got != "job-one" {
+		t.Fatalf("active job during PauseAll settlement = %q; want job-one", got)
+	}
+	close(release)
+	waitForV2Job(t, store, "job-one", jobmodel.LifecyclePaused)
+}
+
+func TestV2StaleAttemptPreconditionCannotOverwriteWinner(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "job-stale")
+	before := store.Snapshot().Jobs[0]
+	store.mu.Lock()
+	store.state.Jobs[0].AttemptID = "winner-attempt"
+	store.mu.Unlock()
+	err := store.Transaction([]jobmodel.JobPrecondition{{
+		ID: before.ID, Revision: before.Revision, Lifecycle: before.Lifecycle,
+		AttemptID: before.AttemptID, SessionID: before.SessionID, OutputRoot: before.OutputRoot,
+	}}, func(state *jobmodel.State) error {
+		state.Jobs[0].Lifecycle = jobmodel.LifecycleCompleted
+		return nil
+	})
+	if err == nil {
+		t.Fatal("stale attempt transaction succeeded")
+	}
+	if got := store.Snapshot().Jobs[0].Lifecycle; got != jobmodel.LifecyclePending {
+		t.Fatalf("stale attempt changed winner lifecycle to %s", got)
+	}
+}
+
+func TestV2PendingCancelWinsOverPauseWithoutSnapshotOverwrite(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-running", "job-pending")
+	store.mu.Lock()
+	store.state.Jobs[1].SessionID = ""
+	store.mu.Unlock()
+	manager := New(nil, nil)
+	defer manager.Close()
+	manager.SetConcurrency(1)
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	manager.runDownload = func(ctx context.Context, _ engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		<-release
+		return engine.Result{}, ctx.Err()
+	}
+	for _, id := range []string{"job-running", "job-pending"} {
+		if _, err := manager.SubmitAdmitted(id, Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-started
+	manager.Cancel("job-pending")
+	if err := manager.Pause("job-pending"); err == nil {
+		t.Fatal("Pause accepted while pending Cancel was already the winner")
+	}
+	waitForV2Job(t, store, "job-pending", jobmodel.LifecycleCanceled)
+	snapshot, ok := manager.Find("job-pending")
+	if !ok || snapshot.Status != StatusCanceled {
+		t.Fatalf("pending cancel snapshot = %#v, %v; want canceled", snapshot, ok)
+	}
+	manager.Cancel("job-running")
+	close(release)
+}
+
+func TestV2CompletionHistoryAndStaleAttemptEventAreIdempotent(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-idempotent")
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 1)
+	var runs int
+	manager.runDownload = func(_ context.Context, _ engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		runs++
+		started <- struct{}{}
+		if runs == 1 {
+			return engine.Result{}, errors.New("first attempt failed")
+		}
+		return engine.Result{}, nil
+	}
+	if _, err := manager.SubmitAdmitted("job-idempotent", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	manager.mu.Lock()
+	state := manager.all["job-idempotent"]
+	oldWorker := state.worker
+	manager.mu.Unlock()
+	if oldWorker == nil {
+		// The injected runner can finish before the test reacquires m.mu;
+		// retain a distinct stale-attempt token for the rejection assertion.
+		oldWorker = &worker{JobID: "job-idempotent", AttemptID: "stale"}
+	}
+	waitForV2Job(t, store, "job-idempotent", jobmodel.LifecycleFailed)
+	if err := manager.Retry("job-idempotent"); err != nil {
+		t.Fatal(err)
+	}
+	waitForV2Job(t, store, "job-idempotent", jobmodel.LifecycleCompleted)
+	manager.mu.Lock()
+	before := manager.all["job-idempotent"].snap
+	manager.mu.Unlock()
+	manager.handleEventAttempt(state, oldWorker, engine.Event{Kind: engine.EventDownloadProgress, Bytes: 99, Total: 100})
+	manager.mu.Lock()
+	after := manager.all["job-idempotent"].snap
+	manager.mu.Unlock()
+	if after.Bytes != before.Bytes || after.Status != before.Status {
+		t.Fatalf("stale attempt event changed snapshot from %#v to %#v", before, after)
+	}
+
+	store.mu.Lock()
+	callsBefore := store.calls
+	store.mu.Unlock()
+	if err := manager.settleDurable(state, jobmodel.LifecycleCompleted, jobmodel.DesiredRunning, jobmodel.PhaseReadyToPublish, after, "", false); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	callsAfter := store.calls
+	history := append([]jobmodel.HistoryEntry(nil), store.state.History...)
+	store.mu.Unlock()
+	if callsAfter != callsBefore || len(history) != 1 {
+		t.Fatalf("idempotent completion calls/history = %d/%d; want no extra commit and one history row", callsAfter-callsBefore, len(history))
+	}
+}

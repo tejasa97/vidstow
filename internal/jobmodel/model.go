@@ -78,6 +78,23 @@ type State struct {
 	Cleanup          []CleanupTombstone `json:"cleanup"`
 }
 
+// JobPrecondition identifies the exact durable row a lifecycle operation
+// observed. Store transactions compare every field before applying a
+// mutation, so a stale worker or command cannot overwrite a newer winner.
+// It lives beside the durable DTOs so jobs can use State v2 without importing
+// store (which still contains the legacy compatibility adapter).
+type JobPrecondition struct {
+	ID        string
+	Revision  uint64
+	Lifecycle Lifecycle
+	// AttemptID is optional for older admission/store callers, but manager
+	// lifecycle transitions always populate it so stale attempt callbacks
+	// cannot settle a newer execution under the same logical job.
+	AttemptID  string
+	SessionID  string
+	OutputRoot OutputRootRef
+}
+
 type DurableJob struct {
 	ID                 string           `json:"id"`
 	Revision           uint64           `json:"revision"`
