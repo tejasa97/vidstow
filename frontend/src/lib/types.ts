@@ -29,6 +29,7 @@ export interface OutputPlan {
   requiresFfmpeg?: boolean;
   audioBitrateKbps?: number;
   recommended?: boolean;
+  available: boolean;
 }
 
 export interface JobSnapshot {
@@ -121,13 +122,34 @@ export interface InfoSummary {
   viewCount: number;
   uploadDate: string;
   description: string;
+  access: AccessSummary;
   plans: OutputPlan[];
 }
 
+export interface AccessSummary {
+  code: 'public' | 'unlisted' | 'restricted' | 'unknown';
+  label: string;
+}
+
+export interface PersistenceStatus {
+  available: boolean;
+  healthy: boolean;
+  message?: string;
+}
+
+export interface BuildInfo {
+  version: string;
+  engineVersion: string;
+  os: string;
+  architecture: string;
+  goVersion: string;
+}
+
 export interface QueueEvent {
-  name: 'job:update' | 'queue:update';
+  name: 'job:update' | 'queue:update' | 'persistence:update';
   job?: JobSnapshot;
   queue?: JobSnapshot[];
+  persistence?: PersistenceStatus;
 }
 
 export interface AppError {

@@ -80,7 +80,9 @@ func (a *App) shutdown(ctx context.Context) {
 	shutdownCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	a.jobs.Shutdown(shutdownCtx)
-	a.jobs.Close()
+	if err := a.jobs.Close(); err != nil {
+		wailsruntime.LogErrorf(ctx, "desktop: save queue during shutdown: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +147,17 @@ func (a *App) PickFFmpegPath() (string, error) {
 
 // GetFFmpegStatus returns the current ffmpeg probe result.
 func (a *App) GetFFmpegStatus() ffmpegdetect.Status { return a.ffmpegStatus() }
+
+// GetBuildInfo returns the release identity used by About and diagnostics.
+func (a *App) GetBuildInfo() BuildInfo { return currentBuildInfo() }
+
+// GetPersistenceStatus returns durable queue health for startup UI state.
+func (a *App) GetPersistenceStatus() jobs.PersistenceStatus {
+	if a.jobs == nil {
+		return jobs.PersistenceStatus{}
+	}
+	return a.jobs.PersistenceStatus()
+}
 
 // ProbeFFmpeg re-runs detection and broadcasts the result.
 func (a *App) ProbeFFmpeg() ffmpegdetect.Status {
@@ -369,9 +382,11 @@ func (a *App) RevealInFinder(path string) error {
 func (a *App) CopyDiagnostics() (string, error) {
 	status := a.ffmpegStatus()
 	settings := a.store.Settings()
+	build := currentBuildInfo()
 	report := strings.Builder{}
 	report.WriteString("VidStow diagnostics\n")
-	report.WriteString("App: VidStow v0.1.0 (Go " + runtime.Version() + ", " + runtime.GOOS + "/" + runtime.GOARCH + ")\n")
+	report.WriteString("App: VidStow v" + build.Version + " (" + build.OS + "/" + build.Architecture + ", " + build.GoVersion + ")\n")
+	report.WriteString("Engine: youtube_dlp " + build.EngineVersion + "\n")
 	report.WriteString("Download folder: " + filepath.Base(settings.DownloadFolder) + "\n")
 	// Privacy: do not include the absolute FFmpeg path. The basename
 	// tells support which binary the user picked without disclosing

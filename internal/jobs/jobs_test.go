@@ -21,6 +21,74 @@ type memoryPersistence struct {
 	jobs []PersistedJob
 }
 
+type failingPersistence struct {
+	mu      sync.Mutex
+	jobs    []PersistedJob
+	saveErr error
+}
+
+type nonDurablePersistence struct{ memoryPersistence }
+
+func (*nonDurablePersistence) Durable() bool { return false }
+
+type controlledPersistence struct {
+	mu          sync.Mutex
+	jobs        []PersistedJob
+	blockNext   bool
+	saveStarted chan struct{}
+	releaseSave chan struct{}
+}
+
+func (p *controlledPersistence) LoadJobs() ([]PersistedJob, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]PersistedJob(nil), p.jobs...), nil
+}
+
+func (p *controlledPersistence) SaveJobs(jobs []PersistedJob) error {
+	p.mu.Lock()
+	block := p.blockNext
+	if block {
+		p.blockNext = false
+	}
+	started, release := p.saveStarted, p.releaseSave
+	p.mu.Unlock()
+	if block {
+		close(started)
+		<-release
+	}
+	p.mu.Lock()
+	p.jobs = append([]PersistedJob(nil), jobs...)
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *controlledPersistence) armBlockingSave() (<-chan struct{}, chan<- struct{}) {
+	p.mu.Lock()
+	p.blockNext = true
+	p.saveStarted = make(chan struct{})
+	p.releaseSave = make(chan struct{})
+	started, release := p.saveStarted, p.releaseSave
+	p.mu.Unlock()
+	return started, release
+}
+
+func (p *failingPersistence) LoadJobs() ([]PersistedJob, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]PersistedJob(nil), p.jobs...), nil
+}
+
+func (p *failingPersistence) SaveJobs(jobs []PersistedJob) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.saveErr != nil {
+		return p.saveErr
+	}
+	p.jobs = append([]PersistedJob(nil), jobs...)
+	return nil
+}
+
 func (p *memoryPersistence) LoadJobs() ([]PersistedJob, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -37,7 +105,7 @@ func (p *memoryPersistence) SaveJobs(jobs []PersistedJob) error {
 func TestSummarizeAnalysisBuildsPublicCuratedPlans(t *testing.T) {
 	raw := json.RawMessage(`{
 		"id":"abc123","title":"Demo","uploader":"Creator","duration":90,
-		"view_count":1234,"upload_date":"20260807","description":"Description",
+		"view_count":1234,"upload_date":"20260807","description":"Description","availability":"public",
 		"formats":[
 			{"format_id":"137","ext":"mp4","vcodec":"avc1.640028","acodec":"none","width":1920,"height":1080,"tbr":4000},
 			{"format_id":"140","ext":"m4a","vcodec":"none","acodec":"mp4a.40.2","abr":128}
@@ -56,8 +124,26 @@ func TestSummarizeAnalysisBuildsPublicCuratedPlans(t *testing.T) {
 	if summary.Plans[0].Selector != "" || len(summary.Plans[0].SourceFormatIDs) != 0 {
 		t.Fatal("public summary leaked private engine selector")
 	}
+	if !summary.Plans[0].Available {
+		t.Fatal("returned public plan must be informationally available")
+	}
+	if summary.Access.Code != "public" || summary.Access.Label != "Publicly accessible" {
+		t.Fatalf("access = %#v; want public extraction metadata", summary.Access)
+	}
 	if privatePlans[0].Selector != "137+140" {
 		t.Fatalf("private selector = %q; want 137+140", privatePlans[0].Selector)
+	}
+}
+
+func TestSummarizeAccessUsesNeutralFallback(t *testing.T) {
+	for _, metadata := range []map[string]any{
+		nil,
+		{"availability": "not-a-provider-contract"},
+	} {
+		access := summarizeAccess(metadata)
+		if access.Code != "unknown" || access.Label != "Access status not reported" {
+			t.Fatalf("access = %#v; want neutral fallback", access)
+		}
 	}
 }
 
@@ -295,9 +381,13 @@ func TestPauseAndResumeActiveDownloadPreservesProgress(t *testing.T) {
 	manager := New(nil, nil)
 	manager.SetConcurrency(1)
 	started := make(chan struct{}, 2)
+	progressRecorded := make(chan struct{}, 2)
 	manager.runDownload = func(ctx context.Context, _ engine.Request, handler engine.EventHandler) (engine.Result, error) {
 		started <- struct{}{}
-		_ = handler(ctx, engine.Event{Kind: engine.EventDownloadProgress, Bytes: 50, Total: 100})
+		if err := handler(ctx, engine.Event{Kind: engine.EventDownloadProgress, Bytes: 50, Total: 100}); err != nil {
+			return engine.Result{}, err
+		}
+		progressRecorded <- struct{}{}
 		<-ctx.Done()
 		return engine.Result{}, ctx.Err()
 	}
@@ -306,6 +396,7 @@ func TestPauseAndResumeActiveDownloadPreservesProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-started
+	<-progressRecorded
 	if err := manager.Pause(id); err != nil {
 		t.Fatal(err)
 	}
@@ -332,6 +423,142 @@ func TestPauseAndResumeActiveDownloadPreservesProgress(t *testing.T) {
 		t.Fatal("resumed job did not restart the engine request")
 	}
 	manager.Cancel(id)
+}
+
+func TestPersistenceFailureIsReportedAndRecoveryClearsIt(t *testing.T) {
+	events := make(chan Event, 2)
+	persistence := &failingPersistence{saveErr: errors.New("write /private/queue.json: permission denied")}
+	manager := New(nil, func(event Event) {
+		if event.Name == EventPersistence {
+			events <- event
+		}
+	})
+	if err := manager.SetPersistence(persistence, false); err == nil {
+		t.Fatal("SetPersistence() error = nil; want initial save error")
+	}
+	status := manager.PersistenceStatus()
+	if !status.Available || status.Healthy || status.Message != persistenceFailureMessage {
+		t.Fatalf("failure status = %#v", status)
+	}
+	select {
+	case event := <-events:
+		if event.Persistence == nil || event.Persistence.Message != persistenceFailureMessage {
+			t.Fatalf("event = %#v; want safe persistence failure", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for persistence failure event")
+	}
+
+	persistence.mu.Lock()
+	persistence.saveErr = nil
+	persistence.mu.Unlock()
+	if err := manager.FlushPersistence(); err != nil {
+		t.Fatalf("FlushPersistence() recovery error = %v", err)
+	}
+	status = manager.PersistenceStatus()
+	if !status.Available || !status.Healthy || status.Message != "" {
+		t.Fatalf("recovered status = %#v", status)
+	}
+	select {
+	case event := <-events:
+		if event.Persistence == nil || !event.Persistence.Healthy || event.Persistence.Message != "" {
+			t.Fatalf("recovery event = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for persistence recovery event")
+	}
+}
+
+func TestCloseReturnsSafeFinalPersistenceFailure(t *testing.T) {
+	persistence := &failingPersistence{}
+	manager := New(nil, nil)
+	if err := manager.SetPersistence(persistence, false); err != nil {
+		t.Fatalf("SetPersistence() = %v", err)
+	}
+	persistence.mu.Lock()
+	persistence.saveErr = errors.New("write /private/state.json: no space left")
+	persistence.mu.Unlock()
+	if err := manager.Close(); err == nil || err.Error() != persistenceFailureMessage {
+		t.Fatalf("Close() error = %v; want safe persistence error", err)
+	}
+}
+
+func TestNonDurablePersistenceReportsTemporaryQueueStorage(t *testing.T) {
+	events := make(chan Event, 1)
+	persistence := &nonDurablePersistence{}
+	manager := New(nil, func(event Event) {
+		if event.Name == EventPersistence {
+			events <- event
+		}
+	})
+	if err := manager.SetPersistence(persistence, false); err != nil {
+		t.Fatalf("SetPersistence() = %v", err)
+	}
+	status := manager.PersistenceStatus()
+	if status.Available || !status.Healthy || status.Message != persistenceUnavailableMessage {
+		t.Fatalf("non-durable status = %#v", status)
+	}
+	select {
+	case event := <-events:
+		if event.Persistence == nil || event.Persistence.Available || event.Persistence.Message != persistenceUnavailableMessage {
+			t.Fatalf("event = %#v; want safe temporary-storage status", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for temporary-storage status")
+	}
+	if err := manager.FlushPersistence(); err != nil {
+		t.Fatalf("FlushPersistence() = %v", err)
+	}
+	if got := manager.PersistenceStatus(); got.Available || got.Message != persistenceUnavailableMessage {
+		t.Fatalf("status after in-memory save = %#v; must remain non-durable", got)
+	}
+}
+
+func TestConcurrentFlushesPersistNewestSnapshotAndStatus(t *testing.T) {
+	persistence := &controlledPersistence{}
+	manager := New(nil, nil)
+	if err := manager.SetPersistence(persistence, false); err != nil {
+		t.Fatalf("SetPersistence() = %v", err)
+	}
+
+	manager.mu.Lock()
+	manager.all["old"] = &jobState{snap: JobSnapshot{ID: "old", Status: StatusPaused, CreatedAt: "1"}}
+	manager.mu.Unlock()
+	started, release := persistence.armBlockingSave()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- manager.FlushPersistence() }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first save did not start")
+	}
+
+	manager.mu.Lock()
+	delete(manager.all, "old")
+	manager.all["new"] = &jobState{snap: JobSnapshot{ID: "new", Status: StatusPaused, CreatedAt: "2"}}
+	manager.mu.Unlock()
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- manager.FlushPersistence() }()
+	close(release)
+	for index, done := range []<-chan error{firstDone, secondDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("flush %d error = %v", index+1, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("flush %d did not complete", index+1)
+		}
+	}
+	persistence.mu.Lock()
+	stored := append([]PersistedJob(nil), persistence.jobs...)
+	persistence.mu.Unlock()
+	if len(stored) != 1 || stored[0].Snapshot.ID != "new" {
+		t.Fatalf("final persisted jobs = %#v; want newest snapshot", stored)
+	}
+	if status := manager.PersistenceStatus(); !status.Available || !status.Healthy || status.Message != "" {
+		t.Fatalf("final status = %#v; want newest successful flush", status)
+	}
 }
 
 func TestPauseAllPausesActiveAndPendingJobs(t *testing.T) {
@@ -519,6 +746,502 @@ func TestEventsAreDeliveredInEmissionOrder(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("timed out waiting for %q", want)
 		}
+	}
+}
+
+func TestQueueEventsCannotOvertakeJobEvents(t *testing.T) {
+	enteredFirst := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	received := make(chan Event, 3)
+	manager := New(nil, func(event Event) {
+		if event.Name == EventJobUpdate && event.Job.ID == "first" {
+			close(enteredFirst)
+			<-releaseFirst
+		}
+		received <- event
+	})
+
+	manager.mu.Lock()
+	manager.emitLocked(Event{Name: EventJobUpdate, Job: JobSnapshot{ID: "first"}})
+	manager.mu.Unlock()
+	select {
+	case <-enteredFirst:
+	case <-time.After(time.Second):
+		t.Fatal("first event did not reach dispatcher")
+	}
+
+	manager.mu.Lock()
+	manager.all["queued"] = &jobState{snap: JobSnapshot{ID: "queued", Status: StatusPending}}
+	manager.emitQueueLocked()
+	manager.emitLocked(Event{Name: EventJobUpdate, Job: JobSnapshot{ID: "third"}})
+	manager.mu.Unlock()
+	select {
+	case event := <-received:
+		t.Fatalf("event %q overtook blocked first event", event.Name)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(releaseFirst)
+
+	for _, want := range []string{EventJobUpdate, EventQueue, EventJobUpdate} {
+		select {
+		case event := <-received:
+			if event.Name != want {
+				t.Fatalf("event = %q; want %q", event.Name, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %q", want)
+		}
+	}
+}
+
+func TestLosslessEventMailboxDeliversBlockedBurstAndReleasesAfterDrain(t *testing.T) {
+	enteredFirst := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	received := make([]Event, 0, 322)
+	var receivedMu sync.Mutex
+	manager := New(nil, func(event Event) {
+		if event.Name == EventJobUpdate && event.Job.ID == "first" {
+			close(enteredFirst)
+			<-releaseFirst
+		}
+		receivedMu.Lock()
+		received = append(received, event)
+		receivedMu.Unlock()
+	})
+
+	manager.mu.Lock()
+	manager.emitLocked(Event{Name: EventJobUpdate, Job: JobSnapshot{ID: "first"}})
+	manager.mu.Unlock()
+	select {
+	case <-enteredFirst:
+	case <-time.After(time.Second):
+		t.Fatal("first event did not block the listener")
+	}
+
+	manager.mu.Lock()
+	const burstEvents = 320
+	for index := 0; index < burstEvents; index++ {
+		id := fmt.Sprintf("burst-%d", index)
+		status := StatusPaused
+		if index == burstEvents-1 {
+			id = "completed"
+			status = StatusComplete
+		}
+		manager.emitLocked(Event{Name: EventJobUpdate, Job: JobSnapshot{ID: id, Status: status}})
+	}
+	manager.eventMu.Lock()
+	pending := len(manager.pendingEvents)
+	manager.eventMu.Unlock()
+	manager.mu.Unlock()
+	if pending != burstEvents {
+		t.Fatalf("pending mailbox length = %d; want all %d blocked events", pending, burstEvents)
+	}
+
+	close(releaseFirst)
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.eventMu.Lock()
+		drained := manager.pendingEvents == nil
+		manager.eventMu.Unlock()
+		if drained {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("event mailbox did not release drained storage")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	receivedMu.Lock()
+	defer receivedMu.Unlock()
+	if len(received) != burstEvents+1 {
+		t.Fatalf("received events = %d; want %d", len(received), burstEvents+1)
+	}
+	if received[0].Job.ID != "first" {
+		t.Fatalf("first event = %q; want first", received[0].Job.ID)
+	}
+	for index := 0; index < burstEvents-1; index++ {
+		want := fmt.Sprintf("burst-%d", index)
+		if got := received[index+1].Job.ID; got != want {
+			t.Fatalf("event %d = %q; want %q", index+1, got, want)
+		}
+	}
+	terminal := received[len(received)-1]
+	if terminal.Name != EventJobUpdate || terminal.Job.ID != "completed" || terminal.Job.Status != StatusComplete {
+		t.Fatalf("terminal event = %#v; want delivered completion update", terminal)
+	}
+}
+
+func TestCloseDrainsBlockedTerminalEventBeforeReturning(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	received := make(chan Event, 2)
+	manager := New(nil, func(event Event) {
+		if event.Job.ID == "blocked" {
+			close(entered)
+			<-release
+		}
+		received <- event
+	})
+
+	manager.mu.Lock()
+	manager.emitLocked(Event{Name: EventJobUpdate, Job: JobSnapshot{ID: "blocked", Status: StatusActive}})
+	manager.emitLocked(Event{Name: EventJobUpdate, Job: JobSnapshot{ID: "completed", Status: StatusComplete}})
+	manager.mu.Unlock()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("listener did not block on the first event")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- manager.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close() returned while listener was blocked: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	if err := <-closed; err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+
+	for _, want := range []struct {
+		id     string
+		status Status
+	}{
+		{id: "blocked", status: StatusActive},
+		{id: "completed", status: StatusComplete},
+	} {
+		select {
+		case event := <-received:
+			if event.Name != EventJobUpdate || event.Job.ID != want.id || event.Job.Status != want.status {
+				t.Fatalf("event = %#v; want %s/%s", event, want.id, want.status)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %s event", want.id)
+		}
+	}
+	select {
+	case <-manager.eventDone:
+	default:
+		t.Fatal("dispatcher is still running after Close returned")
+	}
+}
+
+func TestCloseDeliversFinalPersistenceEvent(t *testing.T) {
+	persistence := &failingPersistence{}
+	events := make(chan Event, 1)
+	manager := New(nil, func(event Event) {
+		if event.Name == EventPersistence {
+			events <- event
+		}
+	})
+	if err := manager.SetPersistence(persistence, false); err != nil {
+		t.Fatalf("SetPersistence() = %v", err)
+	}
+	persistence.mu.Lock()
+	persistence.saveErr = errors.New("write /private/queue.json: no space left")
+	persistence.mu.Unlock()
+
+	if err := manager.Close(); err == nil || err.Error() != persistenceFailureMessage {
+		t.Fatalf("Close() error = %v; want final persistence error", err)
+	}
+	select {
+	case event := <-events:
+		if event.Persistence == nil || event.Persistence.Healthy || event.Persistence.Message != persistenceFailureMessage {
+			t.Fatalf("final persistence event = %#v; want failure status", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for final persistence event")
+	}
+}
+
+func TestCloseIsSafeWithNilListenerAndRejectsNewActivity(t *testing.T) {
+	manager := New(nil, nil)
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("repeated Close() = %v", err)
+	}
+	select {
+	case <-manager.eventDone:
+	default:
+		t.Fatal("nil-listener manager did not mark dispatcher complete")
+	}
+	if _, err := manager.Submit(Request{URL: "https://example.invalid/video", OutputDir: t.TempDir()}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Submit() after Close() = %v; want ErrClosed", err)
+	}
+}
+
+func TestConcurrentCloseCallsShareResult(t *testing.T) {
+	persistence := &failingPersistence{}
+	manager := New(nil, nil)
+	if err := manager.SetPersistence(persistence, false); err != nil {
+		t.Fatalf("SetPersistence() = %v", err)
+	}
+	persistence.mu.Lock()
+	persistence.saveErr = errors.New("write /private/queue.json: permission denied")
+	persistence.mu.Unlock()
+
+	const callers = 16
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for range callers {
+		go func() {
+			defer wg.Done()
+			errs <- manager.Close()
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err == nil || err.Error() != persistenceFailureMessage {
+			t.Fatalf("concurrent Close() error = %v; want shared persistence error", err)
+		}
+	}
+}
+
+func TestCloseJoinsActiveWorkerAndPersistsPausedState(t *testing.T) {
+	started := make(chan struct{})
+	allowExit := make(chan struct{})
+	exited := make(chan struct{})
+	events := make(chan Event, 16)
+	persistence := &memoryPersistence{}
+	manager := New(nil, func(event Event) { events <- event })
+	manager.runDownload = func(ctx context.Context, _ engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		close(started)
+		<-allowExit
+		close(exited)
+		return engine.Result{}, ctx.Err()
+	}
+	if err := manager.SetPersistence(persistence, false); err != nil {
+		t.Fatalf("SetPersistence() = %v", err)
+	}
+	id, err := manager.Submit(Request{URL: "https://example.invalid/video", OutputDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Submit() = %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- manager.Close() }()
+	waitForManagerClosing(t, manager)
+	select {
+	case err := <-closed:
+		t.Fatalf("Close() returned before the worker was released: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(allowExit)
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not exit after Close cancellation was released")
+	}
+	if err := <-closed; err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+
+	persistence.mu.Lock()
+	stored := append([]PersistedJob(nil), persistence.jobs...)
+	persistence.mu.Unlock()
+	if len(stored) != 1 || stored[0].Snapshot.ID != id || stored[0].Snapshot.Status != StatusPaused {
+		t.Fatalf("persisted after Close = %#v; want paused worker state", stored)
+	}
+	foundPaused := false
+	for {
+		select {
+		case event := <-events:
+			if event.Name == EventJobUpdate && event.Job.ID == id && event.Job.Status == StatusPaused {
+				foundPaused = true
+			}
+		default:
+			if !foundPaused {
+				t.Fatalf("Close() drained no paused worker event for %s", id)
+			}
+			return
+		}
+	}
+}
+
+func TestCloseDrainsCompletedWorkerEventAtCompletionBoundary(t *testing.T) {
+	enteredTerminal := make(chan struct{})
+	releaseListener := make(chan struct{})
+	events := make(chan Event, 16)
+	persistence := &memoryPersistence{}
+	manager := New(nil, func(event Event) {
+		if event.Name == EventJobUpdate && event.Job.Status == StatusComplete {
+			close(enteredTerminal)
+			<-releaseListener
+		}
+		events <- event
+	})
+	manager.runDownload = func(_ context.Context, _ engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		return engine.Result{}, nil
+	}
+	if err := manager.SetPersistence(persistence, false); err != nil {
+		t.Fatalf("SetPersistence() = %v", err)
+	}
+	id, err := manager.Submit(Request{URL: "https://example.invalid/video", OutputDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Submit() = %v", err)
+	}
+	select {
+	case <-enteredTerminal:
+	case <-time.After(time.Second):
+		t.Fatal("worker completion event was not delivered to the listener")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- manager.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close() returned while the completed event listener was blocked: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(releaseListener)
+	if err := <-closed; err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+
+	completed := 0
+	for {
+		select {
+		case event := <-events:
+			if event.Name == EventJobUpdate && event.Job.ID == id && event.Job.Status == StatusComplete {
+				completed++
+			}
+		default:
+			if completed != 1 {
+				t.Fatalf("completed events for %s = %d; want exactly once", id, completed)
+			}
+			persistence.mu.Lock()
+			stored := append([]PersistedJob(nil), persistence.jobs...)
+			persistence.mu.Unlock()
+			if len(stored) != 0 {
+				t.Fatalf("terminal job persisted after completion = %#v; want queue exclusion", stored)
+			}
+			return
+		}
+	}
+}
+
+func TestCloseCancelsInFlightAnalyzeAndReturnsPromptly(t *testing.T) {
+	started := make(chan struct{})
+	runnerCanceled := make(chan struct{})
+	manager := New(nil, nil)
+	manager.runAnalyze = func(ctx context.Context, _ engine.Request) (engine.Result, error) {
+		close(started)
+		<-ctx.Done()
+		close(runnerCanceled)
+		return engine.Result{}, ctx.Err()
+	}
+
+	analyzeDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Analyze(context.Background(), "https://example.invalid/video")
+		analyzeDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("analysis runner did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- manager.Close() }()
+	select {
+	case <-runnerCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not cancel the in-flight analysis")
+	}
+	select {
+	case err := <-analyzeDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Analyze() error = %v; want manager cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Analyze() did not return after lifecycle cancellation")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not return promptly after analysis cancellation")
+	}
+}
+
+func TestAnalyzePreservesCallerCancellationAndDeadline(t *testing.T) {
+	started := make(chan struct{})
+	deadlineSeen := make(chan time.Time, 1)
+	manager := New(nil, nil)
+	manager.runAnalyze = func(ctx context.Context, _ engine.Request) (engine.Result, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return engine.Result{}, errors.New("analysis context lost caller deadline")
+		}
+		deadlineSeen <- deadline
+		close(started)
+		<-ctx.Done()
+		return engine.Result{}, ctx.Err()
+	}
+
+	callerDeadline := time.Now().Add(time.Minute)
+	callerCtx, cancelCaller := context.WithDeadline(context.Background(), callerDeadline)
+	defer cancelCaller()
+	analyzeDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Analyze(callerCtx, "https://example.invalid/video")
+		analyzeDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("analysis runner did not start")
+	}
+	select {
+	case got := <-deadlineSeen:
+		if delta := got.Sub(callerDeadline); delta < -time.Millisecond || delta > time.Millisecond {
+			t.Fatalf("analysis deadline = %v; want caller deadline %v", got, callerDeadline)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("analysis runner did not report its deadline")
+	}
+	cancelCaller()
+	select {
+	case err := <-analyzeDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Analyze() error = %v; want caller cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Analyze() did not preserve caller cancellation")
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+}
+
+func waitForManagerClosing(t *testing.T, manager *Manager) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		closing := manager.closing
+		manager.mu.Unlock()
+		if closing {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Close() did not enter closing state")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

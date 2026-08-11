@@ -103,3 +103,14 @@ test('download history actions remain native accessible buttons', async () => {
   assert.match(downloads, /formatLabel\(entry\)/);
   assert.match(downloads, /container/);
 });
+
+test('queue distinguishes temporary in-memory storage from durable automatic saving', async () => {
+  const [queue, stores] = await Promise.all([
+    read('../src/pages/Queue.svelte'),
+    read('../src/lib/stores.ts'),
+  ]);
+  assert.match(queue, /#if !\$persistence\.available/);
+  assert.match(queue, /temporary in-memory storage/);
+  assert.match(queue, /Jobs are saved automatically/);
+  assert.match(stores, /persistence = writable<PersistenceStatus>/);
+});

@@ -131,6 +131,7 @@
           <div><span>Uploaded</span><strong>{preview.uploadDate || 'Unavailable'}</strong></div>
           <div><span>Channel</span><strong>{preview.channel || 'Unavailable'}</strong></div>
           <div><span>Duration</span><strong>{preview.duration || 'Unavailable'}</strong></div>
+          <div><span>Access</span><strong>{preview.access?.label || 'Access status not reported'}</strong></div>
         </div>
       {:else if visiblePlans.length}
         <div class="plan-table" role="radiogroup" aria-label={`${tab} output options`}>
