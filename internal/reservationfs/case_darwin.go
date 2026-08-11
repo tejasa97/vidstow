@@ -15,26 +15,23 @@ const (
 )
 
 // detectPosixCaseSensitivity reads Darwin's authoritative volume capability
-// bitmap. The valid bit is required; an absent valid bit is not permission to
-// guess that the volume is case-sensitive.
-func detectPosixCaseSensitivity(_ int, path string) (bool, error) {
+// bitmap from the already-open root handle. The valid bit is required; an
+// absent valid bit is not permission to guess that the volume is
+// case-sensitive.
+func detectPosixCaseSensitivity(fd int, _ string) (bool, error) {
 	attrList := unix.Attrlist{
 		Bitmapcount: unix.ATTR_BIT_MAP_COUNT,
 		Volattr:     unix.ATTR_VOL_CAPABILITIES,
 	}
-	pathp, err := unix.BytePtrFromString(path)
-	if err != nil {
-		return false, unsupportedError("encode Darwin volume path", err)
-	}
 
-	// getattrlist returns a four-byte result length followed by the selected
+	// fgetattrlist returns a four-byte result length followed by the selected
 	// vol_capabilities_attr_t (four uint32 capability words and four valid
 	// words). Keep the fixed buffer bounded and parse only the format word.
 	const resultBytes = 4 + 8*4
 	var result [resultBytes]byte
 	r1, _, errno := unix.Syscall6(
-		unix.SYS_GETATTRLIST,
-		uintptr(unsafe.Pointer(pathp)),
+		unix.SYS_FGETATTRLIST,
+		uintptr(fd),
 		uintptr(unsafe.Pointer(&attrList)),
 		uintptr(unsafe.Pointer(&result[0])),
 		uintptr(len(result)),
@@ -44,7 +41,7 @@ func detectPosixCaseSensitivity(_ int, path string) (bool, error) {
 	if errno != 0 {
 		return false, unsupportedError("query Darwin volume case policy", errno)
 	}
-	_ = r1 // getattrlist returns zero on success; the length lives in result.
+	_ = r1 // fgetattrlist returns zero on success; the length lives in result.
 	resultLength := readLittleEndianUint32(result[:4])
 	if resultLength < resultBytes {
 		return false, unsupportedError("query Darwin volume case policy", errors.New("short getattrlist result"))
