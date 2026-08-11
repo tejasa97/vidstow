@@ -5,6 +5,7 @@ package reservationfs
 import (
 	"fmt"
 
+	"github.com/tejasa97/vidstow/internal/reservation"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,4 +35,11 @@ func detectPosixCaseSensitivity(fd int, _ string) (bool, error) {
 
 func linuxCasefoldFlagIsAuthoritative(fsType int64) bool {
 	return fsType == unix.EXT4_SUPER_MAGIC || fsType == unix.F2FS_SUPER_MAGIC
+}
+
+func posixNameComparison(caseSensitive bool) reservation.NameComparison {
+	if caseSensitive {
+		return reservation.ExactNames{}
+	}
+	return ConservativeFoldedNames{}
 }

@@ -38,3 +38,13 @@ func TestLinuxCasefoldFlagAuthorityIsExplicitlyBounded(t *testing.T) {
 		t.Fatal("unknown filesystem type unexpectedly supports the casefold flag")
 	}
 }
+
+func TestLinuxCaseSensitivePolicyRemainsExact(t *testing.T) {
+	policy := posixNameComparison(true)
+	if policy.Equal("café.mp4", "cafe\u0301.mp4") {
+		t.Fatal("Linux case-sensitive policy unexpectedly normalized names")
+	}
+	if policy.Equal("Case.mp4", "case.mp4") {
+		t.Fatal("Linux case-sensitive policy unexpectedly folded case")
+	}
+}

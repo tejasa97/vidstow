@@ -6,6 +6,7 @@ import (
 	"errors"
 	"unsafe"
 
+	"github.com/tejasa97/vidstow/internal/reservation"
 	"golang.org/x/sys/unix"
 )
 
@@ -60,4 +61,13 @@ func readLittleEndianUint32(b []byte) uint32 {
 		return 0
 	}
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+}
+
+func posixNameComparison(caseSensitive bool) reservation.NameComparison {
+	if caseSensitive {
+		// APFS lookup is normalization-insensitive even on a case-sensitive
+		// volume, so byte-exact reservation comparison would miss aliases.
+		return ConservativeNormalizedNames{}
+	}
+	return ConservativeFoldedNames{}
 }

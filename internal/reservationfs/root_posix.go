@@ -99,10 +99,7 @@ func posixIdentity(stat *unix.Stat_t) (string, error) {
 func (p *posixRoot) volume() reservation.Volume { return p.rootVolume }
 
 func (p *posixRoot) nameComparison() reservation.NameComparison {
-	if p.isCaseSensitive {
-		return reservation.ExactNames{}
-	}
-	return reservation.FoldedNames{}
+	return posixNameComparison(p.isCaseSensitive)
 }
 
 func (p *posixRoot) volumeComparison() reservation.VolumeComparison {

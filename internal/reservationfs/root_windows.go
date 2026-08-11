@@ -174,7 +174,7 @@ func (w *windowsRoot) nameComparison() reservation.NameComparison {
 	if w.isCaseSensitive {
 		return reservation.ExactNames{}
 	}
-	return reservation.FoldedNames{}
+	return ConservativeFoldedNames{}
 }
 
 func (w *windowsRoot) volumeComparison() reservation.VolumeComparison {
