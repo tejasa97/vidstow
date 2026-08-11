@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
+  import { trapModalFocus } from './modal.js';
   import type { QuitConfirmationViewModel } from './types.js';
 
   export interface QuitConfirmationEvents {
@@ -42,6 +43,8 @@
       aria-modal="true"
       aria-labelledby="lifecycle-quit-title"
       aria-describedby="lifecycle-quit-description"
+      tabindex="-1"
+      use:trapModalFocus
     >
       <header class="dialog-header">
         <h2 id="lifecycle-quit-title">Quit VidStow?</h2>
@@ -68,7 +71,7 @@
       </div>
 
       <footer class="dialog-footer">
-        <button type="button" class="secondary-button" onclick={() => dispatch('keep-working')}>Keep working</button>
+        <button type="button" class="secondary-button" data-autofocus onclick={() => dispatch('keep-working')}>Keep working</button>
         <button type="button" class="primary-button" onclick={() => dispatch('pause-and-quit')}>Pause downloads and quit</button>
       </footer>
     </div>

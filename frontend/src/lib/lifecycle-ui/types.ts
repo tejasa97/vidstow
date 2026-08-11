@@ -116,7 +116,7 @@ export interface RecoveryRequiredViewModel {
 export interface DestinationConflictViewModel {
   unavailableName: string;
   proposedName: string;
-  proposedNameAvailable?: boolean;
+  proposedNameAvailable: boolean;
 }
 
 export interface LifecycleJobEventDetail {
@@ -155,16 +155,12 @@ export function lifecycleLabel(
   phase?: PresentationPhase,
 ): string {
   if (phase === 'cleaning-up') return 'Cleaning up';
-  if (lifecycle === 'pausing') return 'Pausing';
-  if (lifecycle === 'canceling') return 'Canceling';
-  if (phase === 'finalizing') return 'Finalizing';
-  if (phase === 'ready-to-publish') return 'Ready to publish';
-  if (phase === 'publishing') return 'Publishing';
-  if (lifecycle === 'active' && phase === 'waiting-for-processing') return 'Waiting for processing';
-  if (lifecycle === 'active' && phase === 'preparing') return 'Preparing';
-  if (lifecycle === 'active') return 'Downloading';
 
   switch (lifecycle) {
+    case 'pausing':
+      return 'Pausing';
+    case 'canceling':
+      return 'Canceling';
     case 'pending':
       return 'Queued';
     case 'paused':
@@ -177,8 +173,21 @@ export function lifecycleLabel(
       return 'Completed';
     case 'action-required':
       return 'Action required';
-    default:
-      return lifecycle;
+    case 'active':
+      switch (phase) {
+        case 'preparing':
+          return 'Preparing';
+        case 'waiting-for-processing':
+          return 'Waiting for processing';
+        case 'finalizing':
+          return 'Finalizing';
+        case 'ready-to-publish':
+          return 'Ready to publish';
+        case 'publishing':
+          return 'Publishing';
+        default:
+          return 'Downloading';
+      }
   }
 }
 
@@ -186,10 +195,11 @@ export function lifecycleTone(
   lifecycle: DurableLifecycle,
   phase?: PresentationPhase,
 ): LifecycleBadgeTone {
+  if (phase === 'cleaning-up') return 'neutral';
   if (lifecycle === 'failed') return 'danger';
   if (lifecycle === 'action-required' || lifecycle === 'pausing' || lifecycle === 'canceling') return 'warning';
   if (lifecycle === 'completed') return 'success';
-  if (phase === 'cleaning-up' || lifecycle === 'canceled' || lifecycle === 'paused' || lifecycle === 'pending') return 'neutral';
+  if (lifecycle === 'canceled' || lifecycle === 'paused' || lifecycle === 'pending') return 'neutral';
   return 'info';
 }
 
@@ -198,13 +208,13 @@ export function lifecycleMessage(job: LifecycleJobViewModel): string | undefined
   if (job.phase === 'cleaning-up') return 'Removing temporary files...';
   if (job.lifecycle === 'pausing') return 'Saving resume state...';
   if (job.lifecycle === 'canceling') return 'Discarding resumable data...';
+  if (job.lifecycle === 'failed') return 'Download failed';
+  if (job.lifecycle === 'canceled') return 'Canceled. Resumable data was removed.';
+  if (job.lifecycle === 'action-required') return 'The reserved filename is no longer available.';
   if (job.phase === 'finalizing') return 'Merging video and audio...';
   if (job.phase === 'ready-to-publish') return 'Ready to publish.';
   if (job.phase === 'publishing') return 'Publishing...';
   if (job.phase === 'waiting-for-processing') return 'Waiting for processing...';
-  if (job.lifecycle === 'failed') return 'Download failed';
-  if (job.lifecycle === 'canceled') return 'Canceled. Resumable data was removed.';
-  if (job.lifecycle === 'action-required') return 'The reserved filename is no longer available.';
   return job.queueLabel ?? queuePositionLabel(job.queuePosition);
 }
 

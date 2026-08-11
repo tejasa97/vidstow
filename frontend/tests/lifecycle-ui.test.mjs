@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import ts from 'typescript';
 
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
+
+async function loadLifecycleTypes() {
+  const source = await read('../src/lib/lifecycle-ui/types.ts');
+  const { outputText } = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+}
 
 test('lifecycle UI exports typed presentation components and view models', async () => {
   const index = await read('../src/lib/lifecycle-ui/index.ts');
@@ -98,6 +107,33 @@ test('transitional and terminal row copy stays distinct', async () => {
   assert.match(row, />Review<\/button>/);
 });
 
+test('durable outcomes cannot be masked by retained engine phases', async () => {
+  const { lifecycleLabel, lifecycleMessage, lifecycleTone } = await loadLifecycleTypes();
+  const base = { id: 'job-1', title: 'Example', occupiesSlot: false };
+
+  assert.equal(lifecycleLabel('action-required', 'ready-to-publish'), 'Action required');
+  assert.equal(lifecycleMessage({ ...base, lifecycle: 'action-required', phase: 'ready-to-publish' }), 'The reserved filename is no longer available.');
+  assert.equal(lifecycleLabel('failed', 'finalizing'), 'Failed');
+  assert.equal(lifecycleMessage({ ...base, lifecycle: 'failed', phase: 'finalizing' }), 'Download failed');
+  assert.equal(lifecycleLabel('completed', 'publishing'), 'Completed');
+  assert.equal(lifecycleLabel('active', 'publishing'), 'Publishing');
+  assert.equal(lifecycleLabel('canceling', 'cleaning-up'), 'Cleaning up');
+  assert.equal(lifecycleTone('canceling', 'cleaning-up'), 'neutral');
+});
+
+test('modal dialogs trap focus and only claim a destination preview when confirmed', async () => {
+  const [conflict, quit, modal] = await Promise.all([
+    read('../src/lib/lifecycle-ui/DestinationConflictDialog.svelte'),
+    read('../src/lib/lifecycle-ui/QuitConfirmationDialog.svelte'),
+    read('../src/lib/lifecycle-ui/modal.ts'),
+  ]);
+  assert.match(conflict, /proposedNameAvailable === true/);
+  assert.match(conflict, /use:trapModalFocus/);
+  assert.match(quit, /use:trapModalFocus/);
+  assert.match(modal, /event\.key !== 'Tab'/);
+  assert.match(modal, /previouslyFocused\?\.isConnected/);
+});
+
 test('queue settings communicates 1–10/default 2 and drain-on-lower with no toggle', async () => {
   const [settings, types] = await Promise.all([
     read('../src/lib/lifecycle-ui/QueueSettingsCard.svelte'),
@@ -160,6 +196,7 @@ test('all lifecycle UI components remain presentation-only', async () => {
     'DestinationConflictDialog.svelte',
     'LifecycleBadge.svelte',
     'LifecycleJobRow.svelte',
+    'modal.ts',
     'QueueOverview.svelte',
     'QueueSettingsCard.svelte',
     'QueueSummary.svelte',

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
+  import { trapModalFocus } from './modal.js';
   import type { DestinationConflictViewModel } from './types.js';
 
   export interface DestinationConflictEvents {
@@ -15,7 +16,7 @@
 
   let { open, conflict }: Props = $props();
   const dispatch = createEventDispatcher<DestinationConflictEvents>();
-  const proposedNameAvailable = $derived(conflict.proposedNameAvailable !== false);
+  const proposedNameAvailable = $derived(conflict.proposedNameAvailable === true);
 
   function onKeydown(event: KeyboardEvent): void {
     if (open && event.key === 'Escape') dispatch('close');
@@ -34,7 +35,7 @@
 
 {#if open}
   <div class="overlay" role="presentation" onclick={onOverlayClick}>
-    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="lifecycle-conflict-title">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="lifecycle-conflict-title" tabindex="-1" use:trapModalFocus>
       <header class="dialog-header">
         <div>
           <h2 id="lifecycle-conflict-title">Choose a new filename</h2>
@@ -62,7 +63,7 @@
 
       <footer class="dialog-footer">
         <button type="button" class="secondary-button" onclick={() => dispatch('cancel-download')}>Cancel download</button>
-        <button type="button" class="primary-button" disabled={!proposedNameAvailable} onclick={useNewName}>Use new name</button>
+        <button type="button" class="primary-button" data-autofocus disabled={!proposedNameAvailable} onclick={useNewName}>Use new name</button>
       </footer>
     </div>
   </div>

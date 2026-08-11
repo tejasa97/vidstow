@@ -18,9 +18,10 @@
   const label = $derived(lifecycleLabel(lifecycle, phase));
   const tone = $derived(lifecycleTone(lifecycle, phase));
   const showsOccupiedIndicator = $derived(occupiesSlot);
+  const accessibleLabel = $derived(occupiesSlot ? `${label}, occupies an active slot` : label);
 </script>
 
-<span class="badge" class:compact data-tone={tone} aria-label={label}>
+<span class="badge" class:compact data-tone={tone} aria-label={accessibleLabel}>
   {#if showsOccupiedIndicator}<span class="dot" aria-hidden="true"></span>{/if}
   <span>{label}</span>
 </span>
