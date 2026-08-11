@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"unsafe"
 
@@ -42,11 +43,19 @@ type fileStandardInfo struct {
 }
 
 func openPlatformRoot(input string) (platformRoot, error) {
+	return openWindowsRoot(input, false)
+}
+
+func ensurePlatformRoot(input string) (platformRoot, error) {
+	return openWindowsRoot(input, true)
+}
+
+func openWindowsRoot(input string, createMissing bool) (platformRoot, error) {
 	path, err := normalizeRootPath(input)
 	if err != nil {
 		return nil, err
 	}
-	handle, err := openWindowsDirectory(path)
+	handle, err := walkWindowsDirectory(path, createMissing)
 	if err != nil {
 		return nil, unsafeError("open root", err)
 	}
@@ -77,6 +86,14 @@ func openPlatformRoot(input string) (platformRoot, error) {
 }
 
 func openWindowsDirectory(path string) (windows.Handle, error) {
+	canonical, err := normalizeRootPath(path)
+	if err != nil {
+		return windows.InvalidHandle, err
+	}
+	return walkWindowsDirectory(canonical, false)
+}
+
+func openWindowsDirectoryExact(path string) (windows.Handle, error) {
 	pathp, err := windows.UTF16PtrFromString(windowsAPIPath(path))
 	if err != nil {
 		return windows.InvalidHandle, err
@@ -90,6 +107,95 @@ func openWindowsDirectory(path string) (windows.Handle, error) {
 		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT,
 		0,
 	)
+}
+
+func walkWindowsDirectory(canonical string, createMissing bool) (windows.Handle, error) {
+	volumeName := filepath.VolumeName(canonical)
+	if volumeName == "" {
+		return windows.InvalidHandle, ErrInvalidRoot
+	}
+	root, err := openWindowsDirectoryExact(volumeName + `\`)
+	if err != nil {
+		return windows.InvalidHandle, err
+	}
+	if err := validateWindowsDirectoryHandle(root); err != nil {
+		_ = windows.CloseHandle(root)
+		return windows.InvalidHandle, err
+	}
+
+	remainder := strings.TrimLeft(strings.TrimPrefix(canonical, volumeName), `\`)
+	for _, component := range strings.Split(remainder, `\`) {
+		if component == "" || component == "." {
+			continue
+		}
+		next, err := openOrCreateWindowsDirectory(root, component, createMissing)
+		if err != nil {
+			_ = windows.CloseHandle(root)
+			return windows.InvalidHandle, err
+		}
+		if err := validateWindowsDirectoryHandle(next); err != nil {
+			_ = windows.CloseHandle(next)
+			_ = windows.CloseHandle(root)
+			return windows.InvalidHandle, err
+		}
+		if err := windows.CloseHandle(root); err != nil {
+			_ = windows.CloseHandle(next)
+			return windows.InvalidHandle, err
+		}
+		root = next
+	}
+	return root, nil
+}
+
+func openOrCreateWindowsDirectory(parent windows.Handle, name string, createMissing bool) (windows.Handle, error) {
+	objectName, err := windows.NewNTUnicodeString(name)
+	if err != nil {
+		return windows.InvalidHandle, err
+	}
+	caseSensitive, err := windowsCaseSensitivity(parent)
+	if err != nil {
+		return windows.InvalidHandle, err
+	}
+	objectAttributes := windows.OBJECT_ATTRIBUTES{
+		Length:        uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
+		RootDirectory: parent,
+		ObjectName:    objectName,
+		Attributes:    windowsTraversalAttributes(caseSensitive),
+	}
+	disposition := uint32(windows.FILE_OPEN)
+	if createMissing {
+		disposition = windows.FILE_OPEN_IF
+	}
+	var statusBlock windows.IO_STATUS_BLOCK
+	var handle windows.Handle
+	status := windows.NtCreateFile(
+		&handle,
+		windows.FILE_LIST_DIRECTORY|windows.FILE_READ_ATTRIBUTES|windows.FILE_TRAVERSE|windows.SYNCHRONIZE,
+		&objectAttributes,
+		&statusBlock,
+		nil,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		disposition,
+		windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+		0,
+		0,
+	)
+	if status != nil {
+		if isWindowsReparseStatus(status) {
+			return windows.InvalidHandle, unsafeError("open root component", fmt.Errorf("%w: %v", ErrSymlinkRoot, status))
+		}
+		return windows.InvalidHandle, status
+	}
+	return handle, nil
+}
+
+func windowsTraversalAttributes(caseSensitive bool) uint32 {
+	attributes := uint32(windows.OBJ_DONT_REPARSE)
+	if !caseSensitive {
+		attributes |= windows.OBJ_CASE_INSENSITIVE
+	}
+	return attributes
 }
 
 func windowsAPIPath(path string) string {
@@ -235,15 +341,11 @@ func (w *windowsRoot) openRelativeChild(basename string) (windows.Handle, error)
 		MaximumLength: uint16(len(name)*2 + 2),
 		Buffer:        &name[0],
 	}
-	attributes := uint32(windows.OBJ_DONT_REPARSE)
-	if !w.isCaseSensitive {
-		attributes |= windows.OBJ_CASE_INSENSITIVE
-	}
 	objectAttributes := windows.OBJECT_ATTRIBUTES{
 		Length:        uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
 		RootDirectory: w.handle,
 		ObjectName:    &nameString,
-		Attributes:    attributes,
+		Attributes:    windowsTraversalAttributes(w.isCaseSensitive),
 	}
 	var statusBlock windows.IO_STATUS_BLOCK
 	var handle windows.Handle
@@ -311,4 +413,20 @@ func (w *windowsRoot) close() error {
 		return unsafeError("close root", err)
 	}
 	return nil
+}
+
+func ensureWindowsRootPath(path string) error {
+	root, err := EnsureOpenRoot(path)
+	if err != nil {
+		return err
+	}
+	return root.Close()
+}
+
+func ensureRootPath(path string) error {
+	// Windows reserves names before they exist and the native CreateDirectory
+	// path is created through the parent directory handle. Ensure the final
+	// component exists without following a reparse point; OpenRoot then
+	// applies the no-follow validation on the resulting directory.
+	return ensureWindowsRootPath(path)
 }

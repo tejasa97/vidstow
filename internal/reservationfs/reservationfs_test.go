@@ -84,7 +84,7 @@ func TestProbeTreatsEveryExistingChildAsOccupied(t *testing.T) {
 }
 
 func TestOpenRootRejectsSymlinkRoot(t *testing.T) {
-	parent := t.TempDir()
+	parent := realTempDir(t)
 	target := filepath.Join(parent, "target")
 	if err := os.Mkdir(target, 0o700); err != nil {
 		t.Fatal(err)
@@ -99,6 +99,83 @@ func TestOpenRootRejectsSymlinkRoot(t *testing.T) {
 	_, err := OpenRoot(link)
 	if !errors.Is(err, ErrUnsafe) || !errors.Is(err, ErrSymlinkRoot) {
 		t.Fatalf("OpenRoot(symlink) error = %v, want typed unsafe symlink error", err)
+	}
+}
+
+func TestEnsureRootRejectsSymlinkedParentBeforeCreatingChild(t *testing.T) {
+	// A symlinked parent must be rejected before any component below it is
+	// created, so an untrusted root is never touched. The child directory is
+	// only present if a parent link was followed, which this test forbids.
+	base := realTempDir(t)
+	realDir := filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "marker.txt"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		if isLinkCreationPermission(err) {
+			t.Skipf("native symlink creation is unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+
+	untrusted := filepath.Join(link, "child", "output")
+	if _, err := EnsureRoot(untrusted); !errors.Is(err, ErrUnsafe) || !errors.Is(err, ErrSymlinkRoot) {
+		t.Fatalf("EnsureRoot(symlinked-parent) error = %v, want typed unsafe symlink error", err)
+	}
+	if _, err := os.Lstat(filepath.Join(link, "child")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("EnsureRoot created a child through a symlinked parent: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(realDir, "child")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("EnsureRoot created a child inside the linked target: %v", err)
+	}
+}
+
+func TestOpenRootRejectsSymlinkedParent(t *testing.T) {
+	base := realTempDir(t)
+	realDir := filepath.Join(base, "real")
+	output := filepath.Join(realDir, "child", "output")
+	if err := os.MkdirAll(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		if isLinkCreationPermission(err) {
+			t.Skipf("native symlink creation is unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+
+	if _, err := OpenRoot(filepath.Join(link, "child", "output")); !errors.Is(err, ErrUnsafe) || !errors.Is(err, ErrSymlinkRoot) {
+		t.Fatalf("OpenRoot(symlinked-parent) error = %v, want typed unsafe symlink error", err)
+	}
+}
+
+func TestEnsureOpenRootCreatesRequestedAbsolutePathWithoutCWDShadow(t *testing.T) {
+	requested := filepath.Join(realTempDir(t), "missing", "output")
+	root, err := EnsureOpenRoot(requested)
+	if err != nil {
+		t.Fatalf("EnsureOpenRoot(%q): %v", requested, err)
+	}
+	defer root.Close()
+
+	facts := root.Facts()
+	if facts.Volume.CanonicalPath != requested {
+		t.Fatalf("root path = %q, want %q", facts.Volume.CanonicalPath, requested)
+	}
+	if info, err := os.Stat(requested); err != nil || !info.IsDir() {
+		t.Fatalf("requested output path was not created: info=%v err=%v", info, err)
+	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadow := filepath.Join(workingDirectory, strings.TrimPrefix(requested, string(filepath.Separator)))
+	if _, err := os.Lstat(shadow); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("EnsureOpenRoot created a CWD-relative shadow path %q: %v", shadow, err)
 	}
 }
 
@@ -117,7 +194,7 @@ func TestProbeRejectsDifferentVolumeFacts(t *testing.T) {
 }
 
 func TestDirectoryIdentityIsStableAcrossHandles(t *testing.T) {
-	directory := t.TempDir()
+	directory := realTempDir(t)
 	first, err := OpenRoot(directory)
 	if err != nil {
 		if IsUnsupported(err) {
@@ -142,7 +219,7 @@ func TestDirectoryIdentityIsStableAcrossHandles(t *testing.T) {
 }
 
 func TestRootReplacementFailsClosed(t *testing.T) {
-	parent := t.TempDir()
+	parent := realTempDir(t)
 	rootPath := filepath.Join(parent, "output")
 	if err := os.Mkdir(rootPath, 0o700); err != nil {
 		t.Fatal(err)
@@ -228,7 +305,7 @@ func TestRootFactsRemainBoundedAfterClose(t *testing.T) {
 
 func openTestRoot(t *testing.T) *Root {
 	t.Helper()
-	root, err := OpenRoot(t.TempDir())
+	root, err := OpenRoot(realTempDir(t))
 	if err != nil {
 		if IsUnsupported(err) {
 			t.Skipf("host filesystem does not expose required authority: %v", err)
@@ -236,6 +313,15 @@ func openTestRoot(t *testing.T) *Root {
 		t.Fatalf("OpenRoot: %v", err)
 	}
 	return root
+}
+
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temporary directory: %v", err)
+	}
+	return path
 }
 
 func isLinkCreationPermission(err error) bool {

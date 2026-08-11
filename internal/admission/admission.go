@@ -148,6 +148,13 @@ func (c *Coordinator) Admit(ctx context.Context, root *reservationfs.Root, reque
 	if facts.Volume.CanonicalPath == "" || facts.Volume.Identity == "" {
 		return Result{}, errors.New("admission: reservation root has no stable identity")
 	}
+	engineRoot, err := engine.ValidateOutputRoot(facts.Volume.CanonicalPath)
+	if err != nil {
+		return Result{}, fmt.Errorf("admission: engine output root validation: %w", err)
+	}
+	if engineRoot.CanonicalPath != facts.Volume.CanonicalPath {
+		return Result{}, errors.New("admission: engine and reservation output roots differ")
+	}
 	if err := verifyOutputRoot(request.Queue.OutputDir, facts.Volume.CanonicalPath); err != nil {
 		return Result{}, err
 	}
@@ -201,7 +208,7 @@ func (c *Coordinator) Admit(ctx context.Context, root *reservationfs.Root, reque
 		return Result{}, errors.New("admission: clock returned zero time")
 	}
 
-	rootRef := jobmodel.OutputRootRef{CanonicalPath: facts.Volume.CanonicalPath, Identity: facts.Volume.Identity}
+	rootRef := jobmodel.OutputRootRef{CanonicalPath: facts.Volume.CanonicalPath, Identity: facts.Volume.Identity, EngineIdentity: engineRoot.Identity}
 	durableRequest := jobmodel.PersistedRequest{
 		SourceURL: request.Queue.URL,
 		VideoID:   request.Queue.VideoID,

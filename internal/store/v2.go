@@ -746,6 +746,8 @@ func validateState(state jobmodel.State) error {
 		if job.Lifecycle == jobmodel.LifecycleActionRequired && (job.ActionRequiredCode == "migration-reanalysis-required" || job.ActionRequiredCode == "migration-private-plan-unverified") && job.Phase == jobmodel.PhasePreparing && job.OutputRoot == (jobmodel.OutputRootRef{}) && job.Reservation.GroupID == "" && job.Reservation.Directory == (jobmodel.OutputRootRef{}) && len(job.Reservation.Artifacts) == 0 {
 			// V1 has no engine-rendered artifact declaration. Preserve such rows
 			// for user repair rather than inventing an unsafe reservation.
+		} else if !validText(job.OutputRoot.EngineIdentity, maxVolumeIdentityBytes, false) {
+			return errors.New("store: invalid engine output root identity")
 		} else if err := validateReservation(job.OutputRoot, job.Reservation); err != nil {
 			return err
 		} else if job.Reservation.GroupID != job.ID {
@@ -763,6 +765,9 @@ func validateState(state jobmodel.State) error {
 	for _, tombstone := range state.Cleanup {
 		if !validID(tombstone.JobID) || !validSessionID(tombstone.SessionID) || !validText(tombstone.LastErrorCode, maxShortText, false) || !validTimestampPair(tombstone.CreatedAt, tombstone.UpdatedAt) || (tombstone.State != jobmodel.CleanupPending && tombstone.State != jobmodel.CleanupQuarantined) {
 			return errors.New("store: invalid cleanup tombstone")
+		}
+		if !validText(tombstone.OutputRoot.EngineIdentity, maxVolumeIdentityBytes, false) {
+			return errors.New("store: invalid engine output root identity")
 		}
 		if err := validateReservation(tombstone.OutputRoot, tombstone.Reservation); err != nil {
 			return err
@@ -1010,7 +1015,7 @@ func validatePreconditionsInput(values []JobPrecondition) error {
 			return errors.New("store: duplicate job precondition")
 		}
 		seen[value.ID] = struct{}{}
-		if !validID(value.ID) || !validLifecycle(value.Lifecycle) || (value.AttemptID != "" && !validID(value.AttemptID)) || !validSessionID(value.SessionID) || value.Revision == 0 || value.Revision > maxDurableCounter || !validOutputPath(value.OutputRoot.CanonicalPath) || !validText(value.OutputRoot.Identity, maxVolumeIdentityBytes, true) {
+		if !validID(value.ID) || !validLifecycle(value.Lifecycle) || (value.AttemptID != "" && !validID(value.AttemptID)) || !validSessionID(value.SessionID) || value.Revision == 0 || value.Revision > maxDurableCounter || !validOutputPath(value.OutputRoot.CanonicalPath) || !validText(value.OutputRoot.Identity, maxVolumeIdentityBytes, true) || !validText(value.OutputRoot.EngineIdentity, maxVolumeIdentityBytes, false) {
 			return errors.New("store: invalid job precondition")
 		}
 	}

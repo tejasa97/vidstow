@@ -66,7 +66,7 @@
     </div>
     <label class="setting check"><span><strong>Create a subfolder for each download</strong><small>Places all files for one video together.</small></span><input type="checkbox" checked={$settings.perVideoSubfolder} on:change={(e) => update({ ...$settings, perVideoSubfolder: e.currentTarget.checked })} /></label>
     <label class="setting check"><span><strong>Confirm before starting downloads</strong><small>Shows the selected output before adding it to the queue.</small></span><input type="checkbox" checked={$settings.confirmBeforeDownload} on:change={(e) => update({ ...$settings, confirmBeforeDownload: e.currentTarget.checked })} /></label>
-    <label class="setting check"><span><strong>Restore interrupted jobs as paused</strong><small>Keeps verified partial bytes and restores work after an app restart.</small></span><input type="checkbox" checked={$settings.restoreInterruptedJobs} on:change={(e) => update({ ...$settings, restoreInterruptedJobs: e.currentTarget.checked })} /></label>
+    <div class="setting policy-setting"><span><strong>Queue recovery</strong><small>Interrupted downloads are always restored as paused. Nothing starts automatically when VidStow opens.</small></span><strong class="policy-value">Restored as paused</strong></div>
     <label class="setting select-setting">
       <span><strong>Concurrent downloads</strong><small>Choose from 1 to 10. Higher values use more bandwidth and system resources.</small></span>
       <select value={$settings.downloadConcurrency} on:change={(e) => update({ ...$settings, downloadConcurrency: Number(e.currentTarget.value) })} disabled={saving}>

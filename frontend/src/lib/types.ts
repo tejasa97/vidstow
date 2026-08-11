@@ -12,7 +12,16 @@ export type Quality =
 
 export const QUALITIES: Quality[] = ['best', '4k', '1440p', '1080p', '720p', 'audio'];
 
-export type JobStatus = 'pending' | 'active' | 'paused' | 'complete' | 'failed' | 'canceled';
+export type JobStatus =
+  | 'pending'
+  | 'active'
+  | 'pausing'
+  | 'paused'
+  | 'canceling'
+  | 'complete'
+  | 'failed'
+  | 'canceled'
+  | 'action-required';
 
 export interface OutputPlan {
   id: string;
@@ -135,6 +144,17 @@ export interface PersistenceStatus {
   available: boolean;
   healthy: boolean;
   message?: string;
+}
+
+export interface StartupStatus {
+  mode: 'healthy' | 'recovery-required';
+  reason?: string;
+  warning?: string;
+}
+
+export interface QuitSummary {
+  activeDownloads: number;
+  waitingOrPausedDownloads: number;
 }
 
 export interface BuildInfo {
