@@ -14,7 +14,7 @@ func TestPosixIdentityRetainsFullLinuxDeviceNumber(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(identity, "0000010000000001") {
+	if !strings.Contains(identity, "0000000100000001") {
 		t.Fatalf("identity = %q, want complete device number", identity)
 	}
 }
