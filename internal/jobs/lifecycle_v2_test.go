@@ -28,7 +28,7 @@ func TestQueueThumbnailURL(t *testing.T) {
 		}
 	})
 
-	for _, videoID := range []string{"short", "contains/slash", "contains?query"} {
+	for _, videoID := range []string{"short", "contains/slash", "contains?query", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"} {
 		t.Run("rejects unsafe "+videoID, func(t *testing.T) {
 			if got := queueThumbnailURL(JobSnapshot{VideoID: videoID}); got != "" {
 				t.Fatalf("queueThumbnailURL() = %q for unsafe video ID", got)
