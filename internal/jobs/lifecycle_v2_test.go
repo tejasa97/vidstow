@@ -13,6 +13,30 @@ import (
 	"github.com/tejasa97/youtube_dlp/engine"
 )
 
+func TestQueueThumbnailURL(t *testing.T) {
+	t.Run("keeps analyzed thumbnail", func(t *testing.T) {
+		const thumbnail = "https://example.invalid/analyzed.jpg"
+		if got := queueThumbnailURL(JobSnapshot{VideoID: "aqz-KE-bpKQ", Thumbnail: thumbnail}); got != thumbnail {
+			t.Fatalf("queueThumbnailURL() = %q, want analyzed thumbnail %q", got, thumbnail)
+		}
+	})
+
+	t.Run("derives restored YouTube thumbnail", func(t *testing.T) {
+		const want = "https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg"
+		if got := queueThumbnailURL(JobSnapshot{VideoID: "aqz-KE-bpKQ"}); got != want {
+			t.Fatalf("queueThumbnailURL() = %q, want %q", got, want)
+		}
+	})
+
+	for _, videoID := range []string{"short", "contains/slash", "contains?query"} {
+		t.Run("rejects unsafe "+videoID, func(t *testing.T) {
+			if got := queueThumbnailURL(JobSnapshot{VideoID: videoID}); got != "" {
+				t.Fatalf("queueThumbnailURL() = %q for unsafe video ID", got)
+			}
+		})
+	}
+}
+
 type v2MemoryStore struct {
 	mu       sync.Mutex
 	state    jobmodel.State
