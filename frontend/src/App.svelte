@@ -2,7 +2,10 @@
   import { onDestroy, onMount } from 'svelte';
   import { api } from './lib/api.js';
   import { errorMessage, ffmpeg, history, jobs, route, settings, modal, persistence, showBanner } from './lib/stores.js';
-  import type { JobSnapshot } from './lib/types.js';
+  import type { JobSnapshot, QuitSummary, StartupStatus } from './lib/types.js';
+  import { DEFAULT_RECOVERY_REQUIRED, type RecoveryRequiredViewModel } from './lib/lifecycle-ui/types.js';
+  import QuitConfirmationDialog from './lib/lifecycle-ui/QuitConfirmationDialog.svelte';
+  import RecoveryRequiredShell from './lib/lifecycle-ui/RecoveryRequiredShell.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
   import Modal from './lib/components/Modal.svelte';
   import Banner from './lib/components/Banner.svelte';
@@ -13,6 +16,10 @@
   import About from './pages/About.svelte';
 
   let unsubAll: Array<() => void> = [];
+  let startupStatus: StartupStatus | null = null;
+  let quitOpen = false;
+  let quitModel: QuitSummary = { activeDownloads: 0, waitingOrPausedDownloads: 0 };
+  let recoveryModel: RecoveryRequiredViewModel = DEFAULT_RECOVERY_REQUIRED;
 
   onMount(async () => {
     unsubAll = [
@@ -25,9 +32,21 @@
         persistence.set(status);
         if (status.available && !status.healthy && status.message) showBanner('warning', status.message, 10_000);
       }),
+      api.events.onQuitRequest((summary) => {
+        quitModel = summary ?? { activeDownloads: 0, waitingOrPausedDownloads: 0 };
+        quitOpen = true;
+      }),
     ].filter(Boolean) as Array<() => void>;
 
     try {
+      startupStatus = await api.app.startupStatus();
+      if (startupStatus?.mode === 'recovery-required') {
+        recoveryModel = {
+          ...DEFAULT_RECOVERY_REQUIRED,
+          stateFileStatus: startupStatus.reason ? `State v2: ${startupStatus.reason}` : DEFAULT_RECOVERY_REQUIRED.stateFileStatus,
+        };
+        return;
+      }
       const [savedSettings, initialJobs, savedHistory, ffmpegStatus, persistenceStatus] = await Promise.all([
         api.settings.get(),
         api.jobs.list(),
@@ -66,28 +85,82 @@
   function navigate(target: 'home' | 'queue' | 'downloads' | 'settings' | 'about') {
     route.set(target);
   }
+
+  async function copyRecoveryDiagnostics() {
+    try {
+      await api.diagnostics.copy();
+      showBanner('success', 'Diagnostics copied.', 5000);
+    } catch (err) {
+      modal.set({ kind: 'error', title: 'Could not copy diagnostics', message: errorMessage(err, 'Try again or open the data folder.') });
+    }
+  }
+
+  async function openRecoveryDataFolder() {
+    try {
+      await api.app.openDataFolder();
+    } catch (err) {
+      modal.set({ kind: 'error', title: 'Could not open the data folder', message: errorMessage(err, 'The saved data folder is not available.') });
+    }
+  }
+
+  async function keepWorking() {
+    try {
+      await api.app.keepWorking();
+      quitOpen = false;
+    } catch (err) {
+      modal.set({ kind: 'error', title: 'Could not dismiss quit confirmation', message: errorMessage(err, 'Try again.') });
+    }
+  }
+
+  async function pauseAndQuit() {
+    try {
+      await api.app.pauseAndQuit();
+      quitOpen = false;
+    } catch (err) {
+      modal.set({ kind: 'error', title: 'Could not pause downloads', message: errorMessage(err, 'Keep VidStow open and try again.') });
+    }
+  }
 </script>
 
-<Sidebar />
+{#if startupStatus?.mode === 'recovery-required'}
+  <main class="main">
+    <div class="scroll">
+      <RecoveryRequiredShell
+        model={recoveryModel}
+        onCopyDiagnostics={copyRecoveryDiagnostics}
+        onOpenDataFolder={openRecoveryDataFolder}
+      />
+    </div>
+  </main>
+{:else}
+  <Sidebar />
 
-<main class="main">
-  <div class="scroll">
-    {#if $route === 'home'}
-      <Home on:goto={(e) => navigate(e.detail)} />
-    {:else if $route === 'queue'}
-      <Queue />
-    {:else if $route === 'downloads'}
-      <Downloads />
-    {:else if $route === 'settings'}
-      <Settings />
-    {:else if $route === 'about'}
-      <About />
-    {/if}
-  </div>
-</main>
+  <main class="main">
+    <div class="scroll">
+      {#if $route === 'home'}
+        <Home on:goto={(e) => navigate(e.detail)} />
+      {:else if $route === 'queue'}
+        <Queue />
+      {:else if $route === 'downloads'}
+        <Downloads />
+      {:else if $route === 'settings'}
+        <Settings />
+      {:else if $route === 'about'}
+        <About />
+      {/if}
+    </div>
+  </main>
+{/if}
 
 <Modal />
 <Banner />
+<QuitConfirmationDialog
+  open={quitOpen}
+  model={quitModel}
+  onClose={keepWorking}
+  onKeepWorking={keepWorking}
+  onPauseAndQuit={pauseAndQuit}
+/>
 
 <style>
   .main {

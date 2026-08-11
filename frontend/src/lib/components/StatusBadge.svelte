@@ -1,14 +1,19 @@
 <script lang="ts">
-  export let status: 'pending' | 'active' | 'paused' | 'complete' | 'failed' | 'canceled';
+  import type { JobStatus } from '../types.js';
+
+  export let status: JobStatus;
   export let compact = false;
 
   const labels: Record<string, string> = {
     pending: 'Queued',
     active: 'Downloading',
+    pausing: 'Pausing',
     paused: 'Paused',
+    canceling: 'Canceling',
     complete: 'Done',
     failed: 'Failed',
     canceled: 'Canceled',
+    'action-required': 'Action required',
   };
 </script>
 

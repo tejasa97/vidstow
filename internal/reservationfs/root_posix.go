@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/tejasa97/vidstow/internal/reservation"
 	"golang.org/x/sys/unix"
@@ -20,12 +22,20 @@ type posixRoot struct {
 }
 
 func openPlatformRoot(input string) (platformRoot, error) {
+	return openPosixRoot(input, false)
+}
+
+func ensurePlatformRoot(input string) (platformRoot, error) {
+	return openPosixRoot(input, true)
+}
+
+func openPosixRoot(input string, createMissing bool) (platformRoot, error) {
 	path, err := normalizeRootPath(input)
 	if err != nil {
 		return nil, err
 	}
 
-	fd, err := openPosixDirectory(path)
+	fd, err := walkPosixDirectory(path, createMissing)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) && posixPathIsSymlink(path) {
 			return nil, unsafeError("open root", fmt.Errorf("%w: %v", ErrSymlinkRoot, err))
@@ -66,10 +76,6 @@ func openPlatformRoot(input string) (platformRoot, error) {
 func posixPathIsSymlink(path string) bool {
 	info, err := os.Lstat(path)
 	return err == nil && info.Mode()&os.ModeSymlink != 0
-}
-
-func openPosixDirectory(path string) (int, error) {
-	return unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 }
 
 func posixStat(fd int) (*unix.Stat_t, error) {
@@ -144,7 +150,7 @@ func (p *posixRoot) probe(ctx context.Context, volume reservation.Volume, basena
 }
 
 func (p *posixRoot) verifyNamedRoot() error {
-	fd, err := openPosixDirectory(p.path)
+	fd, err := walkPosixDirectory(p.path, false)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) {
 			return unsafeError("verify root identity", fmt.Errorf("%w: %v", ErrRootChanged, ErrSymlinkRoot))
@@ -179,4 +185,51 @@ func (p *posixRoot) close() error {
 		return unsafeError("close root", err)
 	}
 	return nil
+}
+
+// ensureRootPath creates any missing directory components of path from the
+// filesystem root using directory-relative no-follow opens. It never follows
+// a symlink: a symlinked or replaced parent is rejected before any component
+// below it is created. The final component is left in place for OpenRoot to
+// validate and derive identity/case facts.
+func ensureRootPath(path string) error {
+	root, err := EnsureOpenRoot(path)
+	if err != nil {
+		return err
+	}
+	return root.Close()
+}
+
+func walkPosixDirectory(canonical string, createMissing bool) (int, error) {
+	components := strings.Split(strings.TrimPrefix(canonical, string(filepath.Separator)), string(filepath.Separator))
+	fd, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
+	}
+	current := string(filepath.Separator)
+	for _, component := range components {
+		if component == "" || component == "." {
+			continue
+		}
+		candidate := filepath.Join(current, component)
+		next, openErr := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if createMissing && errors.Is(openErr, unix.ENOENT) {
+			if err := unix.Mkdirat(fd, component, 0o755); err != nil && !errors.Is(err, unix.EEXIST) {
+				_ = unix.Close(fd)
+				return -1, unsafeError("create root component", err)
+			}
+			next, openErr = unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		}
+		if openErr != nil {
+			_ = unix.Close(fd)
+			if errors.Is(openErr, unix.ELOOP) || errors.Is(openErr, unix.ENOTDIR) && posixPathIsSymlink(candidate) {
+				return -1, unsafeError("open root component", fmt.Errorf("%w: %v", ErrSymlinkRoot, openErr))
+			}
+			return -1, unsafeError("open root component", openErr)
+		}
+		_ = unix.Close(fd)
+		fd = next
+		current = candidate
+	}
+	return fd, nil
 }

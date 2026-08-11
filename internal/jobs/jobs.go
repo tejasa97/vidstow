@@ -45,6 +45,7 @@ const (
 	DefaultDownloadConcurrency = 2
 	MaxDownloadConcurrency     = 10
 	MaxProcessingConcurrency   = 3
+	DefaultShutdownTimeout     = 3 * time.Second
 )
 
 // ErrClosed is returned when an operation would start new manager activity
@@ -229,6 +230,14 @@ type PersistenceStatus struct {
 	Message   string `json:"message,omitempty"`
 }
 
+// QuitSummary is the backend-authored payload for the native close
+// confirmation. Waiting and paused rows are already safe and never count as
+// occupied slots.
+type QuitSummary struct {
+	ActiveDownloads          int `json:"activeDownloads"`
+	WaitingOrPausedDownloads int `json:"waitingOrPausedDownloads"`
+}
+
 const (
 	persistenceFailureMessage     = "VidStow could not save the download queue. Check available disk space and permissions."
 	persistenceUnavailableMessage = "VidStow is using temporary in-memory storage. Download queue changes will not be saved after the app closes."
@@ -274,6 +283,7 @@ type Manager struct {
 	lifecycleCtx       context.Context
 	lifecycleCancel    context.CancelCauseFunc
 	analysisWG         sync.WaitGroup
+	detachedWG         sync.WaitGroup
 	runDownload        downloadRunner
 	runAnalyze         analyzeRunner
 	ffmpegLocation     string
@@ -388,6 +398,114 @@ func (m *Manager) SetStateStore(stateStore StateStore) error {
 		m.persistStatus = PersistenceStatus{Available: false, Healthy: true, Message: persistenceUnavailableMessage}
 	}
 	return nil
+}
+
+// RestoreStateV2 reconstructs the existing FIFO manager from a committed,
+// already-reconciled State v2 snapshot. It deliberately does not enqueue or
+// start anything: startup restoration is always paused and active is empty.
+func (m *Manager) RestoreStateV2(snapshot jobmodel.State) error {
+	if snapshot.Version != jobmodel.StateVersion {
+		return errors.New("jobs: invalid State v2 restore snapshot")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closing || m.closed {
+		return ErrClosed
+	}
+	if m.stateStore == nil {
+		return errors.New("jobs: State v2 store is not configured")
+	}
+	if len(m.all) != 0 || len(m.active) != 0 || len(m.order) != 0 {
+		return errors.New("jobs: manager already contains queue state")
+	}
+	for _, durable := range snapshot.Jobs {
+		switch durable.Lifecycle {
+		case jobmodel.LifecyclePending, jobmodel.LifecycleActive, jobmodel.LifecyclePausing, jobmodel.LifecycleCanceling:
+			return fmt.Errorf("jobs: unreconciled transitional job %q", durable.ID)
+		}
+		state, err := stateFromDurable(durable)
+		if err != nil {
+			return err
+		}
+		m.all[durable.ID] = state
+	}
+	m.persistStatus = PersistenceStatus{Available: true, Healthy: true}
+	return nil
+}
+
+func stateFromDurable(durable jobmodel.DurableJob) (*jobState, error) {
+	status := StatusPaused
+	switch durable.Lifecycle {
+	case jobmodel.LifecyclePaused:
+		status = StatusPaused
+	case jobmodel.LifecycleFailed:
+		status = StatusFailed
+	case jobmodel.LifecycleCanceled:
+		status = StatusCanceled
+	case jobmodel.LifecycleCompleted:
+		status = StatusComplete
+	case jobmodel.LifecycleActionRequired:
+		status = StatusActionRequired
+	default:
+		return nil, fmt.Errorf("jobs: unsupported restored lifecycle %q", durable.Lifecycle)
+	}
+	plan := &outputplan.Plan{
+		ID: durable.Plan.ID, Kind: outputplan.Kind(durable.Plan.Kind), Label: durable.Plan.Label,
+		Container: durable.Plan.Container, VideoCodec: durable.Plan.VideoCodec,
+		AudioCodec: durable.Plan.AudioCodec, RequiresFFmpeg: durable.Plan.RequiresFFmpeg,
+		Selector: durable.Plan.PrivateSelector, Available: true,
+	}
+	if plan.ID == "" && plan.Selector == "" {
+		plan = nil
+	}
+	filename := ""
+	for _, artifact := range durable.Reservation.Artifacts {
+		if artifact.Kind == string(engine.ArtifactKindPrimary) && artifact.Identity == "primary" {
+			filename = artifact.Basename
+			break
+		}
+	}
+	absolutePath := ""
+	if durable.OutputRoot.CanonicalPath != "" && filename != "" {
+		absolutePath = filepath.Join(durable.OutputRoot.CanonicalPath, filename)
+	}
+	quality := Quality(durable.Request.Quality)
+	if quality == "" {
+		quality = QualityBest
+	}
+	snapshot := JobSnapshot{
+		ID: durable.ID, URL: durable.Request.SourceURL, VideoID: durable.Request.VideoID,
+		Title: durable.Request.Title, Channel: durable.Request.Channel, Quality: quality,
+		QualityLabel: durable.Plan.Label, PlanID: durable.Plan.ID, OutputKind: outputplan.Kind(durable.Plan.Kind),
+		Container: durable.Plan.Container, VideoCodec: durable.Plan.VideoCodec, AudioCodec: durable.Plan.AudioCodec,
+		RequiresFFmpeg: durable.Plan.RequiresFFmpeg, OutputDir: durable.OutputRoot.CanonicalPath,
+		DurationLabel: durable.Request.Duration, Status: status, Lifecycle: durable.Lifecycle,
+		Phase: durable.Phase, Desired: durable.Desired, OccupiesSlot: false, CreatedAt: durable.CreatedAt.UTC().Format(time.RFC3339Nano),
+		Filename: filename, AbsolutePath: absolutePath, ErrorReason: durable.LastErrorCode,
+	}
+	switch status {
+	case StatusPaused:
+		snapshot.Message = "Paused after app restart"
+	case StatusFailed:
+		snapshot.Message = "Failed"
+	case StatusCanceled:
+		snapshot.Message = "Canceled"
+	case StatusComplete:
+		snapshot.Message = "Completed"
+		snapshot.Progress = 1
+		snapshot.CompletedAt = durable.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	case StatusActionRequired:
+		snapshot.Message = "Action required"
+	}
+	outputTemplate := ""
+	if filename != "" {
+		var err error
+		outputTemplate, err = literalOutputTemplate(filename)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &jobState{snap: snapshot, plan: plan, outputTemplate: outputTemplate, done: make(chan struct{}), durable: durable, fromStateV2: true}, nil
 }
 
 func (m *Manager) stateStoreSnapshot() StateStore {
@@ -627,10 +745,7 @@ func prepareDiscardSession(state *jobState) (*engine.ResumeDiscardHandle, bool, 
 	if state == nil || !state.fromStateV2 || state.durable.SessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
 		return nil, true, nil
 	}
-	handle, err := engine.PrepareResumeDiscard(context.Background(), engine.OutputRootRef{
-		CanonicalPath: state.durable.OutputRoot.CanonicalPath,
-		Identity:      state.durable.OutputRoot.Identity,
-	}, state.durable.SessionID)
+	handle, err := engine.PrepareResumeDiscard(context.Background(), engineRootRef(state.durable.OutputRoot), state.durable.SessionID)
 	if err != nil {
 		if strings.Contains(err.Error(), "workspace unavailable") {
 			return nil, true, nil
@@ -638,6 +753,19 @@ func prepareDiscardSession(state *jobState) (*engine.ResumeDiscardHandle, bool, 
 		return nil, false, err
 	}
 	return handle, false, nil
+}
+
+func engineRootRef(root jobmodel.OutputRootRef) engine.OutputRootRef {
+	identity := root.EngineIdentity
+	if identity == "" {
+		if validated, err := engine.ValidateOutputRoot(root.CanonicalPath); err == nil {
+			return validated
+		}
+	}
+	if identity == "" {
+		identity = root.Identity
+	}
+	return engine.OutputRootRef{CanonicalPath: root.CanonicalPath, Identity: identity}
 }
 
 func defaultDownloadRunner(ctx context.Context, req engine.Request, handler engine.EventHandler) (engine.Result, error) {
@@ -653,19 +781,31 @@ func newFocusedClient(options ...engine.Option) *engine.Client {
 	return engine.NewClient(provideryoutube.NewComposition(), options...)
 }
 
-// Close stops new manager activity, flushes persistence, drains every event
-// accepted before dispatcher shutdown, and releases the analysis client.
+// Close stops new manager activity and joins manager-owned work only until
+// the supplied deadline. With no context it uses the product shutdown bound.
 // It is idempotent; concurrent callers receive the same final error.
-func (m *Manager) Close() error {
+func (m *Manager) Close(contexts ...context.Context) error {
+	ctx := context.Background()
+	if len(contexts) > 0 && contexts[0] != nil {
+		ctx = contexts[0]
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultShutdownTimeout)
+		defer cancel()
+	}
 	m.closeOnce.Do(func() {
-		m.closeErr = m.close()
+		m.closeErr = m.close(ctx)
 		close(m.closeDone)
 	})
 	<-m.closeDone
 	return m.closeErr
 }
 
-func (m *Manager) close() error {
+func (m *Manager) close(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
 	m.closing = true
 	if m.lifecycleCancel != nil {
@@ -689,13 +829,32 @@ func (m *Manager) close() error {
 	}
 	m.mu.Unlock()
 
-	// Existing workers must publish their final state before persistence and
-	// the event dispatcher are shut down. No worker can start another job while
-	// closing is true, so this is a complete join of manager-owned work.
+	var closeErrs []error
 	for _, finished := range workerDone {
-		<-finished
+		select {
+		case <-finished:
+		case <-ctx.Done():
+			closeErrs = append(closeErrs, ctx.Err())
+			finished = nil
+		}
+		if finished == nil {
+			break
+		}
 	}
-	m.analysisWG.Wait()
+	analysisDone := make(chan struct{})
+	go func() {
+		m.analysisWG.Wait()
+		m.detachedWG.Wait()
+		close(analysisDone)
+	}()
+	select {
+	case <-analysisDone:
+	case <-ctx.Done():
+		closeErrs = append(closeErrs, ctx.Err())
+	}
+	if ctx.Err() != nil {
+		return errors.Join(closeErrs...)
+	}
 
 	m.mu.Lock()
 	stop, persistDone := m.persistStop, m.persistDone
@@ -705,19 +864,43 @@ func (m *Manager) close() error {
 
 	if stop != nil {
 		close(stop)
-		<-persistDone
+		select {
+		case <-persistDone:
+		case <-ctx.Done():
+			closeErrs = append(closeErrs, ctx.Err())
+		}
 	}
-	// Stop the debounce loop before the final write so its result is the one
-	// returned to shutdown and no later background flush can obscure it.
-	flushErr := m.FlushPersistence()
-	m.stopDispatcher()
+	// Stop the debounce loop before the final write. State v2 terminal
+	// transitions are already committed by the manager; the legacy path keeps
+	// its final compatibility flush when the shared deadline permits it.
+	if !m.usingStateV2() && ctx.Err() == nil {
+		flushDone := make(chan error, 1)
+		go func() { flushDone <- m.FlushPersistence() }()
+		select {
+		case err := <-flushDone:
+			if err != nil {
+				closeErrs = append(closeErrs, err)
+			}
+		case <-ctx.Done():
+			closeErrs = append(closeErrs, ctx.Err())
+		}
+	}
+	if err := m.stopDispatcher(ctx); err != nil {
+		closeErrs = append(closeErrs, err)
+	}
 	m.mu.Lock()
 	m.closed = true
 	m.mu.Unlock()
 	if m.client != nil {
 		m.client.Close()
 	}
-	return flushErr
+	return errors.Join(closeErrs...)
+}
+
+func (m *Manager) usingStateV2() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stateStore != nil
 }
 
 // SetPersistence attaches durable queue storage and restores prior jobs.
@@ -915,15 +1098,20 @@ func (m *Manager) drainEvents() {
 	}
 }
 
-func (m *Manager) stopDispatcher() {
+func (m *Manager) stopDispatcher(ctx context.Context) error {
 	if m.listener == nil {
-		return
+		return nil
 	}
 	m.eventMu.Lock()
 	m.eventClosed = true
 	m.eventMu.Unlock()
 	close(m.eventStop)
-	<-m.eventDone
+	select {
+	case <-m.eventDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // PersistenceStatus returns the current durable-queue health. It is safe for
@@ -1247,7 +1435,11 @@ func (m *Manager) Cancel(id string) {
 	// Pending and paused rows have no local runner. They use the same
 	// prepare-then-commit protocol, retaining a cleanup tombstone when the
 	// engine reports cleanup evidence that cannot be removed immediately.
-	go m.cancelIdle(state)
+	m.detachedWG.Add(1)
+	go func() {
+		defer m.detachedWG.Done()
+		m.cancelIdle(state)
+	}()
 	m.mu.Unlock()
 }
 
@@ -1610,75 +1802,122 @@ func (m *Manager) Resume(id string) error {
 	return nil
 }
 
-// Shutdown converts running work to paused work, waits briefly for workers to
-// leave their critical sections, and durably records the remaining queue.
-func (m *Manager) Shutdown(ctx context.Context) {
+// Shutdown stops admission, durably records paused/pausing intent, and waits
+// for manager-owned workers only until the shared shutdown deadline. Rows that
+// cannot settle remain pausing and are reconciled on the next startup.
+func (m *Manager) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
 	if m.closing || m.closed {
 		m.mu.Unlock()
-		return
+		return nil
 	}
-	done := make([]<-chan struct{}, 0, len(m.active))
-	for id, worker := range m.active {
-		state := m.all[id]
-		if state == nil {
+	m.closing = true
+	v2Candidates := make([]pauseCandidate, 0, len(m.all))
+	legacyActive := make([]*worker, 0, len(m.active))
+	for id, state := range m.all {
+		if state == nil || state.commanding || state.settling {
 			continue
 		}
-		if state.settling {
+		worker := m.active[id]
+		if state.fromStateV2 && (state.snap.Status == StatusPending || state.snap.Status == StatusActive) {
+			state.commanding = true
+			v2Candidates = append(v2Candidates, pauseCandidate{state: state, worker: worker})
 			continue
-		}
-		state.snap.Status = StatusPausing
-		state.snap.CanPause = false
-		state.snap.Message = "Pausing"
-		if worker != nil && worker.Cancel != nil {
-			worker.Cancel(engine.ErrPauseRequested)
 		}
 		if worker != nil {
-			done = append(done, worker.Done)
-		} else {
-			done = append(done, state.done)
+			state.snap.Status = StatusPausing
+			state.snap.CanPause = false
+			state.snap.Message = "Pausing"
+			legacyActive = append(legacyActive, worker)
 		}
 	}
 	m.mu.Unlock()
+
+	// The batch is the durable acceptance point. Active workers remain in the
+	// occupancy map until their runner exits, even though admission is stopped.
+	m.pauseAllV2(v2Candidates)
+	for _, worker := range legacyActive {
+		if worker != nil && worker.Cancel != nil {
+			worker.Cancel(engine.ErrPauseRequested)
+		}
+	}
+
+	m.mu.Lock()
+	done := make([]<-chan struct{}, 0, len(m.active))
+	for _, worker := range m.active {
+		if worker != nil && worker.Done != nil {
+			done = append(done, worker.Done)
+		}
+	}
+	m.mu.Unlock()
+	var shutdownErr error
 	for _, finished := range done {
 		select {
 		case <-finished:
 		case <-ctx.Done():
-			m.FlushPersistence()
-			return
+			shutdownErr = ctx.Err()
+			break
+		}
+		if shutdownErr != nil {
+			break
 		}
 	}
-	m.FlushPersistence()
+	if !m.usingStateV2() && ctx.Err() == nil {
+		if err := m.FlushPersistence(); err != nil {
+			shutdownErr = err
+		}
+	}
+	return shutdownErr
 }
 
 // Retry re-queues a failed job under the same logical ID. It always creates a
 // new attempt and FIFO ordinal; a resumable session is retained only when the
 // public engine inspection finds usable evidence.
 func (m *Manager) Retry(id string) error {
-	m.mu.Lock()
-	if m.closing || m.closed {
+	var state *jobState
+	for {
+		m.mu.Lock()
+		if m.closing || m.closed {
+			m.mu.Unlock()
+			return ErrClosed
+		}
+		var ok bool
+		state, ok = m.all[id]
+		if !ok {
+			m.mu.Unlock()
+			return fmt.Errorf("jobs: unknown job %q", id)
+		}
+		if state.settling {
+			done := state.done
+			m.mu.Unlock()
+			if done == nil {
+				return errors.New("jobs: lifecycle transition is settling")
+			}
+			// Durable terminal acceptance happens just before the runtime
+			// mirror releases the worker. Wait outside m.mu so a retry cannot
+			// observe a failed State row with a still-claimed transition token.
+			<-done
+			continue
+		}
+		if state.commanding {
+			m.mu.Unlock()
+			return errors.New("jobs: lifecycle transition is settling")
+		}
+		if state.snap.Status == StatusCanceled {
+			m.mu.Unlock()
+			return errors.New("jobs: canceled jobs require DownloadAgain")
+		}
+		if state.snap.Status != StatusFailed {
+			m.mu.Unlock()
+			return fmt.Errorf("jobs: only failed jobs can be retried")
+		}
+		state.commanding = true
 		m.mu.Unlock()
-		return ErrClosed
+		break
 	}
-	state, ok := m.all[id]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("jobs: unknown job %q", id)
-	}
-	if state.commanding {
-		m.mu.Unlock()
-		return errors.New("jobs: lifecycle transition is settling")
-	}
-	if state.snap.Status == StatusCanceled {
-		m.mu.Unlock()
-		return errors.New("jobs: canceled jobs require DownloadAgain")
-	}
-	if state.snap.Status != StatusFailed {
-		m.mu.Unlock()
-		return fmt.Errorf("jobs: only failed jobs can be retried")
-	}
-	state.commanding = true
-	m.mu.Unlock()
 
 	if state.fromStateV2 {
 		sessionID := state.durable.SessionID
@@ -1687,10 +1926,7 @@ func (m *Manager) Retry(id string) error {
 			sessionID = newSessionID()
 			retryMode = jobmodel.RetryModeRestartNewSession
 		} else {
-			summary, inspectErr := engine.InspectResumeState(context.Background(), engine.OutputRootRef{
-				CanonicalPath: state.durable.OutputRoot.CanonicalPath,
-				Identity:      state.durable.OutputRoot.Identity,
-			}, sessionID)
+			summary, inspectErr := engine.InspectResumeState(context.Background(), engineRootRef(state.durable.OutputRoot), sessionID)
 			if inspectErr != nil || !summary.HasManifest {
 				sessionID = newSessionID()
 				retryMode = jobmodel.RetryModeRestartNewSession
@@ -1964,6 +2200,32 @@ func (m *Manager) Active() string {
 		return id
 	}
 	return ""
+}
+
+// HasActive reports whether any worker still owns a download slot. It is the
+// native close gate; durable lifecycle labels alone never claim occupancy.
+func (m *Manager) HasActive() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.active) != 0
+}
+
+// QuitSummary returns the counts needed by the ordinary pause-and-quit
+// confirmation. It is safe to call from a Wails event handler.
+func (m *Manager) QuitSummary() QuitSummary {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	summary := QuitSummary{ActiveDownloads: len(m.active)}
+	for id, state := range m.all {
+		if m.active[id] != nil {
+			continue
+		}
+		switch state.snap.Status {
+		case StatusPending, StatusPaused, StatusPausing, StatusCanceling:
+			summary.WaitingOrPausedDownloads++
+		}
+	}
+	return summary
 }
 
 // SetConcurrency updates the number of simultaneous downloads. Existing jobs

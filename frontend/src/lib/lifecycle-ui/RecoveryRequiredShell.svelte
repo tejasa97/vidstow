@@ -11,14 +11,28 @@
     model?: RecoveryRequiredViewModel;
     title?: string;
     subtitle?: string;
+    onCopyDiagnostics?: () => void;
+    onOpenDataFolder?: () => void;
   }
 
   let {
     model = DEFAULT_RECOVERY_REQUIRED,
     title = 'Queue',
     subtitle = 'Saved queue unavailable',
+    onCopyDiagnostics,
+    onOpenDataFolder,
   }: Props = $props();
   const dispatch = createEventDispatcher<RecoveryRequiredEvents>();
+
+  function copyDiagnostics(): void {
+    dispatch('copy-diagnostics');
+    onCopyDiagnostics?.();
+  }
+
+  function openDataFolder(): void {
+    dispatch('open-data-folder');
+    onOpenDataFolder?.();
+  }
 </script>
 
 <section class="recovery-shell" aria-labelledby="lifecycle-recovery-title">
@@ -46,8 +60,8 @@
     </dl>
 
     <div class="actions">
-      <button type="button" class="outline-button" onclick={() => dispatch('copy-diagnostics')}>Copy diagnostics</button>
-      <button type="button" class="outline-button" onclick={() => dispatch('open-data-folder')}>Open data folder</button>
+      <button type="button" class="outline-button" onclick={copyDiagnostics}>Copy diagnostics</button>
+      <button type="button" class="outline-button" onclick={openDataFolder}>Open data folder</button>
     </div>
 
     <p class="footer-message">

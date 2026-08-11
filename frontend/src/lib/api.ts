@@ -12,8 +12,10 @@ import type {
   InfoSummary,
   JobSnapshot,
   PersistenceStatus,
+  QuitSummary,
   QueueEvent,
   Settings,
+  StartupStatus,
   UrlCheckResult,
 } from './types';
 
@@ -72,6 +74,10 @@ export const api = {
   app: {
     buildInfo: () => call<BuildInfo>('GetBuildInfo'),
     persistenceStatus: () => call<PersistenceStatus>('GetPersistenceStatus'),
+    startupStatus: () => call<StartupStatus>('GetStartupStatus'),
+    keepWorking: () => call<void>('KeepWorking'),
+    pauseAndQuit: () => call<void>('PauseDownloadsAndQuit'),
+    openDataFolder: () => call<void>('OpenDataFolder'),
   },
   folder: {
     pick: () => call<string>('PickDownloadFolder'),
@@ -125,6 +131,8 @@ export const api = {
       window.runtime?.EventsOn?.('persistence:update', (event: QueueEvent) => {
         if (event?.persistence) cb(event.persistence);
       }),
+    onQuitRequest: (cb: (summary: QuitSummary) => void) =>
+      window.runtime?.EventsOn?.('quit:request', (summary: QuitSummary) => cb(summary)),
     off: (event: string) => window.runtime?.EventsOff?.(event),
   },
 };

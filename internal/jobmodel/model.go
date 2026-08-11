@@ -143,6 +143,10 @@ type PersistedPlan struct {
 type OutputRootRef struct {
 	CanonicalPath string `json:"canonicalPath"`
 	Identity      string `json:"identity,omitempty"`
+	// EngineIdentity is the opaque identity format required by the pinned
+	// engine facade. Reservationfs owns Identity; keeping both avoids making
+	// one subsystem reinterpret another subsystem's platform token.
+	EngineIdentity string `json:"engineIdentity,omitempty"`
 }
 
 type ReservationSet struct {

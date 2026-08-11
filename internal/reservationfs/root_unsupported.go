@@ -13,3 +13,7 @@ func openPlatformRoot(path string) (platformRoot, error) {
 	}
 	return nil, unsupportedError("open root", errors.New("no authority-preserving reservation filesystem backend for this target"))
 }
+
+func ensurePlatformRoot(path string) (platformRoot, error) {
+	return openPlatformRoot(path)
+}

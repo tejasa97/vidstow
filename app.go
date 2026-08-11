@@ -14,75 +14,200 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/tejasa97/vidstow/internal/admission"
 	"github.com/tejasa97/vidstow/internal/ffmpegdetect"
+	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/jobs"
+	"github.com/tejasa97/vidstow/internal/recovery"
+	"github.com/tejasa97/vidstow/internal/reservationfs"
 	"github.com/tejasa97/vidstow/internal/store"
 	"github.com/tejasa97/vidstow/internal/urlcheck"
 	"github.com/tejasa97/youtube_dlp/engine"
+	"github.com/tejasa97/youtube_dlp/engine/value"
+)
+
+var errRecoveryRequired = errors.New("vidstow: recovery required")
+
+type shutdownLifecycle interface {
+	Shutdown(context.Context) error
+	Close(...context.Context) error
+}
+
+var (
+	defaultStatePath         = store.DefaultPath
+	openStateV2              = store.OpenV2
+	prepareStartupStateRoots = prepareStartupRoots
+	reconcileStartupState    = func(ctx context.Context, state *store.V2Store) (jobmodel.State, error) {
+		return recovery.Reconcile(ctx, state, recovery.Options{})
+	}
+	restoreStartupManager = func(manager *jobs.Manager, snapshot jobmodel.State) error { return manager.RestoreStateV2(snapshot) }
+	startStartupCleanup   = recovery.StartCleanupWorker
+	logAppErrorf          = wailsruntime.LogErrorf
+	emitAppEvent          = wailsruntime.EventsEmit
 )
 
 // App is the Wails-bound root. Every exported method is reachable from
 // the frontend via the generated bindings in wailsjs/go/main/App.js.
 type App struct {
-	ctx        context.Context
-	store      *store.Store
-	jobs       *jobs.Manager
-	mu         sync.Mutex
-	lastFFmpeg ffmpegdetect.Status
+	ctx             context.Context
+	store           *store.V2Store
+	jobs            *jobs.Manager
+	coordinator     *admission.Coordinator
+	statePath       string
+	startupStatus   store.StartupStatus
+	cleanupCancel   context.CancelFunc
+	cleanupDone     <-chan struct{}
+	shutdownManager shutdownLifecycle
+	closeState      func() error
+	mu              sync.Mutex
+	lastFFmpeg      ffmpegdetect.Status
+	quitMu          sync.Mutex
+	quitPermit      bool
+	quitRequestOpen bool
+	quitDeadline    time.Time
 }
 
 // NewApp constructs the App. The Wails bind() call wires every public
 // method to the JS side.
-func NewApp() *App { return &App{} }
+func NewApp() *App {
+	return &App{startupStatus: store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryCorruptState}}
+}
 
 // startup is called once by Wails after the window is ready.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 
-	statePath, err := store.DefaultPath()
+	statePath, err := defaultStatePath()
 	if err != nil {
-		wailsruntime.LogErrorf(ctx, "desktop: store path: %v", err)
-		statePath = filepath.Join(os.TempDir(), "vidstow", "state.json")
+		a.setStartupStatus(store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryUnsafePermissions})
+		logAppErrorf(ctx, "desktop: store path: %v", err)
+		return
 	}
-	st, err := store.Open(statePath)
-	if err != nil {
-		wailsruntime.LogErrorf(ctx, "desktop: open store: %v", err)
-		st = store.NewEphemeral()
+	a.startupAt(ctx, statePath)
+}
+
+func (a *App) startupAt(ctx context.Context, statePath string) {
+	a.ctx = ctx
+	a.statePath = statePath
+	st, status, openErr := openStateV2(statePath)
+	if openErr != nil || !status.Healthy() || status.Warning != "" || st == nil {
+		if openErr != nil {
+			logAppErrorf(ctx, "desktop: open State v2: %v", openErr)
+		}
+		if st != nil {
+			_ = st.Close()
+		}
+		if status.Warning != "" {
+			status = store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryIndeterminate}
+		}
+		a.setStartupStatus(status)
+		return
 	}
 	a.store = st
+	a.setStartupStatus(status)
+
+	if err := prepareStartupStateRoots(st.Snapshot()); err != nil {
+		logAppErrorf(ctx, "desktop: validate output roots: %v", err)
+		_ = st.Close()
+		a.store = nil
+		a.setStartupStatus(store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryUnsafePermissions})
+		return
+	}
+	committed, err := reconcileStartupState(ctx, st)
+	if err != nil {
+		logAppErrorf(ctx, "desktop: reconcile startup state: %v", err)
+		_ = st.Close()
+		a.store = nil
+		a.setStartupStatus(store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryIndeterminate})
+		return
+	}
 
 	a.jobs = jobs.New(nil, func(ev jobs.Event) {
 		// Events are dispatched on a background goroutine by the jobs
 		// package; Wails runtime is safe to call from any goroutine.
-		wailsruntime.EventsEmit(a.ctx, ev.Name, ev)
-		// For terminal events, append to history so the Downloads page
-		// stays in sync.
+		emitAppEvent(a.ctx, ev.Name, ev)
+		// Completion/history were committed together by the manager. This is a
+		// read-only refresh event, not a second history writer.
 		if ev.Name == jobs.EventJobUpdate && isTerminal(ev.Job.Status) {
-			a.recordHistory(ev.Job)
+			emitAppEvent(a.ctx, "history:update", st.History())
 		}
 	})
+	if err := a.jobs.SetStateStore(st); err != nil {
+		logAppErrorf(ctx, "desktop: configure State v2 manager: %v", err)
+		_ = st.Close()
+		a.jobs = nil
+		a.store = nil
+		a.setStartupStatus(store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryIndeterminate})
+		return
+	}
+	if err := restoreStartupManager(a.jobs, committed); err != nil {
+		logAppErrorf(ctx, "desktop: restore State v2 manager: %v", err)
+		_ = st.Close()
+		a.jobs = nil
+		a.store = nil
+		a.setStartupStatus(store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryIndeterminate})
+		return
+	}
+	a.coordinator, err = admission.NewCoordinator(admission.Dependencies{
+		Store: st, Resolver: a.jobs, Queue: a.jobs,
+	})
+	if err != nil {
+		logAppErrorf(ctx, "desktop: configure State v2 admission: %v", err)
+		_ = st.Close()
+		a.jobs = nil
+		a.store = nil
+		a.setStartupStatus(store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryIndeterminate})
+		return
+	}
 
 	settings := a.store.Settings()
 	a.jobs.SetConcurrency(settings.DownloadConcurrency)
 	a.jobs.SetFFmpegLocation(settings.FFmpegPath)
-	if err := a.jobs.SetPersistence(a.store, settings.RestoreInterruptedJobs); err != nil {
-		wailsruntime.LogErrorf(ctx, "desktop: restore queue: %v", err)
-	}
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	a.cleanupCancel = cleanupCancel
+	a.cleanupDone = startStartupCleanup(cleanupCtx, st, recovery.DefaultCleanupInterval)
 	a.setFFmpegStatus(ffmpegdetect.Probe(ctx, settings.FFmpegPath))
 }
 
-// shutdown is called by Wails when the window closes. It cancels every
-// in-flight job so the process can exit cleanly.
+// shutdown is called by Wails after the native close gate has permitted the
+// window to exit. One deadline is shared by cleanup, workers, and manager
+// close; a stuck process cannot turn quit into an unbounded join.
 func (a *App) shutdown(ctx context.Context) {
-	if a.jobs == nil {
-		return
-	}
-	shutdownCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	shutdownCtx, cancel := a.shutdownContext(ctx)
 	defer cancel()
-	a.jobs.Shutdown(shutdownCtx)
-	if err := a.jobs.Close(); err != nil {
-		wailsruntime.LogErrorf(ctx, "desktop: save queue during shutdown: %v", err)
+	a.stopCleanup(shutdownCtx)
+	managerClosed := true
+	var manager shutdownLifecycle
+	if a.jobs != nil {
+		manager = a.jobs
 	}
+	if a.shutdownManager != nil {
+		manager = a.shutdownManager
+	}
+	if manager != nil {
+		if err := manager.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			logAppErrorf(ctx, "desktop: pause queue during shutdown: %v", err)
+		}
+		if err := manager.Close(shutdownCtx); err != nil {
+			managerClosed = false
+			logAppErrorf(ctx, "desktop: close queue during shutdown: %v", err)
+		}
+	}
+	if managerClosed {
+		if err := a.closeStateV2(); err != nil {
+			logAppErrorf(ctx, "desktop: close State v2: %v", err)
+		}
+	}
+}
+
+func (a *App) closeStateV2() error {
+	if a.closeState != nil {
+		return a.closeState()
+	}
+	if a.store == nil {
+		return nil
+	}
+	return a.store.Close()
 }
 
 // ---------------------------------------------------------------------------
@@ -90,11 +215,19 @@ func (a *App) shutdown(ctx context.Context) {
 // ---------------------------------------------------------------------------
 
 // GetSettings returns the persisted settings.
-func (a *App) GetSettings() store.Settings { return a.store.Settings() }
+func (a *App) GetSettings() store.Settings {
+	if a.store == nil {
+		return store.Settings{}
+	}
+	return a.store.Settings()
+}
 
 // UpdateSettings persists new settings and re-probes ffmpeg so the UI
 // stays accurate.
 func (a *App) UpdateSettings(next store.Settings) (store.Settings, error) {
+	if err := a.requireReady(); err != nil {
+		return store.Settings{}, err
+	}
 	if strings.TrimSpace(next.DownloadFolder) == "" {
 		return store.Settings{}, errors.New("download folder is required")
 	}
@@ -102,8 +235,17 @@ func (a *App) UpdateSettings(next store.Settings) (store.Settings, error) {
 	if err != nil {
 		return store.Settings{}, err
 	}
-	if err := os.MkdirAll(expanded, 0o755); err != nil {
-		return store.Settings{}, fmt.Errorf("could not create folder: %w", err)
+	root, err := reservationfs.EnsureOpenRoot(expanded)
+	if err != nil {
+		return store.Settings{}, fmt.Errorf("could not validate download folder: %w", err)
+	}
+	rootVolume := root.Facts().Volume
+	if _, err := engine.ValidateOutputRoot(rootVolume.CanonicalPath); err != nil {
+		_ = root.Close()
+		return store.Settings{}, fmt.Errorf("could not validate engine output folder: %w", err)
+	}
+	if err := root.Close(); err != nil {
+		return store.Settings{}, fmt.Errorf("could not close download folder: %w", err)
 	}
 	next.DownloadFolder = expanded
 	if next.DownloadConcurrency < 1 || next.DownloadConcurrency > jobs.MaxDownloadConcurrency {
@@ -122,6 +264,9 @@ func (a *App) UpdateSettings(next store.Settings) (store.Settings, error) {
 // PickDownloadFolder opens a native folder picker and returns the
 // chosen path (empty string if the user cancelled).
 func (a *App) PickDownloadFolder() (string, error) {
+	if err := a.requireReady(); err != nil {
+		return "", err
+	}
 	return wailsruntime.OpenDirectoryDialog(a.ctx, wailsruntime.OpenDialogOptions{
 		Title:                "Choose download folder",
 		DefaultDirectory:     a.store.Settings().DownloadFolder,
@@ -132,6 +277,9 @@ func (a *App) PickDownloadFolder() (string, error) {
 // PickFFmpegPath opens a file picker for a binary and returns the
 // selected path. The caller validates the path with ConfigureFFmpeg.
 func (a *App) PickFFmpegPath() (string, error) {
+	if err := a.requireReady(); err != nil {
+		return "", err
+	}
 	pattern := "ffmpeg"
 	if runtime.GOOS == "windows" {
 		pattern = "ffmpeg.exe"
@@ -154,13 +302,21 @@ func (a *App) GetBuildInfo() BuildInfo { return currentBuildInfo() }
 // GetPersistenceStatus returns durable queue health for startup UI state.
 func (a *App) GetPersistenceStatus() jobs.PersistenceStatus {
 	if a.jobs == nil {
-		return jobs.PersistenceStatus{}
+		return jobs.PersistenceStatus{Available: false, Healthy: false, Message: "Download state requires recovery."}
 	}
 	return a.jobs.PersistenceStatus()
 }
 
+// GetStartupStatus is the first app contract the frontend should read. A
+// recovery-required result is authoritative and never accompanied by an
+// ephemeral queue manager.
+func (a *App) GetStartupStatus() store.StartupStatus { return a.startupStatusSnapshot() }
+
 // ProbeFFmpeg re-runs detection and broadcasts the result.
 func (a *App) ProbeFFmpeg() ffmpegdetect.Status {
+	if a.store == nil {
+		return a.ffmpegStatus()
+	}
 	status := ffmpegdetect.Probe(a.ctx, a.store.Settings().FFmpegPath)
 	a.setFFmpegStatus(status)
 	wailsruntime.EventsEmit(a.ctx, "ffmpeg:update", status)
@@ -169,6 +325,9 @@ func (a *App) ProbeFFmpeg() ffmpegdetect.Status {
 
 // ConfigureFFmpeg validates a path, persists it, and re-probes.
 func (a *App) ConfigureFFmpeg(path string) (ffmpegdetect.Status, error) {
+	if err := a.requireReady(); err != nil {
+		return ffmpegdetect.Status{}, err
+	}
 	status := ffmpegdetect.ConfigurePath(a.ctx, path)
 	if !status.Available {
 		a.setFFmpegStatus(status)
@@ -190,6 +349,9 @@ func (a *App) ConfigureFFmpeg(path string) (ffmpegdetect.Status, error) {
 // ClearFFmpegPath removes the configured path so the app falls back to
 // PATH discovery.
 func (a *App) ClearFFmpegPath() ffmpegdetect.Status {
+	if a.store == nil || a.jobs == nil {
+		return a.ffmpegStatus()
+	}
 	settings := a.store.Settings()
 	settings.FFmpegPath = ""
 	_ = a.store.SetSettings(settings)
@@ -214,6 +376,9 @@ func (a *App) ValidateURL(raw string) (urlcheck.Result, error) {
 // AnalyzeURL fetches metadata for one single YouTube video. It refuses
 // to call the core engine for non-video URLs.
 func (a *App) AnalyzeURL(raw string) (jobs.InfoSummary, error) {
+	if err := a.requireReady(); err != nil {
+		return jobs.InfoSummary{}, err
+	}
 	res, err := urlcheck.Validate(raw)
 	if err != nil {
 		return jobs.InfoSummary{}, err
@@ -241,6 +406,9 @@ func (a *App) AnalyzeURL(raw string) (jobs.InfoSummary, error) {
 
 // StartDownload enqueues a download and starts the FIFO worker.
 func (a *App) StartDownload(req jobs.Request) (string, error) {
+	if err := a.requireReady(); err != nil {
+		return "", err
+	}
 	if req.URL == "" {
 		return "", errors.New("empty url")
 	}
@@ -262,53 +430,115 @@ func (a *App) StartDownload(req jobs.Request) (string, error) {
 	if req.Quality == "" {
 		req.Quality = jobs.QualityBest
 	}
-	if req.PlanID != "" {
-		plan, resolveErr := a.jobs.ResolvePlan(req.VideoID, req.PlanID)
-		if resolveErr != nil {
-			return "", resolveErr
-		}
-		if plan.RequiresFFmpeg && !a.ffmpegStatus().Available {
-			return "", errors.New("this output needs FFmpeg; install FFmpeg or choose an original audio format")
-		}
-	} else if !isSupportedQuality(req.Quality) {
-		return "", fmt.Errorf("unsupported quality preset %q", req.Quality)
+	if req.PlanID == "" {
+		return "", errors.New("an analyzed output plan is required before starting a download")
 	}
-	return a.jobs.Submit(req)
+	plan, resolveErr := a.jobs.ResolvePlan(req.VideoID, req.PlanID)
+	if resolveErr != nil {
+		return "", resolveErr
+	}
+	if plan.RequiresFFmpeg && !a.ffmpegStatus().Available {
+		return "", errors.New("this output needs FFmpeg; install FFmpeg or choose an original audio format")
+	}
+	req.OutputDir, err = canonicalOutputRequestPath(req.OutputDir)
+	if err != nil {
+		return "", err
+	}
+	root, err := reservationfs.EnsureOpenRoot(req.OutputDir)
+	if err != nil {
+		return "", fmt.Errorf("could not create output folder: %w", err)
+	}
+	defer root.Close()
+	metadata := value.NewInfo(value.NewObject(
+		value.Field{Key: "title", Value: value.String(req.Title)},
+		value.Field{Key: "id", Value: value.String(req.VideoID)},
+		value.Field{Key: "channel", Value: value.String(req.Channel)},
+	))
+	result, err := a.coordinator.Admit(a.ctx, root, admission.Request{Queue: req, Metadata: metadata})
+	if err != nil {
+		return "", err
+	}
+	return result.Job.ID, nil
 }
 
 // ListJobs returns the current queue + history snapshot.
-func (a *App) ListJobs() []jobs.JobSnapshot { return a.jobs.List() }
+func (a *App) ListJobs() []jobs.JobSnapshot {
+	if a.jobs == nil {
+		return nil
+	}
+	return a.jobs.List()
+}
 
 // CancelJob cancels an active or pending job.
-func (a *App) CancelJob(id string) { a.jobs.Cancel(id) }
+func (a *App) CancelJob(id string) {
+	if a.jobs != nil {
+		a.jobs.Cancel(id)
+	}
+}
 
 // PauseJob preserves partial bytes and suspends a pending or active download.
-func (a *App) PauseJob(id string) error { return a.jobs.Pause(id) }
+func (a *App) PauseJob(id string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.Pause(id)
+}
 
 // PauseAllJobs pauses every job currently safe to suspend.
-func (a *App) PauseAllJobs() int { return a.jobs.PauseAll() }
+func (a *App) PauseAllJobs() int {
+	if a.jobs == nil {
+		return 0
+	}
+	return a.jobs.PauseAll()
+}
 
 // ResumeJob returns a paused download to the queue.
-func (a *App) ResumeJob(id string) error { return a.jobs.Resume(id) }
+func (a *App) ResumeJob(id string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.Resume(id)
+}
 
 // RetryJob re-queues a failed or canceled job.
-func (a *App) RetryJob(id string) error { return a.jobs.Retry(id) }
+func (a *App) RetryJob(id string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.Retry(id)
+}
 
 // RemoveJob drops a terminal job from the manager.
-func (a *App) RemoveJob(id string) { a.jobs.Remove(id) }
+func (a *App) RemoveJob(id string) {
+	if a.jobs != nil {
+		a.jobs.Remove(id)
+	}
+}
 
 // ClearCompletedJobs removes every terminal job from the in-memory queue.
-func (a *App) ClearCompletedJobs() { a.jobs.ClearTerminal() }
+func (a *App) ClearCompletedJobs() {
+	if a.jobs != nil {
+		a.jobs.ClearTerminal()
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Downloads (history)
 // ---------------------------------------------------------------------------
 
 // ListDownloads returns the persisted history with live file-presence status.
-func (a *App) ListDownloads() []store.HistoryEntry { return a.store.History() }
+func (a *App) ListDownloads() []store.HistoryEntry {
+	if a.store == nil {
+		return nil
+	}
+	return a.store.History()
+}
 
 // RemoveDownload deletes one history entry without touching the media file.
 func (a *App) RemoveDownload(id string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
 	removed, err := a.store.RemoveHistory(id)
 	if err == nil && removed {
 		wailsruntime.EventsEmit(a.ctx, "history:update", a.store.History())
@@ -319,6 +549,9 @@ func (a *App) RemoveDownload(id string) error {
 // DeleteDownloadFile deletes the media file for one history entry and then
 // removes that history row. History-only removal stays on RemoveDownload.
 func (a *App) DeleteDownloadFile(id string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
 	deleted, err := a.store.DeleteHistoryFile(id)
 	if err != nil {
 		return err
@@ -331,6 +564,9 @@ func (a *App) DeleteDownloadFile(id string) error {
 
 // ClearDownloads empties the persisted history.
 func (a *App) ClearDownloads() error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
 	if err := a.store.ClearHistory(); err != nil {
 		return err
 	}
@@ -381,13 +617,16 @@ func (a *App) RevealInFinder(path string) error {
 // folder basename.
 func (a *App) CopyDiagnostics() (string, error) {
 	status := a.ffmpegStatus()
-	settings := a.store.Settings()
 	build := currentBuildInfo()
 	report := strings.Builder{}
 	report.WriteString("VidStow diagnostics\n")
 	report.WriteString("App: VidStow v" + build.Version + " (" + build.OS + "/" + build.Architecture + ", " + build.GoVersion + ")\n")
 	report.WriteString("Engine: youtube_dlp " + build.EngineVersion + "\n")
-	report.WriteString("Download folder: " + filepath.Base(settings.DownloadFolder) + "\n")
+	if a.store != nil {
+		report.WriteString("Download folder: " + filepath.Base(a.store.Settings().DownloadFolder) + "\n")
+	} else {
+		report.WriteString("Startup: recovery required (" + string(a.startupStatusSnapshot().Reason) + ")\n")
+	}
 	// Privacy: do not include the absolute FFmpeg path. The basename
 	// tells support which binary the user picked without disclosing
 	// home-directory layout. If no configured path is present we still
@@ -398,12 +637,216 @@ func (a *App) CopyDiagnostics() (string, error) {
 		report.WriteString("FFmpeg: " + status.Message)
 	}
 	report.WriteString("\n")
-	report.WriteString(fmt.Sprintf("Queue depth: %d\n", len(a.jobs.List())))
+	if a.jobs != nil {
+		report.WriteString(fmt.Sprintf("Queue depth: %d\n", len(a.jobs.List())))
+	} else {
+		report.WriteString("Queue depth: unavailable until recovery completes\n")
+	}
 	text := report.String()
 	if err := wailsruntime.ClipboardSetText(a.ctx, text); err != nil {
 		return "", err
 	}
 	return text, nil
+}
+
+func (a *App) requireReady() error {
+	if a.store == nil || a.jobs == nil || a.coordinator == nil || !a.startupStatusSnapshot().Healthy() {
+		return errRecoveryRequired
+	}
+	if status := a.store.Status(); status.Warning != "" {
+		return errRecoveryRequired
+	}
+	return nil
+}
+
+func (a *App) setStartupStatus(status store.StartupStatus) {
+	a.mu.Lock()
+	a.startupStatus = status
+	a.mu.Unlock()
+}
+
+func (a *App) startupStatusSnapshot() store.StartupStatus {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.startupStatus
+}
+
+func canonicalOutputRequestPath(path string) (string, error) {
+	expanded, err := expandHome(strings.TrimSpace(path))
+	if err != nil {
+		return "", err
+	}
+	if expanded == "" {
+		return "", errors.New("output directory is required")
+	}
+	abs, err := filepath.Abs(expanded)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
+}
+
+// prepareStartupRoots validates the settings root and every durable root
+// referenced by a job/tombstone before the recovery pass can inspect or clean
+// sessions. Missing per-job roots are preserved for a later user repair;
+// replaced, linked, or identity-mismatched roots fail closed.
+func prepareStartupRoots(state jobmodel.State) error {
+	settingsRoot, err := canonicalOutputRequestPath(state.Settings.DownloadFolder)
+	if err != nil {
+		return err
+	}
+	// The settings root is the app's own destination and may be created, but
+	// only through no-follow-safe primitives so a symlinked/replaced parent is
+	// rejected before any component below it is created. Per-job roots below
+	// are never created here: a missing one is preserved for user repair.
+	if _, err := reservationfs.EnsureRoot(settingsRoot); err != nil {
+		return err
+	}
+	refs := map[string]jobmodel.OutputRootRef{
+		stateKeyRoot(settingsRoot, ""): {CanonicalPath: settingsRoot},
+	}
+	for _, job := range state.Jobs {
+		if job.OutputRoot.CanonicalPath != "" {
+			refs[stateKeyRoot(job.OutputRoot.CanonicalPath, job.OutputRoot.Identity)] = job.OutputRoot
+		}
+	}
+	for _, tombstone := range state.Cleanup {
+		if tombstone.OutputRoot.CanonicalPath != "" {
+			refs[stateKeyRoot(tombstone.OutputRoot.CanonicalPath, tombstone.OutputRoot.Identity)] = tombstone.OutputRoot
+		}
+	}
+	for _, ref := range refs {
+		if ref.CanonicalPath == "" {
+			continue
+		}
+		root, openErr := reservationfs.OpenRoot(ref.CanonicalPath)
+		if openErr != nil {
+			if errors.Is(openErr, os.ErrNotExist) {
+				continue
+			}
+			return openErr
+		}
+		facts := root.Facts()
+		closeErr := root.Close()
+		if closeErr != nil {
+			return closeErr
+		}
+		if ref.Identity != "" && (facts.Volume.CanonicalPath != ref.CanonicalPath || facts.Volume.Identity != ref.Identity) {
+			return errors.New("output root identity changed")
+		}
+		if ref.EngineIdentity != "" {
+			engineFacts, engineErr := engine.ValidateOutputRoot(ref.CanonicalPath)
+			if engineErr != nil || engineFacts.Identity != ref.EngineIdentity {
+				return errors.New("engine output root identity changed")
+			}
+		}
+	}
+	return nil
+}
+
+func stateKeyRoot(path, identity string) string { return identity + "\x00" + path }
+
+func (a *App) shutdownContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	a.quitMu.Lock()
+	deadline := a.quitDeadline
+	a.quitMu.Unlock()
+	if !deadline.IsZero() {
+		return context.WithDeadline(parent, deadline)
+	}
+	return context.WithTimeout(parent, jobs.DefaultShutdownTimeout)
+}
+
+func (a *App) stopCleanup(ctx context.Context) {
+	if a.cleanupCancel != nil {
+		a.cleanupCancel()
+		a.cleanupCancel = nil
+	}
+	if a.cleanupDone == nil {
+		return
+	}
+	select {
+	case <-a.cleanupDone:
+	case <-ctx.Done():
+	}
+	a.cleanupDone = nil
+}
+
+// beforeClose is the Wails OnBeforeClose gate. Returning true prevents the
+// native close and emits one backend-authored confirmation payload. The
+// explicit PauseDownloadsAndQuit action grants a one-shot permit before it
+// calls runtime.Quit, so the Wails callback is not recursive.
+func (a *App) beforeClose(ctx context.Context) bool {
+	a.quitMu.Lock()
+	if a.quitPermit {
+		a.quitPermit = false
+		a.quitRequestOpen = false
+		a.quitMu.Unlock()
+		return false
+	}
+	if a.quitRequestOpen {
+		a.quitMu.Unlock()
+		return true
+	}
+	manager := a.jobs
+	if manager == nil || !manager.HasActive() {
+		a.quitMu.Unlock()
+		return false
+	}
+	a.quitRequestOpen = true
+	a.quitMu.Unlock()
+	wailsruntime.EventsEmit(ctx, "quit:request", manager.QuitSummary())
+	return true
+}
+
+// KeepWorking dismisses an outstanding native close confirmation.
+func (a *App) KeepWorking() {
+	a.quitMu.Lock()
+	a.quitRequestOpen = false
+	a.quitMu.Unlock()
+}
+
+// PauseDownloadsAndQuit performs ordinary pause-and-quit under one shared
+// deadline, then grants the one-shot native close permit.
+func (a *App) PauseDownloadsAndQuit() error {
+	if a.jobs == nil {
+		return errRecoveryRequired
+	}
+	parent := a.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	deadline := time.Now().Add(jobs.DefaultShutdownTimeout)
+	a.quitMu.Lock()
+	a.quitDeadline = deadline
+	a.quitRequestOpen = false
+	a.quitMu.Unlock()
+	shutdownCtx, cancel := context.WithDeadline(parent, deadline)
+	err := a.jobs.Shutdown(shutdownCtx)
+	a.stopCleanup(shutdownCtx)
+	cancel()
+	a.quitMu.Lock()
+	a.quitPermit = true
+	a.quitMu.Unlock()
+	if a.ctx != nil {
+		wailsruntime.Quit(a.ctx)
+	}
+	return err
+}
+
+// OpenDataFolder is safe in recovery-required mode and performs no State or
+// session mutation.
+func (a *App) OpenDataFolder() error {
+	directory := filepath.Dir(a.statePath)
+	if directory == "." || directory == "" {
+		return errors.New("data folder is unavailable")
+	}
+	if _, err := os.Stat(directory); err != nil {
+		return err
+	}
+	return launchWithOS(directory)
 }
 
 // ---------------------------------------------------------------------------
@@ -433,40 +876,6 @@ func (a *App) ffmpegStatus() ffmpegdetect.Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.lastFFmpeg
-}
-
-func (a *App) recordHistory(snap jobs.JobSnapshot) {
-	if snap.Status != jobs.StatusComplete {
-		return
-	}
-	if snap.AbsolutePath == "" {
-		return
-	}
-	quality := string(snap.Quality)
-	if snap.QualityLabel != "" {
-		quality = snap.QualityLabel
-	}
-	entry := store.HistoryEntry{
-		ID:            snap.ID,
-		VideoID:       snap.VideoID,
-		Title:         snap.Title,
-		Channel:       snap.Channel,
-		Quality:       quality,
-		Container:     snap.Container,
-		VideoCodec:    snap.VideoCodec,
-		AudioCodec:    snap.AudioCodec,
-		Filename:      snap.Filename,
-		AbsolutePath:  snap.AbsolutePath,
-		SizeBytes:     snap.Bytes,
-		CompletedAt:   snap.CompletedAt,
-		DurationLabel: snap.DurationLabel,
-		Thumbnail:     snap.Thumbnail,
-	}
-	if err := a.store.AppendHistory(entry); err != nil {
-		wailsruntime.LogErrorf(a.ctx, "desktop: append history: %v", err)
-		return
-	}
-	wailsruntime.EventsEmit(a.ctx, "history:update", a.store.History())
 }
 
 func videoSubfolder(title, videoID string) string {

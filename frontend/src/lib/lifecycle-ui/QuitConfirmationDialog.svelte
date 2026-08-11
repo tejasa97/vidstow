@@ -12,10 +12,28 @@
   interface Props {
     open: boolean;
     model: QuitConfirmationViewModel;
+    onClose?: () => void;
+    onKeepWorking?: () => void;
+    onPauseAndQuit?: () => void;
   }
 
-  let { open, model }: Props = $props();
+  let { open, model, onClose, onKeepWorking, onPauseAndQuit }: Props = $props();
   const dispatch = createEventDispatcher<QuitConfirmationEvents>();
+
+  function close(): void {
+    dispatch('close');
+    onClose?.();
+  }
+
+  function keepWorking(): void {
+    dispatch('keep-working');
+    onKeepWorking?.();
+  }
+
+  function pauseAndQuit(): void {
+    dispatch('pause-and-quit');
+    onPauseAndQuit?.();
+  }
 
   const activeDownloadsLabel = $derived(
     `${model.activeDownloads} active download${model.activeDownloads === 1 ? '' : 's'}`,
@@ -25,7 +43,7 @@
   );
 
   function onKeydown(event: KeyboardEvent): void {
-    if (open && event.key === 'Escape') dispatch('close');
+    if (open && event.key === 'Escape') close();
   }
 
   function onOverlayClick(event: MouseEvent): void {
@@ -48,7 +66,7 @@
     >
       <header class="dialog-header">
         <h2 id="lifecycle-quit-title">Quit VidStow?</h2>
-        <button type="button" class="close-button" aria-label="Close" onclick={() => dispatch('close')}>×</button>
+    <button type="button" class="close-button" aria-label="Close" onclick={close}>×</button>
       </header>
 
       <div class="dialog-body">
@@ -71,8 +89,8 @@
       </div>
 
       <footer class="dialog-footer">
-        <button type="button" class="secondary-button" data-autofocus onclick={() => dispatch('keep-working')}>Keep working</button>
-        <button type="button" class="primary-button" onclick={() => dispatch('pause-and-quit')}>Pause downloads and quit</button>
+        <button type="button" class="secondary-button" data-autofocus onclick={keepWorking}>Keep working</button>
+        <button type="button" class="primary-button" onclick={pauseAndQuit}>Pause downloads and quit</button>
       </footer>
     </div>
   </div>

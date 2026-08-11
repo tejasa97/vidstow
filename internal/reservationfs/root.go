@@ -188,7 +188,26 @@ type RootHandle = Root
 // reservation facts from the resulting directory and its filesystem. The
 // caller owns the returned handle and must call Close.
 func OpenRoot(path string) (*Root, error) {
-	backend, err := openPlatformRoot(path)
+	return openRoot(path, false)
+}
+
+// EnsureOpenRoot creates missing directory components without following a
+// link/reparse point, then returns the final authoritative Root handle. The
+// caller owns the returned handle and must call Close.
+func EnsureOpenRoot(path string) (*Root, error) {
+	return openRoot(path, true)
+}
+
+func openRoot(path string, createMissing bool) (*Root, error) {
+	var (
+		backend platformRoot
+		err     error
+	)
+	if createMissing {
+		backend, err = ensurePlatformRoot(path)
+	} else {
+		backend, err = openPlatformRoot(path)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -200,6 +219,25 @@ func OpenRoot(path string) (*Root, error) {
 		caseSensitive: backend.caseSensitive(),
 	}
 	return root, nil
+}
+
+// EnsureRoot prepares a destination that may not exist yet, then opens it
+// without following any link/reparse root. Missing directory components are
+// created one at a time through platform no-follow relative primitives, so a
+// symlinked or replaced parent is rejected before any component below it is
+// created. It returns the authoritative canonical path and volume identity of
+// the resulting directory and closes the handle.
+func EnsureRoot(path string) (reservation.Volume, error) {
+	root, err := EnsureOpenRoot(path)
+	if err != nil {
+		return reservation.Volume{}, err
+	}
+	facts := root.Facts()
+	closeErr := root.Close()
+	if closeErr != nil {
+		return reservation.Volume{}, closeErr
+	}
+	return facts.Volume, nil
 }
 
 // Open is an alias for OpenRoot.

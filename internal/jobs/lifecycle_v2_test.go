@@ -20,6 +20,49 @@ type v2MemoryStore struct {
 	calls    int
 }
 
+// blockingV2Store wraps v2MemoryStore with a one-shot gate on every durable
+// transaction and records whether any transaction is attempted after the test
+// marks the store closed. It proves the manager's bounded close waits for a
+// detached cancelIdle goroutine instead of returning while that goroutine may
+// still touch State v2.
+type blockingV2Store struct {
+	*v2MemoryStore
+	block           func()
+	mu              sync.Mutex
+	closedAt        time.Time
+	callsAfterClose int
+}
+
+func (s *blockingV2Store) Transaction(preconditions []jobmodel.JobPrecondition, mutate func(*jobmodel.State) error) error {
+	s.mu.Lock()
+	if !s.closedAt.IsZero() {
+		s.callsAfterClose++
+	}
+	s.mu.Unlock()
+	if s.block != nil {
+		s.block()
+	}
+	return s.v2MemoryStore.Transaction(preconditions, mutate)
+}
+
+func (s *blockingV2Store) markClosed() {
+	s.mu.Lock()
+	s.closedAt = time.Now()
+	s.mu.Unlock()
+}
+
+func (s *blockingV2Store) recordedAfterClose() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.callsAfterClose
+}
+
+func (s *blockingV2Store) isMarkedClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.closedAt.IsZero()
+}
+
 func (s *v2MemoryStore) Snapshot() jobmodel.State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -152,6 +195,173 @@ func TestV2PauseKeepsSlotUntilRunnerExitAndUsesAttemptSession(t *testing.T) {
 	}
 	if got := manager.Active(); got != "job-two" {
 		t.Fatalf("active job = %q; want job-two", got)
+	}
+}
+
+func TestV2ShutdownHonorsSharedDeadlineAndLeavesPausingEvidence(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-shutdown")
+	manager := New(nil, nil)
+	manager.SetConcurrency(1)
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	manager.runDownload = func(ctx context.Context, _ engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		close(started)
+		<-release
+		return engine.Result{}, ctx.Err()
+	}
+	if _, err := manager.SubmitAdmitted("job-shutdown", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown test worker did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := manager.Shutdown(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown() error = %v; want shared deadline", err)
+	}
+	job := store.Snapshot().Jobs[0]
+	if job.Lifecycle != jobmodel.LifecyclePausing || job.Desired != jobmodel.DesiredPaused {
+		t.Fatalf("durable shutdown evidence = %#v; want pausing/paused", job)
+	}
+
+	close(release)
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), time.Second)
+	defer closeCancel()
+	if err := manager.Close(closeCtx); err != nil {
+		t.Fatalf("Close() after releasing worker = %v", err)
+	}
+}
+
+func TestV2CloseDeadlineLeavesStateOpenUntilBlockedWorkerDrains(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-close-deadline")
+	blocking := &blockingV2Store{v2MemoryStore: store}
+	manager := New(nil, nil)
+	manager.SetConcurrency(1)
+	if err := manager.SetStateStore(blocking); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	manager.runDownload = func(ctx context.Context, _ engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		close(started)
+		<-release
+		return engine.Result{}, ctx.Err()
+	}
+	if _, err := manager.SubmitAdmitted("job-close-deadline", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("deadline test worker did not start")
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	returned := make(chan error, 1)
+	go func() { returned <- manager.Close(closeCtx) }()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Close() error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return at its deadline")
+	}
+
+	if err := manager.Close(closeCtx); err == nil {
+		blocking.markClosed()
+	}
+	if blocking.isMarkedClosed() {
+		t.Fatal("State v2 was marked closed while the worker was still blocked")
+	}
+
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for manager.Active() != "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if active := manager.Active(); active != "" {
+		t.Fatalf("worker remained active after release: %q", active)
+	}
+	blocking.markClosed()
+	time.Sleep(20 * time.Millisecond)
+	if got := blocking.recordedAfterClose(); got != 0 {
+		t.Fatalf("store transactions after safe close point = %d; want 0", got)
+	}
+}
+
+func TestV2CancelPendingThenCloseWaitsForDetachedGoroutine(t *testing.T) {
+	store, root, _ := newV2TestStore(t, "job-pending")
+	blocking := &blockingV2Store{v2MemoryStore: store}
+	manager := New(nil, nil)
+	if err := manager.SetStateStore(blocking); err != nil {
+		t.Fatal(err)
+	}
+
+	durable := store.Snapshot().Jobs[0]
+	state := &jobState{
+		snap: JobSnapshot{
+			ID: "job-pending", Status: StatusPending, URL: durable.Request.SourceURL,
+			VideoID: durable.Request.VideoID, Title: durable.Request.Title,
+			PlanID: durable.Plan.ID, OutputDir: root,
+		},
+		durable:     durable,
+		fromStateV2: true,
+		done:        make(chan struct{}),
+	}
+	manager.mu.Lock()
+	manager.all["job-pending"] = state
+	manager.mu.Unlock()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	blocking.block = func() {
+		select {
+		case <-entered:
+		default:
+			close(entered)
+		}
+		<-release
+	}
+
+	manager.Cancel("job-pending")
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("detached cancelIdle did not enter its durable transition")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- manager.Close(context.Background()) }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned while detached cancelIdle was blocked: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not wait for the detached cancelIdle goroutine")
+	}
+
+	blocking.markClosed()
+	time.Sleep(20 * time.Millisecond)
+	if got := blocking.recordedAfterClose(); got != 0 {
+		t.Fatalf("store transactions after Close returned = %d; want 0 (no State use after close)", got)
 	}
 }
 
