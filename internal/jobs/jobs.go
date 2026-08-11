@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/vidstow/internal/reservation"
 	"github.com/tejasa97/youtube_dlp/engine"
@@ -49,6 +50,18 @@ const (
 // ErrClosed is returned when an operation would start new manager activity
 // after Close has begun.
 var ErrClosed = errors.New("jobs: manager is closed")
+
+var errCancelRequested = errors.New("jobs: cancel requested")
+
+var errActivationSuperseded = errors.New("jobs: durable activation was superseded")
+
+// StateStore is the manager-facing State v2 seam. The precondition type is
+// deliberately owned by jobmodel so jobs can use the durable authority
+// without importing the store package (which retains legacy UI adapters).
+type StateStore interface {
+	Snapshot() jobmodel.State
+	Transaction([]jobmodel.JobPrecondition, func(*jobmodel.State) error) error
+}
 
 // AllQualities is the fixed V0 quality list.
 var AllQualities = []Quality{
@@ -116,12 +129,15 @@ func OutputTemplateForPlan(plan outputplan.Plan) string {
 type Status string
 
 const (
-	StatusPending  Status = "pending"
-	StatusActive   Status = "active"
-	StatusPaused   Status = "paused"
-	StatusComplete Status = "complete"
-	StatusFailed   Status = "failed"
-	StatusCanceled Status = "canceled"
+	StatusPending        Status = "pending"
+	StatusActive         Status = "active"
+	StatusPausing        Status = "pausing"
+	StatusCanceling      Status = "canceling"
+	StatusPaused         Status = "paused"
+	StatusComplete       Status = "complete"
+	StatusFailed         Status = "failed"
+	StatusCanceled       Status = "canceled"
+	StatusActionRequired Status = "action-required"
 )
 
 // Request is the data needed to schedule one download.
@@ -146,39 +162,43 @@ type AdmittedOutput struct {
 
 // JobSnapshot is the immutable view of a job exposed to the UI.
 type JobSnapshot struct {
-	ID              string          `json:"id"`
-	URL             string          `json:"url"`
-	VideoID         string          `json:"videoID"`
-	Title           string          `json:"title"`
-	Channel         string          `json:"channel"`
-	Quality         Quality         `json:"quality"`
-	QualityLabel    string          `json:"qualityLabel"`
-	PlanID          string          `json:"planId,omitempty"`
-	OutputKind      outputplan.Kind `json:"outputKind,omitempty"`
-	Container       string          `json:"container,omitempty"`
-	VideoCodec      string          `json:"videoCodec,omitempty"`
-	AudioCodec      string          `json:"audioCodec,omitempty"`
-	ApproxBytes     int64           `json:"approxBytes,omitempty"`
-	SizeApproximate bool            `json:"sizeApproximate,omitempty"`
-	RequiresFFmpeg  bool            `json:"requiresFfmpeg,omitempty"`
-	CanPause        bool            `json:"canPause,omitempty"`
-	Processing      bool            `json:"processing,omitempty"`
-	OutputDir       string          `json:"outputDir"`
-	DurationLabel   string          `json:"durationLabel"`
-	Thumbnail       string          `json:"thumbnail"`
-	Status          Status          `json:"status"`
-	CreatedAt       string          `json:"createdAt"`
-	StartedAt       string          `json:"startedAt,omitempty"`
-	CompletedAt     string          `json:"completedAt,omitempty"`
-	Bytes           int64           `json:"bytes"`
-	Total           int64           `json:"total"`
-	Progress        float64         `json:"progress"`
-	SpeedBps        float64         `json:"speedBps"`
-	ETASeconds      float64         `json:"etaSeconds"`
-	Filename        string          `json:"filename"`
-	AbsolutePath    string          `json:"absolutePath"`
-	Message         string          `json:"message"`
-	ErrorReason     string          `json:"errorReason,omitempty"`
+	ID              string                `json:"id"`
+	URL             string                `json:"url"`
+	VideoID         string                `json:"videoID"`
+	Title           string                `json:"title"`
+	Channel         string                `json:"channel"`
+	Quality         Quality               `json:"quality"`
+	QualityLabel    string                `json:"qualityLabel"`
+	PlanID          string                `json:"planId,omitempty"`
+	OutputKind      outputplan.Kind       `json:"outputKind,omitempty"`
+	Container       string                `json:"container,omitempty"`
+	VideoCodec      string                `json:"videoCodec,omitempty"`
+	AudioCodec      string                `json:"audioCodec,omitempty"`
+	ApproxBytes     int64                 `json:"approxBytes,omitempty"`
+	SizeApproximate bool                  `json:"sizeApproximate,omitempty"`
+	RequiresFFmpeg  bool                  `json:"requiresFfmpeg,omitempty"`
+	CanPause        bool                  `json:"canPause,omitempty"`
+	Processing      bool                  `json:"processing,omitempty"`
+	OutputDir       string                `json:"outputDir"`
+	DurationLabel   string                `json:"durationLabel"`
+	Thumbnail       string                `json:"thumbnail"`
+	Status          Status                `json:"status"`
+	Lifecycle       jobmodel.Lifecycle    `json:"lifecycle,omitempty"`
+	Phase           jobmodel.Phase        `json:"phase,omitempty"`
+	Desired         jobmodel.DesiredState `json:"desired,omitempty"`
+	OccupiesSlot    bool                  `json:"occupiesSlot"`
+	CreatedAt       string                `json:"createdAt"`
+	StartedAt       string                `json:"startedAt,omitempty"`
+	CompletedAt     string                `json:"completedAt,omitempty"`
+	Bytes           int64                 `json:"bytes"`
+	Total           int64                 `json:"total"`
+	Progress        float64               `json:"progress"`
+	SpeedBps        float64               `json:"speedBps"`
+	ETASeconds      float64               `json:"etaSeconds"`
+	Filename        string                `json:"filename"`
+	AbsolutePath    string                `json:"absolutePath"`
+	Message         string                `json:"message"`
+	ErrorReason     string                `json:"errorReason,omitempty"`
 }
 
 // Listener receives lifecycle events. Every event is delivered by one
@@ -252,7 +272,7 @@ type Manager struct {
 	closing            bool
 	closed             bool
 	lifecycleCtx       context.Context
-	lifecycleCancel    context.CancelFunc
+	lifecycleCancel    context.CancelCauseFunc
 	analysisWG         sync.WaitGroup
 	runDownload        downloadRunner
 	runAnalyze         analyzeRunner
@@ -260,9 +280,10 @@ type Manager struct {
 	mu                 sync.Mutex
 	all                map[string]*jobState
 	order              []string
-	active             map[string]struct{}
+	active             map[string]*worker
 	concurrency        int
 	processing         chan struct{}
+	stateStore         StateStore
 	planCache          map[string]cachedPlans
 	persistence        Persistence
 	persistenceDurable bool
@@ -282,16 +303,32 @@ type downloadRunner func(context.Context, engine.Request, engine.EventHandler) (
 
 type analyzeRunner func(context.Context, engine.Request) (engine.Result, error)
 
+// worker is runtime-only attempt state. It is never restored from State v2;
+// active is the sole live occupancy authority and retains this value until
+// the runner and any session cleanup have exited.
+type worker struct {
+	JobID     string
+	AttemptID string
+	SessionID string
+	Cancel    context.CancelCauseFunc
+	Ctx       context.Context
+	Arbiter   *engine.PublicationArbiter
+	Done      chan struct{}
+}
+
 type jobState struct {
 	snap           JobSnapshot
 	plan           *outputplan.Plan
 	outputTemplate string
-	cancel         context.CancelFunc
-	ctx            context.Context
+	worker         *worker
 	done           chan struct{}
+	durable        jobmodel.DurableJob
+	fromStateV2    bool
+	settling       bool
+	commanding     bool
+	transitionMu   sync.Mutex
 	startBps       time.Time
 	startByt       int64
-	pauseRequested bool
 }
 
 // New creates a Manager. listener may be nil for headless tests.
@@ -299,7 +336,7 @@ func New(client *engine.Client, listener Listener) *Manager {
 	if client == nil {
 		client = newFocusedClient()
 	}
-	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	lifecycleCtx, lifecycleCancel := context.WithCancelCause(context.Background())
 	manager := &Manager{
 		client:          client,
 		listener:        listener,
@@ -310,7 +347,7 @@ func New(client *engine.Client, listener Listener) *Manager {
 		runDownload:     defaultDownloadRunner,
 		runAnalyze:      client.Run,
 		all:             make(map[string]*jobState),
-		active:          make(map[string]struct{}),
+		active:          make(map[string]*worker),
 		concurrency:     DefaultDownloadConcurrency,
 		processing:      make(chan struct{}, MaxProcessingConcurrency),
 		planCache:       make(map[string]cachedPlans),
@@ -323,6 +360,284 @@ func New(client *engine.Client, listener Listener) *Manager {
 		close(manager.eventDone)
 	}
 	return manager
+}
+
+// SetStateStore attaches the State v2 authority used by admitted jobs and
+// lifecycle transitions. It is intentionally separate from the legacy
+// Persistence seam so a manager cannot accidentally write a second queue
+// document while a V2 store is active.
+func (m *Manager) SetStateStore(stateStore StateStore) error {
+	if stateStore == nil {
+		return errors.New("jobs: nil State v2 store")
+	}
+	snapshot := stateStore.Snapshot()
+	if snapshot.Version != jobmodel.StateVersion {
+		return errors.New("jobs: invalid State v2 store")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closing || m.closed {
+		return ErrClosed
+	}
+	if m.stateStore != nil {
+		return errors.New("jobs: State v2 store already configured")
+	}
+	m.stateStore = stateStore
+	m.persistStatus = PersistenceStatus{Available: true, Healthy: true}
+	if durable, ok := stateStore.(DurablePersistence); ok && !durable.Durable() {
+		m.persistStatus = PersistenceStatus{Available: false, Healthy: true, Message: persistenceUnavailableMessage}
+	}
+	return nil
+}
+
+func (m *Manager) stateStoreSnapshot() StateStore {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stateStore
+}
+
+// commitDurable applies one lifecycle mutation against the exact durable row
+// observed by this job state. The per-job mutex serializes commands with the
+// terminal worker callback, while the store precondition rejects any stale
+// attempt that lost a cross-process or same-process race.
+func (m *Manager) commitDurable(state *jobState, mutate func(*jobmodel.DurableJob, *jobmodel.State) error) error {
+	if state == nil || !state.fromStateV2 {
+		return nil
+	}
+	if mutate == nil {
+		return errors.New("jobs: nil durable mutation")
+	}
+	state.transitionMu.Lock()
+	defer state.transitionMu.Unlock()
+	store := m.stateStoreSnapshot()
+	if store == nil {
+		return errors.New("jobs: State v2 store is not configured")
+	}
+	expected := state.durable
+	precondition := jobmodel.JobPrecondition{
+		ID:         expected.ID,
+		Revision:   expected.Revision,
+		Lifecycle:  expected.Lifecycle,
+		AttemptID:  expected.AttemptID,
+		SessionID:  expected.SessionID,
+		OutputRoot: expected.OutputRoot,
+	}
+	var committed jobmodel.DurableJob
+	err := store.Transaction([]jobmodel.JobPrecondition{precondition}, func(document *jobmodel.State) error {
+		for index := range document.Jobs {
+			if document.Jobs[index].ID != expected.ID {
+				continue
+			}
+			candidate := &document.Jobs[index]
+			if err := mutate(candidate, document); err != nil {
+				return err
+			}
+			if candidate.Revision == ^uint64(0) {
+				return errors.New("jobs: durable job revision exhausted")
+			}
+			candidate.Revision++
+			candidate.UpdatedAt = time.Now().UTC()
+			committed = *candidate
+			return nil
+		}
+		return errors.New("jobs: durable job disappeared")
+	})
+	if err != nil {
+		return err
+	}
+	state.durable = committed
+	m.mu.Lock()
+	if m.all[state.snap.ID] == state {
+		state.snap.Lifecycle = committed.Lifecycle
+		state.snap.Phase = committed.Phase
+		state.snap.Desired = committed.Desired
+		state.snap.OccupiesSlot = m.active[state.snap.ID] != nil
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) removeDurable(state *jobState) error {
+	if state == nil || !state.fromStateV2 {
+		return nil
+	}
+	state.transitionMu.Lock()
+	defer state.transitionMu.Unlock()
+	stateStore := m.stateStoreSnapshot()
+	if stateStore == nil {
+		return errors.New("jobs: State v2 store is not configured")
+	}
+	expected := state.durable
+	return stateStore.Transaction([]jobmodel.JobPrecondition{{
+		ID: expected.ID, Revision: expected.Revision, Lifecycle: expected.Lifecycle,
+		AttemptID: expected.AttemptID, SessionID: expected.SessionID, OutputRoot: expected.OutputRoot,
+	}}, func(document *jobmodel.State) error {
+		for index, job := range document.Jobs {
+			if job.ID == expected.ID {
+				document.Jobs = append(document.Jobs[:index], document.Jobs[index+1:]...)
+				return nil
+			}
+		}
+		return errors.New("jobs: durable job disappeared")
+	})
+}
+
+func (m *Manager) transitionDurable(state *jobState, lifecycle jobmodel.Lifecycle, desired jobmodel.DesiredState, phase jobmodel.Phase) error {
+	if durableStateAlready(state, lifecycle, desired, phase) {
+		return nil
+	}
+	return m.commitDurable(state, func(job *jobmodel.DurableJob, _ *jobmodel.State) error {
+		job.Lifecycle = lifecycle
+		job.Desired = desired
+		job.Phase = phase
+		return nil
+	})
+}
+
+func durableStateAlready(state *jobState, lifecycle jobmodel.Lifecycle, desired jobmodel.DesiredState, phase jobmodel.Phase) bool {
+	if state == nil || !state.fromStateV2 {
+		return false
+	}
+	state.transitionMu.Lock()
+	defer state.transitionMu.Unlock()
+	return state.durable.Lifecycle == lifecycle && state.durable.Desired == desired && state.durable.Phase == phase
+}
+
+func resumeCommitTargets(set jobmodel.ReservationSet) []engine.CommitTarget {
+	targets := make([]engine.CommitTarget, len(set.Artifacts))
+	for index, artifact := range set.Artifacts {
+		targets[index] = engine.CommitTarget{
+			Kind:     engine.ArtifactKind(artifact.Kind),
+			Identity: artifact.Identity,
+			Basename: artifact.Basename,
+		}
+	}
+	return targets
+}
+
+func historyFromSnapshot(snap JobSnapshot) jobmodel.HistoryEntry {
+	completed := snap.CompletedAt
+	if completed == "" {
+		completed = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	quality := string(snap.Quality)
+	if snap.QualityLabel != "" {
+		quality = snap.QualityLabel
+	}
+	return jobmodel.HistoryEntry{
+		ID:            snap.ID,
+		VideoID:       snap.VideoID,
+		Title:         snap.Title,
+		Channel:       snap.Channel,
+		Quality:       quality,
+		Container:     snap.Container,
+		VideoCodec:    snap.VideoCodec,
+		AudioCodec:    snap.AudioCodec,
+		Filename:      snap.Filename,
+		AbsolutePath:  snap.AbsolutePath,
+		SizeBytes:     snap.Bytes,
+		CompletedAt:   completed,
+		DurationLabel: snap.DurationLabel,
+	}
+}
+
+// settleDurable commits the terminal lifecycle and, where required, the
+// cleanup tombstone or completion history in the same State transaction.
+// The row precondition is the attempt's latest accepted revision, so a stale
+// callback can only fail and never replace a newer winner.
+func (m *Manager) settleDurable(state *jobState, lifecycle jobmodel.Lifecycle, desired jobmodel.DesiredState, phase jobmodel.Phase, snap JobSnapshot, errorCode string, cleanupPending bool) error {
+	if durableStateAlready(state, lifecycle, desired, phase) {
+		return nil
+	}
+	return m.commitDurable(state, func(job *jobmodel.DurableJob, document *jobmodel.State) error {
+		job.Lifecycle = lifecycle
+		job.Desired = desired
+		job.Phase = phase
+		job.LastErrorCode = errorCode
+		if lifecycle == jobmodel.LifecycleActionRequired {
+			job.ActionRequiredCode = errorCode
+		} else {
+			job.ActionRequiredCode = ""
+		}
+		if lifecycle == jobmodel.LifecycleCompleted {
+			entry := historyFromSnapshot(snap)
+			found := false
+			for _, existing := range document.History {
+				if existing.ID == entry.ID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				document.History = append([]jobmodel.HistoryEntry{entry}, document.History...)
+			}
+		}
+		if lifecycle == jobmodel.LifecycleCanceled && cleanupPending {
+			found := false
+			for index := range document.Cleanup {
+				if document.Cleanup[index].JobID == job.ID {
+					found = true
+					document.Cleanup[index].SessionID = job.SessionID
+					document.Cleanup[index].OutputRoot = job.OutputRoot
+					document.Cleanup[index].Reservation = job.Reservation
+					document.Cleanup[index].State = jobmodel.CleanupPending
+					document.Cleanup[index].LastErrorCode = errorCode
+					document.Cleanup[index].UpdatedAt = time.Now().UTC()
+					break
+				}
+			}
+			if !found {
+				now := time.Now().UTC()
+				document.Cleanup = append(document.Cleanup, jobmodel.CleanupTombstone{
+					JobID:         job.ID,
+					SessionID:     job.SessionID,
+					OutputRoot:    job.OutputRoot,
+					Reservation:   job.Reservation,
+					State:         jobmodel.CleanupPending,
+					LastErrorCode: errorCode,
+					CreatedAt:     now,
+					UpdatedAt:     now,
+				})
+			}
+		}
+		return nil
+	})
+}
+
+func (m *Manager) discardSession(state *jobState) (bool, string) {
+	handle, unavailable, err := prepareDiscardSession(state)
+	if err != nil {
+		return true, "cleanup"
+	}
+	if unavailable || handle == nil {
+		return false, ""
+	}
+	result, discardErr := handle.Discard(context.Background())
+	if discardErr != nil || result.Disposition != engine.ResumeDiscarded {
+		return true, "cleanup"
+	}
+	return false, ""
+}
+
+// prepareDiscardSession acquires the engine's no-local-runner cleanup handle
+// before State mutation. A missing workspace is a valid no-op: there is no
+// session evidence to tombstone. Any other failure is retained as cleanup
+// evidence and never silently treated as a successful discard.
+func prepareDiscardSession(state *jobState) (*engine.ResumeDiscardHandle, bool, error) {
+	if state == nil || !state.fromStateV2 || state.durable.SessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
+		return nil, true, nil
+	}
+	handle, err := engine.PrepareResumeDiscard(context.Background(), engine.OutputRootRef{
+		CanonicalPath: state.durable.OutputRoot.CanonicalPath,
+		Identity:      state.durable.OutputRoot.Identity,
+	}, state.durable.SessionID)
+	if err != nil {
+		if strings.Contains(err.Error(), "workspace unavailable") {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	return handle, false, nil
 }
 
 func defaultDownloadRunner(ctx context.Context, req engine.Request, handler engine.EventHandler) (engine.Result, error) {
@@ -354,20 +669,21 @@ func (m *Manager) close() error {
 	m.mu.Lock()
 	m.closing = true
 	if m.lifecycleCancel != nil {
-		m.lifecycleCancel()
+		m.lifecycleCancel(context.Canceled)
 	}
 	workerDone := make([]<-chan struct{}, 0, len(m.active))
-	for id := range m.active {
+	for id, worker := range m.active {
 		state := m.all[id]
 		if state == nil {
 			continue
 		}
-		state.pauseRequested = true
 		state.snap.CanPause = false
-		if state.cancel != nil {
-			state.cancel()
+		if worker != nil && worker.Cancel != nil {
+			worker.Cancel(engine.ErrPauseRequested)
 		}
-		if state.done != nil {
+		if worker != nil && worker.Done != nil {
+			workerDone = append(workerDone, worker.Done)
+		} else if state.done != nil {
 			workerDone = append(workerDone, state.done)
 		}
 	}
@@ -417,6 +733,10 @@ func (m *Manager) SetPersistence(persistence Persistence, restoreInterrupted boo
 	if m.closing || m.closed {
 		m.mu.Unlock()
 		return ErrClosed
+	}
+	if m.stateStore != nil {
+		m.mu.Unlock()
+		return errors.New("jobs: legacy persistence cannot be used with State v2")
 	}
 	if m.persistence != nil {
 		m.mu.Unlock()
@@ -675,6 +995,9 @@ func (m *Manager) ffmpegLocationSnapshot() string {
 // Submit enqueues a new job and returns its id. The job starts as soon
 // as it reaches the head of the FIFO queue.
 func (m *Manager) Submit(req Request) (string, error) {
+	if m.stateStoreSnapshot() != nil {
+		return "", errors.New("jobs: State v2 admission is required")
+	}
 	return m.submit(uuid.NewString(), req, nil, nil)
 }
 
@@ -693,6 +1016,42 @@ func (m *Manager) SubmitAdmitted(id string, req Request, selectedPlan *outputpla
 	outputTemplate, err := literalOutputTemplate(output.Basename)
 	if err != nil {
 		return "", err
+	}
+	if stateStore := m.stateStoreSnapshot(); stateStore != nil {
+		var durable jobmodel.DurableJob
+		found := false
+		for _, candidate := range stateStore.Snapshot().Jobs {
+			if candidate.ID == id {
+				durable = candidate
+				found = true
+				break
+			}
+		}
+		if !found || durable.Lifecycle != jobmodel.LifecyclePending {
+			return "", errors.New("jobs: admitted durable job is not pending in State v2")
+		}
+		if req.URL != durable.Request.SourceURL || req.VideoID != durable.Request.VideoID || req.Title != durable.Request.Title || req.PlanID != durable.Request.PlanID {
+			return "", errors.New("jobs: admitted request does not match State v2")
+		}
+		if durable.Plan.ID != selectedPlan.ID || durable.Plan.PrivateSelector != selectedPlan.Selector {
+			return "", errors.New("jobs: admitted plan does not match State v2")
+		}
+		if durable.Plan.Label != selectedPlan.Label || durable.Plan.Container != selectedPlan.Container || durable.Plan.Kind != string(selectedPlan.Kind) {
+			return "", errors.New("jobs: admitted plan metadata does not match State v2")
+		}
+		reservedBasename := ""
+		for _, artifact := range durable.Reservation.Artifacts {
+			if artifact.Kind == string(engine.ArtifactKindPrimary) && artifact.Identity == "primary" {
+				reservedBasename = artifact.Basename
+				break
+			}
+		}
+		if reservedBasename == "" || reservedBasename != output.Basename {
+			return "", errors.New("jobs: admitted basename does not match State v2 reservation")
+		}
+		if req.Quality == "" {
+			req.Quality = Quality(durable.Request.Quality)
+		}
 	}
 	return m.submit(id, req, selectedPlan, &outputTemplate)
 }
@@ -727,6 +1086,30 @@ func (m *Manager) submit(id string, req Request, admittedPlan *outputplan.Plan, 
 		return "", fmt.Errorf("jobs: prepare output dir: %w", err)
 	}
 
+	var durable jobmodel.DurableJob
+	fromStateV2 := false
+	if admittedPlan != nil {
+		if stateStore := m.stateStoreSnapshot(); stateStore != nil {
+			snapshot := stateStore.Snapshot()
+			for _, candidate := range snapshot.Jobs {
+				if candidate.ID == id {
+					durable = candidate
+					fromStateV2 = true
+					break
+				}
+			}
+			if !fromStateV2 {
+				return "", errors.New("jobs: admitted durable job is missing from State v2")
+			}
+			if durable.Lifecycle != jobmodel.LifecyclePending {
+				return "", errors.New("jobs: admitted durable job is not pending")
+			}
+			requestedRoot, rootErr := filepath.Abs(req.OutputDir)
+			if rootErr != nil || filepath.Clean(requestedRoot) != durable.OutputRoot.CanonicalPath {
+				return "", errors.New("jobs: admitted output root does not match State v2")
+			}
+		}
+	}
 	state := &jobState{
 		snap: JobSnapshot{
 			ID:            id,
@@ -745,6 +1128,8 @@ func (m *Manager) submit(id string, req Request, admittedPlan *outputplan.Plan, 
 		plan:           selectedPlan,
 		outputTemplate: "",
 		done:           make(chan struct{}),
+		durable:        durable,
+		fromStateV2:    fromStateV2,
 	}
 	if admittedOutputTemplate != nil {
 		state.outputTemplate = *admittedOutputTemplate
@@ -759,6 +1144,11 @@ func (m *Manager) submit(id string, req Request, admittedPlan *outputplan.Plan, 
 		state.snap.ApproxBytes = selectedPlan.ApproxBytes
 		state.snap.SizeApproximate = selectedPlan.SizeIsApproximate
 		state.snap.RequiresFFmpeg = selectedPlan.RequiresFFmpeg
+	}
+	if fromStateV2 {
+		state.snap.Lifecycle = durable.Lifecycle
+		state.snap.Phase = durable.Phase
+		state.snap.Desired = durable.Desired
 	}
 
 	m.mu.Lock()
@@ -797,35 +1187,130 @@ func (m *Manager) Cancel(id string) {
 		return
 	}
 	state, ok := m.all[id]
-	if !ok {
+	if !ok || state.settling || state.commanding {
 		m.mu.Unlock()
 		return
 	}
 	switch state.snap.Status {
-	case StatusComplete, StatusFailed, StatusCanceled:
+	case StatusComplete, StatusFailed, StatusCanceled, StatusPausing, StatusCanceling:
 		m.mu.Unlock()
 		return
 	}
-	if _, active := m.active[id]; active {
-		state.pauseRequested = false
-		if state.cancel != nil {
-			state.cancel()
+	state.commanding = true
+	worker := m.active[id]
+	if worker != nil {
+		if worker.Arbiter == nil {
+			state.commanding = false
+			m.mu.Unlock()
+			return
 		}
+		state.snap.Status = StatusCanceling
 		state.snap.Message = "Canceling"
+		state.snap.CanPause = false
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 		m.emitQueueLocked()
-	} else {
-		if state.cancel != nil {
-			state.cancel()
+		m.mu.Unlock()
+
+		reservation, err := worker.Arbiter.BeginCancel(context.Background())
+		if err != nil {
+			// Publication already won or another cancel was accepted. The
+			// runner remains authoritative and will settle its own winner.
+			m.mu.Lock()
+			if current := m.all[id]; current == state && m.active[id] == worker && !state.settling {
+				state.commanding = false
+				state.snap.Status = StatusActive
+				state.snap.Message = "Downloading"
+				state.snap.CanPause = true
+				m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+			}
+			m.mu.Unlock()
+			return
 		}
-		state.snap.Status = StatusCanceled
-		state.snap.Message = "Canceled"
-		state.snap.CompletedAt = time.Now().UTC().Format(time.RFC3339)
-		m.all[id] = state
+		if err := m.transitionDurable(state, jobmodel.LifecycleCanceling, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp); err != nil {
+			reservation.AbortCancel()
+			m.mu.Lock()
+			if m.active[id] == worker && !state.settling {
+				state.commanding = false
+				state.snap.Status = StatusActive
+				state.snap.Message = "Downloading"
+				state.snap.CanPause = true
+				m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+			}
+			m.mu.Unlock()
+			return
+		}
+		reservation.WinCancel()
+		worker.Cancel(errCancelRequested)
+		return
+	}
+
+	// Pending and paused rows have no local runner. They use the same
+	// prepare-then-commit protocol, retaining a cleanup tombstone when the
+	// engine reports cleanup evidence that cannot be removed immediately.
+	go m.cancelIdle(state)
+	m.mu.Unlock()
+}
+
+func (m *Manager) cancelIdle(state *jobState) {
+	if state == nil {
+		return
+	}
+	handle, unavailable, prepareErr := prepareDiscardSession(state)
+	if prepareErr != nil {
+		// Preserve the row and surface the failure through the existing
+		// runtime event stream; no destructive operation occurred.
+		m.mu.Lock()
+		state.commanding = false
+		m.maybeStartNextLocked()
+		m.emitQueueLocked()
+		m.mu.Unlock()
+		return
+	}
+	if err := m.transitionDurable(state, jobmodel.LifecycleCanceling, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp); err != nil {
+		if handle != nil {
+			_ = handle.Close()
+		}
+		m.mu.Lock()
+		state.commanding = false
+		m.maybeStartNextLocked()
+		m.emitQueueLocked()
+		m.mu.Unlock()
+		return
+	}
+	cleanupPending := false
+	cleanupCode := ""
+	if handle != nil {
+		result, err := handle.Discard(context.Background())
+		if err != nil || result.Disposition != engine.ResumeDiscarded {
+			cleanupPending = true
+			cleanupCode = "cleanup"
+		}
+	} else if !unavailable {
+		cleanupPending = true
+		cleanupCode = "cleanup"
+	}
+	m.mu.Lock()
+	terminal := state.snap
+	terminal.Status = StatusCanceled
+	terminal.Message = "Canceled"
+	terminal.ErrorReason = cleanupCode
+	terminal.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+	state.snap = terminal
+	m.mu.Unlock()
+	if err := m.settleDurable(state, jobmodel.LifecycleCanceled, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp, terminal, cleanupCode, cleanupPending); err != nil {
+		m.mu.Lock()
+		state.commanding = false
+		m.maybeStartNextLocked()
+		m.emitQueueLocked()
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Lock()
+	if current := m.all[state.snap.ID]; current == state {
+		state.snap = terminal
+		state.commanding = false
+		m.removeFromOrderLocked(state.snap.ID)
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
-		// remove from pending ordering so the row disappears from the
-		// queue pane immediately.
-		m.removeFromOrderLocked(id)
 		m.maybeStartNextLocked()
 		m.emitQueueLocked()
 	}
@@ -837,38 +1322,80 @@ func (m *Manager) Cancel(id string) {
 // the control becomes available again only after processing completes.
 func (m *Manager) Pause(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closing || m.closed {
+		m.mu.Unlock()
 		return ErrClosed
 	}
 	state, ok := m.all[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("jobs: unknown job %q", id)
+	}
+	if state.settling || state.commanding {
+		m.mu.Unlock()
+		return errors.New("jobs: lifecycle transition is settling")
 	}
 	switch state.snap.Status {
 	case StatusPending:
-		state.snap.Status = StatusPaused
-		state.snap.Message = "Paused"
-		state.snap.CanPause = false
-		m.removeFromOrderLocked(id)
-		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
-		m.emitQueueLocked()
+		state.commanding = true
+		m.mu.Unlock()
+		if err := m.transitionDurable(state, jobmodel.LifecyclePaused, jobmodel.DesiredPaused, jobmodel.PhasePreparing); err != nil {
+			m.mu.Lock()
+			state.commanding = false
+			m.maybeStartNextLocked()
+			m.emitQueueLocked()
+			m.mu.Unlock()
+			return err
+		}
+		m.mu.Lock()
+		if m.all[id] == state && state.commanding && (!state.fromStateV2 || state.durable.Lifecycle == jobmodel.LifecyclePaused) {
+			state.snap.Status = StatusPaused
+			state.snap.Message = "Paused"
+			state.snap.CanPause = false
+			state.commanding = false
+			m.removeFromOrderLocked(id)
+			m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+			m.emitQueueLocked()
+		} else if m.all[id] == state {
+			state.commanding = false
+			m.maybeStartNextLocked()
+			m.emitQueueLocked()
+		}
+		m.mu.Unlock()
 		return nil
 	case StatusActive:
 		if state.snap.Processing {
+			m.mu.Unlock()
 			return errors.New("jobs: pause is unavailable while media is being finalized")
 		}
-		state.pauseRequested = true
+		worker := m.active[id]
+		if worker == nil {
+			m.mu.Unlock()
+			return errors.New("jobs: active worker is unavailable")
+		}
+		state.snap.Status = StatusPausing
 		state.snap.CanPause = false
 		state.snap.Message = "Pausing"
-		if state.cancel != nil {
-			state.cancel()
-		}
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+		m.mu.Unlock()
+		if err := m.transitionDurable(state, jobmodel.LifecyclePausing, jobmodel.DesiredPaused, jobmodel.PhasePreparing); err != nil {
+			m.mu.Lock()
+			if m.active[id] == worker && !state.settling {
+				state.snap.Status = StatusActive
+				state.snap.CanPause = true
+				state.snap.Message = "Downloading"
+				m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+			}
+			m.mu.Unlock()
+			return err
+		}
+		worker.Cancel(engine.ErrPauseRequested)
 		return nil
 	case StatusPaused:
+		m.mu.Unlock()
 		return nil
 	default:
+		m.mu.Unlock()
 		return errors.New("jobs: only pending or active jobs can be paused")
 	}
 }
@@ -881,15 +1408,26 @@ func (m *Manager) PauseAll() int {
 		m.mu.Unlock()
 		return 0
 	}
-	ids := make([]string, 0, len(m.all))
+	legacyIDs := make([]string, 0, len(m.all))
+	v2 := make([]pauseCandidate, 0, len(m.all))
 	for id, state := range m.all {
-		if state.snap.Status == StatusPending || (state.snap.Status == StatusActive && !state.snap.Processing) {
-			ids = append(ids, id)
+		if state.commanding || state.settling {
+			continue
+		}
+		if state.snap.Status != StatusPending && !(state.snap.Status == StatusActive && !state.snap.Processing) {
+			continue
+		}
+		if state.fromStateV2 {
+			state.commanding = true
+			v2 = append(v2, pauseCandidate{state: state, worker: m.active[id]})
+		} else {
+			legacyIDs = append(legacyIDs, id)
 		}
 	}
 	m.mu.Unlock()
-	paused := 0
-	for _, id := range ids {
+
+	paused := m.pauseAllV2(v2)
+	for _, id := range legacyIDs {
 		if m.Pause(id) == nil {
 			paused++
 		}
@@ -897,33 +1435,178 @@ func (m *Manager) PauseAll() int {
 	return paused
 }
 
+type pauseCandidate struct {
+	state  *jobState
+	worker *worker
+}
+
+// pauseAllV2 applies the accepted mixed pending/active Pause All command in
+// one State transaction. Active workers remain in m.active until their runner
+// settles; only pending rows release FIFO eligibility immediately.
+func (m *Manager) pauseAllV2(candidates []pauseCandidate) int {
+	if len(candidates) == 0 {
+		return 0
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].state.snap.ID < candidates[j].state.snap.ID })
+	stateStore := m.stateStoreSnapshot()
+	if stateStore == nil {
+		for _, candidate := range candidates {
+			m.mu.Lock()
+			candidate.state.commanding = false
+			m.maybeStartNextLocked()
+			m.emitQueueLocked()
+			m.mu.Unlock()
+		}
+		return 0
+	}
+	for index := range candidates {
+		candidates[index].state.transitionMu.Lock()
+	}
+	defer func() {
+		for index := len(candidates) - 1; index >= 0; index-- {
+			candidates[index].state.transitionMu.Unlock()
+		}
+	}()
+	preconditions := make([]jobmodel.JobPrecondition, len(candidates))
+	for index, candidate := range candidates {
+		job := candidate.state.durable
+		preconditions[index] = jobmodel.JobPrecondition{ID: job.ID, Revision: job.Revision, Lifecycle: job.Lifecycle, AttemptID: job.AttemptID, SessionID: job.SessionID, OutputRoot: job.OutputRoot}
+	}
+	committed := make([]jobmodel.DurableJob, len(candidates))
+	err := stateStore.Transaction(preconditions, func(document *jobmodel.State) error {
+		for index, candidate := range candidates {
+			found := false
+			for jobIndex := range document.Jobs {
+				if document.Jobs[jobIndex].ID != candidate.state.durable.ID {
+					continue
+				}
+				job := &document.Jobs[jobIndex]
+				if job.Lifecycle == jobmodel.LifecyclePending {
+					job.Lifecycle = jobmodel.LifecyclePaused
+				} else if job.Lifecycle == jobmodel.LifecycleActive {
+					job.Lifecycle = jobmodel.LifecyclePausing
+				} else {
+					return errors.New("jobs: Pause All found a stale lifecycle")
+				}
+				job.Desired = jobmodel.DesiredPaused
+				job.Phase = jobmodel.PhasePreparing
+				job.Revision++
+				job.UpdatedAt = time.Now().UTC()
+				committed[index] = *job
+				found = true
+				break
+			}
+			if !found {
+				return errors.New("jobs: Pause All row disappeared")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		m.mu.Lock()
+		for _, candidate := range candidates {
+			candidate.state.commanding = false
+		}
+		m.maybeStartNextLocked()
+		m.emitQueueLocked()
+		m.mu.Unlock()
+		return 0
+	}
+	m.mu.Lock()
+	accepted := 0
+	for index, candidate := range candidates {
+		state := candidate.state
+		state.durable = committed[index]
+		state.snap.Lifecycle = committed[index].Lifecycle
+		state.snap.Phase = committed[index].Phase
+		state.snap.Desired = committed[index].Desired
+		if candidate.worker == nil {
+			state.snap.Status = StatusPaused
+			state.snap.Message = "Paused"
+			state.snap.CanPause = false
+			m.removeFromOrderLocked(state.snap.ID)
+		} else {
+			state.snap.Status = StatusPausing
+			state.snap.Message = "Pausing"
+			state.snap.CanPause = false
+		}
+		accepted++
+		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	}
+	m.emitQueueLocked()
+	m.mu.Unlock()
+	for _, candidate := range candidates {
+		if candidate.worker != nil {
+			candidate.worker.Cancel(engine.ErrPauseRequested)
+		} else {
+			m.mu.Lock()
+			candidate.state.commanding = false
+			m.mu.Unlock()
+		}
+	}
+	return accepted
+}
+
 // Resume returns a paused job to the FIFO. The engine's default partial-file
 // behavior resumes byte-range downloads instead of discarding existing data.
 func (m *Manager) Resume(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closing || m.closed {
+		m.mu.Unlock()
 		return ErrClosed
 	}
 	state, ok := m.all[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("jobs: unknown job %q", id)
 	}
-	if state.snap.Status != StatusPaused {
+	if state.snap.Status != StatusPaused || state.commanding {
+		m.mu.Unlock()
 		return errors.New("jobs: only paused jobs can be resumed")
+	}
+	state.commanding = true
+	m.mu.Unlock()
+	if state.fromStateV2 {
+		if err := m.commitDurable(state, func(job *jobmodel.DurableJob, document *jobmodel.State) error {
+			job.Lifecycle = jobmodel.LifecyclePending
+			job.Desired = jobmodel.DesiredRunning
+			job.Phase = jobmodel.PhasePreparing
+			job.AttemptID = uuid.NewString()
+			if document.NextQueueOrdinal == ^uint64(0) {
+				return errors.New("jobs: queue ordinal exhausted")
+			}
+			job.QueueOrdinal = document.NextQueueOrdinal
+			document.NextQueueOrdinal++
+			job.RetryMode = jobmodel.RetryModeResumeValidated
+			return nil
+		}); err != nil {
+			m.mu.Lock()
+			state.commanding = false
+			m.mu.Unlock()
+			return err
+		}
+	}
+	m.mu.Lock()
+	if m.closing || m.closed {
+		state.commanding = false
+		m.mu.Unlock()
+		return ErrClosed
+	}
+	if m.all[id] != state || state.snap.Status != StatusPaused || !state.commanding {
+		state.commanding = false
+		m.mu.Unlock()
+		return errors.New("jobs: stale resume request")
 	}
 	state.snap.Status = StatusPending
 	state.snap.Message = "Queued"
 	state.snap.Processing = false
 	state.snap.CanPause = false
-	state.pauseRequested = false
-	state.ctx = nil
-	state.cancel = nil
-	state.done = make(chan struct{})
+	state.commanding = false
 	m.order = append(m.order, id)
 	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	m.maybeStartNextLocked()
 	m.emitQueueLocked()
+	m.mu.Unlock()
 	return nil
 }
 
@@ -936,18 +1619,25 @@ func (m *Manager) Shutdown(ctx context.Context) {
 		return
 	}
 	done := make([]<-chan struct{}, 0, len(m.active))
-	for id := range m.active {
+	for id, worker := range m.active {
 		state := m.all[id]
 		if state == nil {
 			continue
 		}
-		state.pauseRequested = true
+		if state.settling {
+			continue
+		}
+		state.snap.Status = StatusPausing
 		state.snap.CanPause = false
 		state.snap.Message = "Pausing"
-		if state.cancel != nil {
-			state.cancel()
+		if worker != nil && worker.Cancel != nil {
+			worker.Cancel(engine.ErrPauseRequested)
 		}
-		done = append(done, state.done)
+		if worker != nil {
+			done = append(done, worker.Done)
+		} else {
+			done = append(done, state.done)
+		}
 	}
 	m.mu.Unlock()
 	for _, finished := range done {
@@ -961,8 +1651,9 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	m.FlushPersistence()
 }
 
-// Retry re-queues a failed or canceled job. It rebuilds the request
-// fields from the stored snapshot so the caller only needs the id.
+// Retry re-queues a failed job under the same logical ID. It always creates a
+// new attempt and FIFO ordinal; a resumable session is retained only when the
+// public engine inspection finds usable evidence.
 func (m *Manager) Retry(id string) error {
 	m.mu.Lock()
 	if m.closing || m.closed {
@@ -974,9 +1665,63 @@ func (m *Manager) Retry(id string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("jobs: unknown job %q", id)
 	}
-	if state.snap.Status != StatusFailed && state.snap.Status != StatusCanceled {
+	if state.commanding {
 		m.mu.Unlock()
-		return fmt.Errorf("jobs: only failed or canceled jobs can be retried")
+		return errors.New("jobs: lifecycle transition is settling")
+	}
+	if state.snap.Status == StatusCanceled {
+		m.mu.Unlock()
+		return errors.New("jobs: canceled jobs require DownloadAgain")
+	}
+	if state.snap.Status != StatusFailed {
+		m.mu.Unlock()
+		return fmt.Errorf("jobs: only failed jobs can be retried")
+	}
+	state.commanding = true
+	m.mu.Unlock()
+
+	if state.fromStateV2 {
+		sessionID := state.durable.SessionID
+		retryMode := jobmodel.RetryModeResumeValidated
+		if sessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
+			sessionID = newSessionID()
+			retryMode = jobmodel.RetryModeRestartNewSession
+		} else {
+			summary, inspectErr := engine.InspectResumeState(context.Background(), engine.OutputRootRef{
+				CanonicalPath: state.durable.OutputRoot.CanonicalPath,
+				Identity:      state.durable.OutputRoot.Identity,
+			}, sessionID)
+			if inspectErr != nil || !summary.HasManifest {
+				sessionID = newSessionID()
+				retryMode = jobmodel.RetryModeRestartNewSession
+			}
+		}
+		if err := m.commitDurable(state, func(job *jobmodel.DurableJob, document *jobmodel.State) error {
+			job.Lifecycle = jobmodel.LifecyclePending
+			job.Desired = jobmodel.DesiredRunning
+			job.Phase = jobmodel.PhasePreparing
+			job.AttemptID = uuid.NewString()
+			job.SessionID = sessionID
+			job.RetryMode = retryMode
+			if document.NextQueueOrdinal == ^uint64(0) {
+				return errors.New("jobs: queue ordinal exhausted")
+			}
+			job.QueueOrdinal = document.NextQueueOrdinal
+			document.NextQueueOrdinal++
+			return nil
+		}); err != nil {
+			m.mu.Lock()
+			state.commanding = false
+			m.mu.Unlock()
+			return err
+		}
+	}
+
+	m.mu.Lock()
+	if m.closing || m.closed || m.all[id] != state || state.snap.Status != StatusFailed || !state.commanding {
+		state.commanding = false
+		m.mu.Unlock()
+		return errors.New("jobs: stale retry request")
 	}
 	state.snap.Status = StatusPending
 	state.snap.Progress = 0
@@ -990,7 +1735,7 @@ func (m *Manager) Retry(id string) error {
 	state.snap.CompletedAt = ""
 	state.startBps = time.Time{}
 	state.startByt = 0
-	state.done = make(chan struct{})
+	state.commanding = false
 	m.order = append(m.order, id)
 	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	m.maybeStartNextLocked()
@@ -998,6 +1743,135 @@ func (m *Manager) Retry(id string) error {
 	m.mu.Unlock()
 	return nil
 }
+
+// DownloadAgain creates a fresh logical row for a canceled job. The original
+// canceled row is retained as history and no old session identity is reused.
+// The reservation is cloned into a new group inside the same State
+// transaction; a caller that needs a new suffix should use V1 admission
+// before calling SubmitAdmitted for the replacement row.
+func (m *Manager) DownloadAgain(id string) (string, error) {
+	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return "", ErrClosed
+	}
+	state, ok := m.all[id]
+	if !ok {
+		m.mu.Unlock()
+		return "", fmt.Errorf("jobs: unknown job %q", id)
+	}
+	if state.snap.Status != StatusCanceled || state.commanding {
+		m.mu.Unlock()
+		return "", errors.New("jobs: only canceled jobs can be downloaded again")
+	}
+	state.commanding = true
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		if m.all[id] == state {
+			state.commanding = false
+		}
+		m.mu.Unlock()
+	}()
+
+	newID := uuid.NewString()
+	newAttempt := uuid.NewString()
+	newSession := newSessionID()
+	if state.fromStateV2 {
+		store := m.stateStoreSnapshot()
+		if store == nil {
+			return "", errors.New("jobs: State v2 store is not configured")
+		}
+		state.transitionMu.Lock()
+		defer state.transitionMu.Unlock()
+		var durable jobmodel.DurableJob
+		err := store.Transaction([]jobmodel.JobPrecondition{{
+			ID: state.durable.ID, Revision: state.durable.Revision, Lifecycle: state.durable.Lifecycle,
+			AttemptID: state.durable.AttemptID, SessionID: state.durable.SessionID, OutputRoot: state.durable.OutputRoot,
+		}}, func(document *jobmodel.State) error {
+			if document.NextQueueOrdinal == ^uint64(0) {
+				return errors.New("jobs: queue ordinal exhausted")
+			}
+			clone := state.durable
+			clone.ID = newID
+			clone.Revision = 1
+			clone.AttemptID = newAttempt
+			clone.SessionID = newSession
+			clone.QueueOrdinal = document.NextQueueOrdinal
+			clone.Lifecycle = jobmodel.LifecyclePending
+			clone.Phase = jobmodel.PhasePreparing
+			clone.Desired = jobmodel.DesiredRunning
+			clone.RetryMode = jobmodel.RetryModeNone
+			clone.ActionRequiredCode = ""
+			clone.LastErrorCode = ""
+			clone.CreatedAt = time.Now().UTC()
+			clone.UpdatedAt = clone.CreatedAt
+			clone.Reservation.GroupID = newID
+			document.Jobs = append(document.Jobs, clone)
+			document.NextQueueOrdinal++
+			durable = clone
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+		plan := state.plan
+		newState := &jobState{
+			snap:           state.snap,
+			plan:           plan,
+			outputTemplate: state.outputTemplate,
+			durable:        durable,
+			fromStateV2:    true,
+			done:           make(chan struct{}),
+		}
+		newState.snap.ID = newID
+		newState.snap.Status = StatusPending
+		newState.snap.Message = "Queued"
+		newState.snap.Lifecycle = durable.Lifecycle
+		newState.snap.Phase = durable.Phase
+		newState.snap.Desired = durable.Desired
+		newState.snap.OccupiesSlot = false
+		newState.snap.CanPause = false
+		newState.snap.Processing = false
+		newState.snap.CreatedAt = durable.CreatedAt.UTC().Format(time.RFC3339)
+		newState.snap.StartedAt = ""
+		newState.snap.CompletedAt = ""
+		newState.snap.Progress = 0
+		newState.snap.Bytes = 0
+		newState.snap.Total = 0
+		newState.snap.SpeedBps = 0
+		newState.snap.ETASeconds = 0
+		newState.snap.ErrorReason = ""
+		m.mu.Lock()
+		if m.closing || m.closed {
+			m.mu.Unlock()
+			return "", ErrClosed
+		}
+		m.all[newID] = newState
+		m.order = append(m.order, newID)
+		m.emitLocked(Event{Name: EventJobUpdate, Job: newState.snap})
+		m.maybeStartNextLocked()
+		m.emitQueueLocked()
+		m.mu.Unlock()
+		return newID, nil
+	}
+
+	request := Request{
+		URL: state.snap.URL, VideoID: state.snap.VideoID, Title: state.snap.Title,
+		Channel: state.snap.Channel, Quality: state.snap.Quality, PlanID: state.snap.PlanID,
+		OutputDir: state.snap.OutputDir, Duration: state.snap.DurationLabel, Thumbnail: state.snap.Thumbnail,
+	}
+	return m.submit(newID, request, state.plan, stringPtr(state.outputTemplate))
+}
+
+func stringPtr(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func newSessionID() string { return strings.ReplaceAll(uuid.NewString(), "-", "") }
 
 // Remove drops a terminal job from the manager entirely.
 func (m *Manager) Remove(id string) {
@@ -1017,6 +1891,28 @@ func (m *Manager) Remove(id string) {
 		m.mu.Unlock()
 		return
 	}
+	if state.commanding || state.settling {
+		m.mu.Unlock()
+		return
+	}
+	if state.fromStateV2 {
+		state.commanding = true
+		m.mu.Unlock()
+		if err := m.removeDurable(state); err != nil {
+			m.mu.Lock()
+			state.commanding = false
+			m.mu.Unlock()
+			return
+		}
+		m.mu.Lock()
+		if m.all[id] == state {
+			delete(m.all, id)
+			m.removeFromOrderLocked(id)
+			m.emitQueueLocked()
+		}
+		m.mu.Unlock()
+		return
+	}
 	delete(m.all, id)
 	m.removeFromOrderLocked(id)
 	m.emitQueueLocked()
@@ -1030,15 +1926,23 @@ func (m *Manager) ClearTerminal() {
 		m.mu.Unlock()
 		return
 	}
+	v2IDs := make([]string, 0)
 	for id, state := range m.all {
 		switch state.snap.Status {
 		case StatusComplete, StatusFailed, StatusCanceled:
-			delete(m.all, id)
-			m.removeFromOrderLocked(id)
+			if state.fromStateV2 {
+				v2IDs = append(v2IDs, id)
+			} else {
+				delete(m.all, id)
+				m.removeFromOrderLocked(id)
+			}
 		}
 	}
 	m.emitQueueLocked()
 	m.mu.Unlock()
+	for _, id := range v2IDs {
+		m.Remove(id)
+	}
 }
 
 // Find returns a snapshot by id.
@@ -1103,26 +2007,97 @@ func (m *Manager) maybeStartNextLocked() {
 			m.order = m.order[1:]
 			continue
 		}
+		if state.commanding || state.settling {
+			// A FIFO-head row is in a durable lifecycle transition. Do not
+			// bypass it or start it before its winner is reflected in memory.
+			break
+		}
 		if state.snap.Status != StatusPending {
 			m.order = m.order[1:]
 			continue
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		state.ctx = ctx
-		state.cancel = cancel
+		ctx, cancel := context.WithCancelCause(context.Background())
+		worker := &worker{
+			JobID:     id,
+			AttemptID: state.durable.AttemptID,
+			SessionID: state.durable.SessionID,
+			Cancel:    cancel,
+			Ctx:       ctx,
+			Arbiter:   engine.NewPublicationArbiter(),
+			Done:      make(chan struct{}),
+		}
+		state.worker = worker
+		state.done = worker.Done
+		if state.fromStateV2 {
+			// Prevent Pause/Cancel from racing the pending-to-active State
+			// transaction. The flag is cleared immediately before the runner
+			// starts, after durable activation succeeds.
+			state.commanding = true
+		}
 		state.snap.Status = StatusActive
+		state.snap.OccupiesSlot = true
+		if state.fromStateV2 {
+			state.snap.Lifecycle = jobmodel.LifecycleActive
+			state.snap.Desired = jobmodel.DesiredRunning
+			state.snap.Phase = jobmodel.PhasePreparing
+		}
 		state.snap.StartedAt = time.Now().UTC().Format(time.RFC3339)
 		state.snap.Message = "Preparing"
 		state.snap.CanPause = true
-		m.active[id] = struct{}{}
+		m.active[id] = worker
 		m.order = m.order[1:]
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
-		go m.run(state)
+		go m.startWorker(state, worker)
 	}
 }
 
-func (m *Manager) run(state *jobState) {
-	defer close(state.done)
+// startWorker commits the durable pending-to-active transition before the
+// engine runner is invoked. It runs outside m.mu so State v2 lock acquisition
+// cannot block queue inspection or lifecycle commands.
+func (m *Manager) startWorker(state *jobState, worker *worker) {
+	if state.fromStateV2 {
+		if err := m.commitDurable(state, func(job *jobmodel.DurableJob, _ *jobmodel.State) error {
+			if job.Lifecycle != jobmodel.LifecyclePending || job.Desired != jobmodel.DesiredRunning {
+				return errActivationSuperseded
+			}
+			job.Lifecycle = jobmodel.LifecycleActive
+			job.Phase = jobmodel.PhasePreparing
+			return nil
+		}); err != nil {
+			m.mu.Lock()
+			if current := m.active[state.snap.ID]; current == worker {
+				delete(m.active, state.snap.ID)
+				state.worker = nil
+				state.commanding = false
+				state.snap.Status = StatusFailed
+				state.snap.OccupiesSlot = false
+				state.snap.Lifecycle = jobmodel.LifecyclePending
+				state.snap.Message = "Could not start"
+				state.snap.ErrorReason = "persistence"
+				state.snap.CanPause = false
+				state.snap.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+				m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+				m.maybeStartNextLocked()
+				m.emitQueueLocked()
+				close(worker.Done)
+			}
+			m.mu.Unlock()
+			return
+		}
+	}
+	m.mu.Lock()
+	if m.active[state.snap.ID] != worker || state.worker != worker {
+		m.mu.Unlock()
+		close(worker.Done)
+		return
+	}
+	state.commanding = false
+	m.mu.Unlock()
+	m.run(state, worker)
+}
+
+func (m *Manager) run(state *jobState, worker *worker) {
+	defer close(worker.Done)
 
 	m.mu.Lock()
 	req := engine.Request{
@@ -1156,7 +2131,16 @@ func (m *Manager) run(state *jobState) {
 			}}
 		}
 	}
-	ctx := state.ctx
+	if state.fromStateV2 {
+		req.OutputDir = state.durable.OutputRoot.CanonicalPath
+		req.Overwrite = false
+		req.Filesystem.Resume = engine.ResumeOptions{
+			SessionID:          worker.SessionID,
+			PublicationArbiter: worker.Arbiter,
+			CommitTargets:      resumeCommitTargets(state.durable.Reservation),
+		}
+	}
+	ctx := worker.Ctx
 	runner := m.runDownload
 	m.mu.Unlock()
 
@@ -1170,7 +2154,7 @@ func (m *Manager) run(state *jobState) {
 				return ctx.Err()
 			}
 		}
-		m.handleEvent(state, ev)
+		m.handleEventAttempt(state, worker, ev)
 		if ev.Kind == engine.EventPostprocessCompleted && processingHeld {
 			<-m.processing
 			processingHeld = false
@@ -1183,57 +2167,104 @@ func (m *Manager) run(state *jobState) {
 		<-m.processing
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	cause := context.Cause(ctx)
+	paused := errors.Is(cause, engine.ErrPauseRequested)
+	canceled := errors.Is(cause, errCancelRequested)
+	if !paused && !canceled && errors.Is(cause, context.Canceled) {
+		canceled = true
+	}
 
-	if state.ctx.Err() != nil {
-		if state.pauseRequested {
-			state.snap.Status = StatusPaused
-			state.snap.Message = "Paused"
-			state.snap.ErrorReason = ""
-			state.snap.CompletedAt = ""
-		} else {
-			state.snap.Status = StatusCanceled
-			state.snap.Message = "Canceled"
-			state.snap.ErrorReason = "canceled"
-		}
+	m.mu.Lock()
+	if state.worker != worker || m.active[state.snap.ID] != worker {
+		m.mu.Unlock()
+		return
+	}
+	state.settling = true
+	terminal := state.snap
+	if paused {
+		terminal.Status = StatusPaused
+		terminal.Message = "Paused"
+		terminal.ErrorReason = ""
+		terminal.CompletedAt = ""
+	} else if canceled {
+		terminal.Status = StatusCanceled
+		terminal.Message = "Canceled"
+		terminal.ErrorReason = "canceled"
+		terminal.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	} else if err != nil {
-		state.snap.Status = StatusFailed
-		state.snap.Message = humanError(err)
-		state.snap.ErrorReason = errorReason(err)
-		if state.snap.Bytes == 0 {
-			state.snap.Progress = 0
-		} else if state.snap.Total > 0 {
-			state.snap.Progress = clampFloat(float64(state.snap.Bytes) / float64(state.snap.Total))
+		terminal.Status = StatusFailed
+		terminal.Message = humanError(err)
+		terminal.ErrorReason = errorReason(err)
+		terminal.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+		if terminal.Bytes == 0 {
+			terminal.Progress = 0
+		} else if terminal.Total > 0 {
+			terminal.Progress = clampFloat(float64(terminal.Bytes) / float64(terminal.Total))
 		} else {
-			state.snap.Progress = 0
+			terminal.Progress = 0
 		}
 	} else {
-		state.snap.Status = StatusComplete
-		state.snap.Message = "Completed"
-		state.snap.Progress = 1
+		terminal.Status = StatusComplete
+		terminal.Message = "Completed"
+		terminal.Progress = 1
+		terminal.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 		if result.Filename != "" {
-			state.snap.Filename = filepath.Base(result.Filename)
+			terminal.Filename = filepath.Base(result.Filename)
 			if abs, absErr := filepath.Abs(result.Filename); absErr == nil {
-				state.snap.AbsolutePath = abs
+				terminal.AbsolutePath = abs
 			}
-			if state.snap.Bytes == 0 {
-				state.snap.Bytes = result.Bytes
+			if terminal.Bytes == 0 {
+				terminal.Bytes = result.Bytes
 			}
 		}
-		if state.snap.Bytes == 0 {
-			state.snap.Bytes = result.Bytes
+		if terminal.Bytes == 0 {
+			terminal.Bytes = result.Bytes
 		}
-		if state.snap.Title == "" {
-			state.snap.Title = state.snap.Filename
+		if terminal.Title == "" {
+			terminal.Title = terminal.Filename
 		}
 	}
+	terminal.CanPause = false
+	terminal.Processing = false
+	state.snap = terminal
+	m.mu.Unlock()
+
+	cleanupPending := false
+	cleanupCode := ""
+	if canceled {
+		cleanupPending, cleanupCode = m.discardSession(state)
+	}
+	var settleErr error
+	if state.fromStateV2 {
+		switch {
+		case paused:
+			settleErr = m.settleDurable(state, jobmodel.LifecyclePaused, jobmodel.DesiredPaused, jobmodel.PhasePreparing, terminal, "", false)
+		case canceled:
+			settleErr = m.settleDurable(state, jobmodel.LifecycleCanceled, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp, terminal, cleanupCode, cleanupPending)
+		case err != nil:
+			settleErr = m.settleDurable(state, jobmodel.LifecycleFailed, jobmodel.DesiredRunning, jobmodel.PhasePreparing, terminal, errorReason(err), false)
+		default:
+			settleErr = m.settleDurable(state, jobmodel.LifecycleCompleted, jobmodel.DesiredRunning, jobmodel.PhaseReadyToPublish, terminal, "", false)
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state.worker != worker || m.active[state.snap.ID] != worker {
+		return
+	}
+	if settleErr != nil && state.fromStateV2 {
+		state.snap.Status = StatusFailed
+		state.snap.Message = "Could not save lifecycle state"
+		state.snap.ErrorReason = "persistence"
+	}
+	state.settling = false
+	state.commanding = false
 	state.snap.CanPause = false
 	state.snap.Processing = false
-	if state.snap.Status != StatusPaused {
-		state.snap.CompletedAt = time.Now().UTC().Format(time.RFC3339)
-	}
+	state.snap.OccupiesSlot = false
 	delete(m.active, state.snap.ID)
+	state.worker = nil
 	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	m.maybeStartNextLocked()
 	m.emitQueueLocked()
@@ -1251,9 +2282,13 @@ func literalOutputTemplate(basename string) (string, error) {
 }
 
 func (m *Manager) handleEvent(state *jobState, ev engine.Event) {
+	m.handleEventAttempt(state, nil, ev)
+}
+
+func (m *Manager) handleEventAttempt(state *jobState, worker *worker, ev engine.Event) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if state.ctx != nil && state.ctx.Err() != nil && state.snap.Status == StatusActive {
+	if worker != nil && (state.worker != worker || worker.Ctx.Err() != nil) {
 		return
 	}
 
@@ -1387,6 +2422,8 @@ func statusRank(s Status) int {
 	switch s {
 	case StatusActive:
 		return 0
+	case StatusPausing, StatusCanceling:
+		return 0
 	case StatusPaused:
 		return 1
 	case StatusPending:
@@ -1395,8 +2432,10 @@ func statusRank(s Status) int {
 		return 3
 	case StatusCanceled:
 		return 4
-	case StatusComplete:
+	case StatusActionRequired:
 		return 5
+	case StatusComplete:
+		return 6
 	}
 	return 5
 }
@@ -1528,11 +2567,11 @@ func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, erro
 	runner := m.runAnalyze
 	m.analysisWG.Add(1)
 	m.mu.Unlock()
-	analysisCtx, cancel := context.WithCancel(ctx)
-	stopLifecycle := context.AfterFunc(lifecycleCtx, cancel)
+	analysisCtx, cancel := context.WithCancelCause(ctx)
+	stopLifecycle := context.AfterFunc(lifecycleCtx, func() { cancel(context.Canceled) })
 	defer func() {
 		stopLifecycle()
-		cancel()
+		cancel(context.Canceled)
 		m.analysisWG.Done()
 	}()
 	req := engine.Request{
