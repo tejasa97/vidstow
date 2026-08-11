@@ -87,7 +87,7 @@
         {#if job.metadata}<p>{job.metadata}</p>{/if}
       </div>
 
-      <LifecycleBadge lifecycle={job.lifecycle} phase={job.phase} compact />
+      <LifecycleBadge lifecycle={job.lifecycle} phase={job.phase} occupiesSlot={job.occupiesSlot} compact />
 
       <div class="actions" aria-label="Job actions">
         {#if hasTransitionControls}

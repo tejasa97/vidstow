@@ -21,6 +21,8 @@ export type PresentationPhase =
   | 'downloading'
   | 'waiting-for-processing'
   | 'finalizing'
+  | 'ready-to-publish'
+  | 'publishing'
   | 'cleaning-up';
 
 export type LifecycleBadgeTone = 'neutral' | 'info' | 'warning' | 'danger' | 'success';
@@ -156,6 +158,8 @@ export function lifecycleLabel(
   if (lifecycle === 'pausing') return 'Pausing';
   if (lifecycle === 'canceling') return 'Canceling';
   if (phase === 'finalizing') return 'Finalizing';
+  if (phase === 'ready-to-publish') return 'Ready to publish';
+  if (phase === 'publishing') return 'Publishing';
   if (lifecycle === 'active' && phase === 'waiting-for-processing') return 'Waiting for processing';
   if (lifecycle === 'active' && phase === 'preparing') return 'Preparing';
   if (lifecycle === 'active') return 'Downloading';
@@ -195,6 +199,8 @@ export function lifecycleMessage(job: LifecycleJobViewModel): string | undefined
   if (job.lifecycle === 'pausing') return 'Saving resume state...';
   if (job.lifecycle === 'canceling') return 'Discarding resumable data...';
   if (job.phase === 'finalizing') return 'Merging video and audio...';
+  if (job.phase === 'ready-to-publish') return 'Ready to publish.';
+  if (job.phase === 'publishing') return 'Publishing...';
   if (job.phase === 'waiting-for-processing') return 'Waiting for processing...';
   if (job.lifecycle === 'failed') return 'Download failed';
   if (job.lifecycle === 'canceled') return 'Canceled. Resumable data was removed.';

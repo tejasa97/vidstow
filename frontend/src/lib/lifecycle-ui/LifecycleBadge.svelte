@@ -9,20 +9,19 @@
   interface Props {
     lifecycle: DurableLifecycle;
     phase?: PresentationPhase;
+    occupiesSlot: boolean;
     compact?: boolean;
   }
 
-  let { lifecycle, phase, compact = false }: Props = $props();
+  let { lifecycle, phase, occupiesSlot, compact = false }: Props = $props();
 
   const label = $derived(lifecycleLabel(lifecycle, phase));
   const tone = $derived(lifecycleTone(lifecycle, phase));
-  const isActive = $derived(
-    lifecycle === 'active' || lifecycle === 'pausing' || lifecycle === 'canceling' || phase === 'finalizing',
-  );
+  const showsOccupiedIndicator = $derived(occupiesSlot);
 </script>
 
 <span class="badge" class:compact data-tone={tone} aria-label={label}>
-  {#if isActive}<span class="dot" aria-hidden="true"></span>{/if}
+  {#if showsOccupiedIndicator}<span class="dot" aria-hidden="true"></span>{/if}
   <span>{label}</span>
 </span>
 

@@ -44,6 +44,23 @@ test('lifecycle view model keeps lifecycle, phase, and occupancy independent', a
   assert.match(types, /queuePositionLabel/);
 });
 
+test('badge occupancy indicator follows manager occupancy and supports publication phases', async () => {
+  const [badge, row, types] = await Promise.all([
+    read('../src/lib/lifecycle-ui/LifecycleBadge.svelte'),
+    read('../src/lib/lifecycle-ui/LifecycleJobRow.svelte'),
+    read('../src/lib/lifecycle-ui/types.ts'),
+  ]);
+  assert.match(badge, /occupiesSlot:\s*boolean/);
+  assert.match(badge, /showsOccupiedIndicator = \$derived\(occupiesSlot\)/);
+  assert.match(row, /occupiesSlot=\{job\.occupiesSlot\}/);
+  assert.doesNotMatch(badge, /lifecycle === ['"]active['"]|phase === ['"]finalizing['"]/);
+  for (const phase of ['ready-to-publish', 'publishing']) {
+    assert.match(types, new RegExp(`['"]${phase}['"]`));
+  }
+  assert.match(types, /Ready to publish/);
+  assert.match(types, /Publishing/);
+});
+
 test('queue summary and row expose truthful slot occupancy and semantic actions', async () => {
   const [summary, row, overview] = await Promise.all([
     read('../src/lib/lifecycle-ui/QueueSummary.svelte'),
