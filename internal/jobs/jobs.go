@@ -232,8 +232,11 @@ type Manager struct {
 	closeErr           error
 	closing            bool
 	closed             bool
+	lifecycleCtx       context.Context
+	lifecycleCancel    context.CancelFunc
 	analysisWG         sync.WaitGroup
 	runDownload        downloadRunner
+	runAnalyze         analyzeRunner
 	ffmpegLocation     string
 	mu                 sync.Mutex
 	all                map[string]*jobState
@@ -258,6 +261,8 @@ type cachedPlans struct {
 
 type downloadRunner func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error)
 
+type analyzeRunner func(context.Context, engine.Request) (engine.Result, error)
+
 type jobState struct {
 	snap           JobSnapshot
 	plan           *outputplan.Plan
@@ -274,17 +279,21 @@ func New(client *engine.Client, listener Listener) *Manager {
 	if client == nil {
 		client = newFocusedClient()
 	}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	manager := &Manager{
-		client:      client,
-		listener:    listener,
-		closeDone:   make(chan struct{}),
-		eventDone:   make(chan struct{}),
-		runDownload: defaultDownloadRunner,
-		all:         make(map[string]*jobState),
-		active:      make(map[string]struct{}),
-		concurrency: DefaultDownloadConcurrency,
-		processing:  make(chan struct{}, MaxProcessingConcurrency),
-		planCache:   make(map[string]cachedPlans),
+		client:          client,
+		listener:        listener,
+		closeDone:       make(chan struct{}),
+		eventDone:       make(chan struct{}),
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
+		runDownload:     defaultDownloadRunner,
+		runAnalyze:      client.Run,
+		all:             make(map[string]*jobState),
+		active:          make(map[string]struct{}),
+		concurrency:     DefaultDownloadConcurrency,
+		processing:      make(chan struct{}, MaxProcessingConcurrency),
+		planCache:       make(map[string]cachedPlans),
 	}
 	if listener != nil {
 		manager.eventSignal = make(chan struct{}, 1)
@@ -324,6 +333,9 @@ func (m *Manager) Close() error {
 func (m *Manager) close() error {
 	m.mu.Lock()
 	m.closing = true
+	if m.lifecycleCancel != nil {
+		m.lifecycleCancel()
+	}
 	workerDone := make([]<-chan struct{}, 0, len(m.active))
 	for id := range m.active {
 		state := m.all[id]
@@ -1432,15 +1444,26 @@ func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, erro
 	if rawURL == "" {
 		return InfoSummary{}, errors.New("analyze: empty url")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
 	if m.closing || m.closed {
 		m.mu.Unlock()
 		return InfoSummary{}, ErrClosed
 	}
 	ffmpegLocation := m.ffmpegLocation
+	lifecycleCtx := m.lifecycleCtx
+	runner := m.runAnalyze
 	m.analysisWG.Add(1)
 	m.mu.Unlock()
-	defer m.analysisWG.Done()
+	analysisCtx, cancel := context.WithCancel(ctx)
+	stopLifecycle := context.AfterFunc(lifecycleCtx, cancel)
+	defer func() {
+		stopLifecycle()
+		cancel()
+		m.analysisWG.Done()
+	}()
 	req := engine.Request{
 		URL:      rawURL,
 		Simulate: true,
@@ -1449,7 +1472,7 @@ func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, erro
 			FfmpegLocation: ffmpegLocation,
 		},
 	}
-	result, err := m.client.Run(ctx, req)
+	result, err := runner(analysisCtx, req)
 	if err != nil {
 		return InfoSummary{}, err
 	}

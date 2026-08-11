@@ -1131,6 +1131,103 @@ func TestCloseDrainsCompletedWorkerEventAtCompletionBoundary(t *testing.T) {
 	}
 }
 
+func TestCloseCancelsInFlightAnalyzeAndReturnsPromptly(t *testing.T) {
+	started := make(chan struct{})
+	runnerCanceled := make(chan struct{})
+	manager := New(nil, nil)
+	manager.runAnalyze = func(ctx context.Context, _ engine.Request) (engine.Result, error) {
+		close(started)
+		<-ctx.Done()
+		close(runnerCanceled)
+		return engine.Result{}, ctx.Err()
+	}
+
+	analyzeDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Analyze(context.Background(), "https://example.invalid/video")
+		analyzeDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("analysis runner did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- manager.Close() }()
+	select {
+	case <-runnerCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not cancel the in-flight analysis")
+	}
+	select {
+	case err := <-analyzeDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Analyze() error = %v; want manager cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Analyze() did not return after lifecycle cancellation")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close() did not return promptly after analysis cancellation")
+	}
+}
+
+func TestAnalyzePreservesCallerCancellationAndDeadline(t *testing.T) {
+	started := make(chan struct{})
+	deadlineSeen := make(chan time.Time, 1)
+	manager := New(nil, nil)
+	manager.runAnalyze = func(ctx context.Context, _ engine.Request) (engine.Result, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return engine.Result{}, errors.New("analysis context lost caller deadline")
+		}
+		deadlineSeen <- deadline
+		close(started)
+		<-ctx.Done()
+		return engine.Result{}, ctx.Err()
+	}
+
+	callerDeadline := time.Now().Add(time.Minute)
+	callerCtx, cancelCaller := context.WithDeadline(context.Background(), callerDeadline)
+	defer cancelCaller()
+	analyzeDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Analyze(callerCtx, "https://example.invalid/video")
+		analyzeDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("analysis runner did not start")
+	}
+	select {
+	case got := <-deadlineSeen:
+		if delta := got.Sub(callerDeadline); delta < -time.Millisecond || delta > time.Millisecond {
+			t.Fatalf("analysis deadline = %v; want caller deadline %v", got, callerDeadline)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("analysis runner did not report its deadline")
+	}
+	cancelCaller()
+	select {
+	case err := <-analyzeDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Analyze() error = %v; want caller cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Analyze() did not preserve caller cancellation")
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+}
+
 func waitForManagerClosing(t *testing.T, manager *Manager) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
