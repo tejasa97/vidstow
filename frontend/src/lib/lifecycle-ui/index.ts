@@ -9,6 +9,7 @@ export { default as RecoveryRequiredShell } from './RecoveryRequiredShell.svelte
 
 export type {
   DestinationConflictViewModel,
+  DestinationConflictEventDetail,
   DurableLifecycle,
   LifecycleBadgeTone,
   LifecycleJobAction,
@@ -29,12 +30,14 @@ export {
   concurrencyValues,
   DEFAULT_CONCURRENCY,
   DEFAULT_RECOVERY_REQUIRED,
+  MAX_CONFLICT_TOKEN_BYTES,
   MAX_CONCURRENCY,
   MIN_CONCURRENCY,
   PAUSE_ALL_NOTICE,
   lifecycleLabel,
   lifecycleMessage,
   lifecycleTone,
+  isValidConflictToken,
   queuePositionLabel,
 } from './types.js';
 

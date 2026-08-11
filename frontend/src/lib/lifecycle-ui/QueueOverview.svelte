@@ -43,13 +43,13 @@
       <button
         type="button"
         class="secondary-button"
-        disabled={model.pauseAllDisabled}
+        disabled={!model.canPauseAll}
         onclick={() => dispatch('pause-all')}
       >Pause All</button>
       <button
         type="button"
         class="secondary-button"
-        disabled={model.clearCompletedDisabled}
+        disabled={!model.canClearCompleted}
         onclick={() => dispatch('clear-completed')}
       >Clear Completed</button>
     </div>

@@ -1,12 +1,16 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import { trapModalFocus } from './modal.js';
-  import type { DestinationConflictViewModel } from './types.js';
+  import {
+    isValidConflictToken,
+    type DestinationConflictEventDetail,
+    type DestinationConflictViewModel,
+  } from './types.js';
 
   export interface DestinationConflictEvents {
     close: void;
-    'cancel-download': void;
-    'use-new-name': { name: string };
+    'cancel-download': DestinationConflictEventDetail;
+    'use-new-name': DestinationConflictEventDetail;
   }
 
   interface Props {
@@ -17,6 +21,7 @@
   let { open, conflict }: Props = $props();
   const dispatch = createEventDispatcher<DestinationConflictEvents>();
   const proposedNameAvailable = $derived(conflict.proposedNameAvailable === true);
+  const hasConflictAuthority = $derived(isValidConflictToken(conflict.conflictToken));
 
   function onKeydown(event: KeyboardEvent): void {
     if (open && event.key === 'Escape') dispatch('close');
@@ -27,7 +32,15 @@
   }
 
   function useNewName(): void {
-    if (proposedNameAvailable) dispatch('use-new-name', { name: conflict.proposedName });
+    if (proposedNameAvailable && hasConflictAuthority) {
+      dispatch('use-new-name', { conflictToken: conflict.conflictToken });
+    }
+  }
+
+  function cancelDownload(): void {
+    if (hasConflictAuthority) {
+      dispatch('cancel-download', { conflictToken: conflict.conflictToken });
+    }
   }
 </script>
 
@@ -62,8 +75,8 @@
       </div>
 
       <footer class="dialog-footer">
-        <button type="button" class="secondary-button" onclick={() => dispatch('cancel-download')}>Cancel download</button>
-        <button type="button" class="primary-button" data-autofocus disabled={!proposedNameAvailable} onclick={useNewName}>Use new name</button>
+        <button type="button" class="secondary-button" disabled={!hasConflictAuthority} onclick={cancelDownload}>Cancel download</button>
+        <button type="button" class="primary-button" data-autofocus disabled={!proposedNameAvailable || !hasConflictAuthority} onclick={useNewName}>Use new name</button>
       </footer>
     </div>
   </div>

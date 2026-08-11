@@ -44,13 +44,21 @@ export function trapModalFocus(node: HTMLElement): { destroy(): void } {
     }
   }
 
+  function onFocusIn(event: FocusEvent): void {
+    if (!destroyed && event.target instanceof Node && !node.contains(event.target)) {
+      focusInitialElement();
+    }
+  }
+
   node.addEventListener('keydown', onKeydown);
+  document.addEventListener('focusin', onFocusIn);
   queueMicrotask(focusInitialElement);
 
   return {
     destroy() {
       destroyed = true;
       node.removeEventListener('keydown', onKeydown);
+      document.removeEventListener('focusin', onFocusIn);
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
     },
   };

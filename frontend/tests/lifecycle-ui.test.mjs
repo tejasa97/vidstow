@@ -128,10 +128,25 @@ test('modal dialogs trap focus and only claim a destination preview when confirm
     read('../src/lib/lifecycle-ui/modal.ts'),
   ]);
   assert.match(conflict, /proposedNameAvailable === true/);
+  assert.match(conflict, /isValidConflictToken\(conflict\.conflictToken\)/);
+  assert.match(conflict, /conflictToken: conflict\.conflictToken/);
+  assert.doesNotMatch(conflict, /\{ name: conflict\.proposedName \}/);
   assert.match(conflict, /use:trapModalFocus/);
   assert.match(quit, /use:trapModalFocus/);
   assert.match(modal, /event\.key !== 'Tab'/);
   assert.match(modal, /previouslyFocused\?\.isConnected/);
+});
+
+test('queue-wide actions require positive backend capabilities', async () => {
+  const [overview, types] = await Promise.all([
+    read('../src/lib/lifecycle-ui/QueueOverview.svelte'),
+    read('../src/lib/lifecycle-ui/types.ts'),
+  ]);
+  assert.match(types, /canPauseAll:\s*boolean/);
+  assert.match(types, /canClearCompleted:\s*boolean/);
+  assert.match(overview, /disabled=\{!model\.canPauseAll\}/);
+  assert.match(overview, /disabled=\{!model\.canClearCompleted\}/);
+  assert.doesNotMatch(types, /pauseAllDisabled\?|clearCompletedDisabled\?/);
 });
 
 test('queue settings communicates 1–10/default 2 and drain-on-lower with no toggle', async () => {

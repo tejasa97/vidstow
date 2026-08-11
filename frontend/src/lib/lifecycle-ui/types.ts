@@ -85,11 +85,11 @@ export type QueueNoticeTone = 'info' | 'warning';
 export interface QueueOverviewViewModel {
   summary: QueueSummaryViewModel;
   jobs: LifecycleJobViewModel[];
+  canPauseAll: boolean;
+  canClearCompleted: boolean;
   sectionTitle?: string;
   notice?: string;
   noticeTone?: QueueNoticeTone;
-  pauseAllDisabled?: boolean;
-  clearCompletedDisabled?: boolean;
   footerText?: string;
 }
 
@@ -114,9 +114,14 @@ export interface RecoveryRequiredViewModel {
 }
 
 export interface DestinationConflictViewModel {
+  conflictToken: string;
   unavailableName: string;
   proposedName: string;
   proposedNameAvailable: boolean;
+}
+
+export interface DestinationConflictEventDetail {
+  conflictToken: string;
 }
 
 export interface LifecycleJobEventDetail {
@@ -136,6 +141,10 @@ export type LifecycleJobEventName =
 export const MIN_CONCURRENCY = 1;
 export const MAX_CONCURRENCY = 10;
 export const DEFAULT_CONCURRENCY = 2;
+// Opaque conflict authority is backend-authored and bounded before it can be
+// echoed in an action event. The limit is UTF-8 bytes, not JavaScript code
+// units, so malformed or unexpectedly large bridge payloads fail closed.
+export const MAX_CONFLICT_TOKEN_BYTES = 256;
 export const PAUSE_ALL_NOTICE = 'Pause requested. Jobs will settle individually; finalizing work may still complete.';
 
 export const DEFAULT_RECOVERY_REQUIRED: Required<RecoveryRequiredViewModel> = {
@@ -148,6 +157,20 @@ export const DEFAULT_RECOVERY_REQUIRED: Required<RecoveryRequiredViewModel> = {
 export function queuePositionLabel(position?: number): string | undefined {
   if (!position || position < 1) return undefined;
   return position === 1 ? 'Next' : `Position ${position}`;
+}
+
+export function isValidConflictToken(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codePoint = value.codePointAt(index);
+    if (codePoint === undefined || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return false;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) return false;
+    if (codePoint > 0xffff) index += 1;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+    if (bytes > MAX_CONFLICT_TOKEN_BYTES) return false;
+  }
+  return true;
 }
 
 export function lifecycleLabel(
