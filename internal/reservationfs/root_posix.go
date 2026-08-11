@@ -85,9 +85,11 @@ func posixIdentity(stat *unix.Stat_t) (string, error) {
 		return "", unsupportedError("directory identity", errors.New("filesystem returned an empty inode"))
 	}
 	// st_dev plus st_ino identifies the opened directory within the mounted
-	// Unix filesystem. Keep the representation short enough for reservation's
-	// durable Volume bound.
-	identity := fmt.Sprintf("posix:%08x:%016x", uint64(uint32(stat.Dev)), stat.Ino)
+	// Unix filesystem. Preserve the complete device number: Linux exposes a
+	// 64-bit dev_t, and truncating it could make different mounts share an
+	// identity. Keep the representation short enough for reservation's durable
+	// Volume bound.
+	identity := fmt.Sprintf("posix:%016x:%016x", stat.Dev, stat.Ino)
 	if len(identity) > reservation.MaxVolumeIdentityBytes {
 		return "", unsupportedError("directory identity", errors.New("directory identity exceeds reservation bound"))
 	}
