@@ -78,5 +78,6 @@ new acceptance coverage.
 ## Related material
 
 - [Confirmed concurrency and lifecycle plan](../CONCURRENCY_LIFECYCLE_PLAN.md)
+- [Decision 0002: VidStow V1 protocol scope](0002-vidstow-v1-protocol-scope.md)
 - [Technical implementation plan](../CONCURRENCY_LIFECYCLE_TECHNICAL_PLAN.md)
 - [Concurrency and lifecycle mockups](../mockups/concurrency-lifecycle/)

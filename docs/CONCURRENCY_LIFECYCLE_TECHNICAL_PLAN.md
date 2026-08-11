@@ -38,6 +38,12 @@ For this implementation:
 In particular, resumable VidStow sessions always use no-replace publication.
 No recovery path silently overwrites or silently renames an occupied target.
 
+VidStow V1 protocol scope is fixed by
+[Decision 0002](decisions/0002-vidstow-v1-protocol-scope.md): direct,
+multi-track/FFmpeg, finite HLS VOD, and static DASH are release scope.
+SABR/UMP and live workflows remain experimental engine work and are neither
+selectable VidStow dependencies nor E3/E5 release gates.
+
 ## 3. Audited baseline
 
 The baseline was inspected on 2026-08-11.
