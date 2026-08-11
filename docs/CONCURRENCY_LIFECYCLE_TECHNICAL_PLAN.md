@@ -1,10 +1,10 @@
 # VidStow concurrency and lifecycle technical implementation plan
 
-Status: Draft for technical review
+Status: Confirmed for implementation
 
 Product decisions: Confirmed on 2026-08-11
 
-Implementation: Not authorized by this document
+Implementation: Authorized by the project owner on 2026-08-11
 
 Repositories: `github.com/tejasa97/youtube_dlp` and `github.com/tejasa97/vidstow`
 
@@ -44,7 +44,7 @@ The baseline was inspected on 2026-08-11.
 
 ### `youtube_dlp`
 
-Reference baseline: `origin/main` at `bd14f82`.
+Reference baseline: `origin/main` at `e38820d`.
 
 | Present | Evidence |
 | --- | --- |
@@ -52,6 +52,8 @@ Reference baseline: `origin/main` at `bd14f82`.
 | Legacy multi-track workspace retention | PR #241, `engine/ntrack_workspace.go` |
 | Context-aware FFmpeg process cancellation | PR #242 |
 | Durable session manifest, workspace, lease, phases, and inspection | PR #243, `internal/session/` |
+| Durable direct HTTP checkpoint primitive | PR #244 |
+| Durable finite-fragment checkpoint primitive | PR #245 |
 
 Still absent from the public session path:
 
@@ -60,13 +62,19 @@ Still absent from the public session path:
 - exact output preview/artifact declaration;
 - app-supplied reserved commit targets;
 - mandatory session staging and no-replace publication;
-- session wiring for direct, multi-track/SABR, HLS, and DASH; and
+- session wiring for direct, multi-track, HLS, and DASH; and
 - final crash reconciliation through the public engine runner.
 
-In-flight branches `feat/pause-resume-direct-checkpoints` and
-`feat/pause-resume-fragment-checkpoints` are based before PR #243. Their
-checkpoint primitives must be rebased and integrated into the session
-workspace; they must not reintroduce destination-derived session state.
+PRs #244 and #245 were rebased, reviewed, and merged on top of PR #243. Their
+checkpoint primitives remain internal prerequisites until the later phases
+route them through session-owned paths; they must not reintroduce
+destination-derived session state.
+
+SABR/UMP remains a retained experimental engine extension. It is outside the
+VidStow V1 product scope, implementation sequence, validation matrix, and
+release gates. VidStow must not expose an output plan that depends exclusively
+on SABR/UMP. This does not remove the experimental implementation from the
+general engine.
 
 ### VidStow
 
@@ -634,14 +642,20 @@ parallel only after their input contract is frozen.
 
 Repository: `youtube_dlp`
 
-- rebase direct and fragment checkpoint branches onto current `origin/main`;
-- route checkpoint directories through session-owned paths;
-- use the shared atomic commit utility in session mode;
-- retain legacy destination-derived behavior only for empty session IDs; and
+Status: Complete in PRs #244 and #245.
+
+- rebase, review, and merge the direct and fragment checkpoint branches onto
+  current `origin/main`;
+- make both opt-in primitives accept caller-owned checkpoint directories;
+- use the shared atomic commit utility for durable checkpoint state;
+- preserve existing nil-checkpoint behavior; and
 - add race, Windows, and fault-injection tests after rebase.
 
 Gate: no session package deletion/regression; checkpoint branches pass full and
 race tests on the PR #243 baseline.
+
+Routing those caller-owned directories through public session-enabled engine
+runs belongs to E2 for direct transfers and E4 for finite fragments.
 
 ### Phase E1 — Public session and output-planning facade
 
@@ -672,7 +686,7 @@ Repository: `youtube_dlp`
 Gate: direct range fixture pauses across restart and token rotation; target is
 never overwritten; retry after collision performs no transfer.
 
-### Phase E3 — Multi-track, SABR, and processing integration
+### Phase E3 — Multi-track and processing integration
 
 Repository: `youtube_dlp`
 
@@ -705,7 +719,7 @@ Repository: `youtube_dlp`
 - cross-process lease/GC tests;
 - Unix and native Windows atomic matrices;
 - publication collision/rollback/recovery fuzz and crash tests;
-- direct, multi-track, SABR, HLS, and DASH combined tests; and
+- direct, multi-track, HLS, and DASH combined tests; and
 - public documentation and compatibility notes.
 
 Gate: merge to `main`, publish a tagged engine release, and pin VidStow to that
@@ -809,7 +823,7 @@ Repositories: both
 
 - direct range resume with strong validator and rotated URL;
 - independent audio/video checkpoint and merge restart;
-- session-mode SABR, HLS VOD, and static DASH recovery;
+- session-mode HLS VOD and static DASH recovery;
 - conservative restart for changed remote bytes, live HLS, dynamic DASH, and
   unsupported encrypted identity;
 - pause/cancel/publication arbiter interleavings;
@@ -902,7 +916,8 @@ repository-wide vet, unit, race, build, and platform-specific suites.
 - [ ] Public engine API names and safe returned fields are approved.
 - [ ] Session staging and the exact-output reservation contract are confirmed as
   one path, not two implementations.
-- [ ] Direct/fragment branches have a rebase plan onto PR #243.
+- [x] Direct/fragment prerequisites are rebased, reviewed, and merged on top of
+  PR #243.
 - [ ] State v2 schema and v1 migration behavior are approved.
 - [ ] App-owned atomic adapter and shared outcome test vectors are approved.
 - [ ] Manager lock order and async Cancel flows have been race-reviewed.
@@ -912,6 +927,5 @@ repository-wide vet, unit, race, build, and platform-specific suites.
 - [ ] All confirmed mockups map to backend fields and command outcomes.
 - [ ] No phase creates a second scheduler or silently overwrites a destination.
 
-After this checklist is resolved, change this document to Confirmed and create
-implementation assignments from the phases. Do not derive work from the
-obsolete ticket numbering.
+Implementation assignments derive from these phases and the accepted decision
+record. Do not derive work from the obsolete ticket numbering.
