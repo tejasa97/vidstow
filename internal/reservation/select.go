@@ -5,14 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"unicode/utf8"
 )
 
 const (
-	// MaxAllowedSuffix bounds work spent looking for a collision-free name.
-	// Callers should use a smaller volume-specific operational limit when one
-	// is available.
-	MaxAllowedSuffix uint64 = 1_000_000
-	defaultMaxSuffix        = MaxAllowedSuffix
+	// DefaultMaxSuffix bounds normal collision search to a predictable amount
+	// of filesystem probing. It can be lowered per admission request.
+	DefaultMaxSuffix uint64 = 1_000
+	// MaxAllowedSuffix is the hard operational ceiling for collision search.
+	MaxAllowedSuffix uint64 = 10_000
 )
 
 // Options configures a Selector. Policies should be selected from the output
@@ -38,11 +39,11 @@ func NewSelector(options Options) (*Selector, error) {
 	if !options.Policies.valid() {
 		return nil, errors.New("reservation: names and volumes policies must both be provided")
 	}
-	if options.Probe == nil {
+	if isTypedNil(options.Probe) {
 		return nil, errors.New("reservation: identity-validating availability probe is required")
 	}
 	if options.MaxSuffix == 0 {
-		options.MaxSuffix = defaultMaxSuffix
+		options.MaxSuffix = DefaultMaxSuffix
 	}
 	if options.MaxSuffix > MaxAllowedSuffix {
 		return nil, fmt.Errorf("reservation: maximum suffix exceeds %d", MaxAllowedSuffix)
@@ -96,20 +97,22 @@ func (s *Selector) choose(ctx context.Context, request SelectionRequest, active 
 	if err := ctx.Err(); err != nil {
 		return ReservationSet{}, err
 	}
-	if len(active) > MaxActiveReservationSets {
-		return ReservationSet{}, fmt.Errorf("%w: too many active reservations", ErrInvalidReservation)
+	index, err := s.indexActive(ctx, active)
+	if err != nil {
+		return ReservationSet{}, err
 	}
-	for _, set := range active {
-		if err := validateReservation(set, s.policies); err != nil {
-			return ReservationSet{}, err
-		}
+	if _, exists := index.groups[request.GroupID]; exists {
+		return ReservationSet{}, fmt.Errorf("%w: selection group ID already has an active reservation", ErrInvalidReservation)
 	}
 	for suffix := uint64(1); suffix <= s.maxSuffix; suffix++ {
-		set, err := buildSet(request, suffix)
+		if err := ctx.Err(); err != nil {
+			return ReservationSet{}, err
+		}
+		set, err := buildSet(request, suffix, s.policies.Names)
 		if err != nil {
 			return ReservationSet{}, err
 		}
-		occupied, err := s.occupied(ctx, set, active)
+		occupied, err := s.occupied(ctx, set, index)
 		if err != nil {
 			return ReservationSet{}, err
 		}
@@ -120,8 +123,9 @@ func (s *Selector) choose(ctx context.Context, request SelectionRequest, active 
 	return ReservationSet{}, ErrNoAvailableName
 }
 
-func buildSet(request SelectionRequest, suffix uint64) (ReservationSet, error) {
+func buildSet(request SelectionRequest, suffix uint64, names NameComparison) (ReservationSet, error) {
 	set := ReservationSet{GroupID: request.GroupID, Directory: request.Directory, Artifacts: make([]ReservedArtifact, len(request.Artifacts))}
+	seenNames := make([]string, 0, len(request.Artifacts))
 	for i, artifact := range request.Artifacts {
 		basename := artifact.ProposedBasename
 		if suffix > 1 {
@@ -130,31 +134,108 @@ func buildSet(request SelectionRequest, suffix uint64) (ReservationSet, error) {
 				return ReservationSet{}, ErrNoAvailableName
 			}
 		}
+		for _, existing := range seenNames {
+			if names.Equal(existing, basename) {
+				return ReservationSet{}, ErrNoAvailableName
+			}
+		}
+		seenNames = append(seenNames, basename)
 		set.Artifacts[i] = ReservedArtifact{Kind: artifact.Kind, Identity: artifact.Identity, Basename: basename}
 	}
 	return set, nil
 }
 
 func suffixedBasename(basename string, suffix uint64) string {
+	marker := fmt.Sprintf(" (%d)", suffix)
 	ext := path.Ext(basename)
+	// A leading dotfile has no extension for reservation suffix purposes.
+	if ext == basename {
+		ext = ""
+	}
 	stem := basename[:len(basename)-len(ext)]
-	return fmt.Sprintf("%s (%d)%s", stem, suffix, ext)
+	room := MaxBasenameBytes - len(marker) - len(ext)
+	if room >= 0 {
+		return truncateUTF8(stem, room) + marker + ext
+	}
+	// A pathological extension can consume the whole portable component. Keep
+	// the deterministic marker and the largest valid UTF-8 extension prefix.
+	return marker + truncateUTF8(ext, MaxBasenameBytes-len(marker))
 }
 
-func (s *Selector) occupied(ctx context.Context, set ReservationSet, active []ReservationSet) (bool, error) {
+func truncateUTF8(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	for maxBytes > 0 && !utf8.ValidString(value[:maxBytes]) {
+		maxBytes--
+	}
+	return value[:maxBytes]
+}
+
+type destinationKey struct {
+	volume string
+	name   string
+}
+
+type activeIndex struct {
+	claims map[destinationKey]struct{}
+	groups map[string]struct{}
+}
+
+func (s *Selector) indexActive(ctx context.Context, active []ReservationSet) (activeIndex, error) {
+	if len(active) > MaxActiveReservationSets {
+		return activeIndex{}, fmt.Errorf("%w: too many active reservations", ErrInvalidReservation)
+	}
+	index := activeIndex{claims: make(map[destinationKey]struct{}), groups: make(map[string]struct{}, len(active))}
+	groups := make(map[string]struct{}, len(active))
+	for _, set := range active {
+		if err := ctx.Err(); err != nil {
+			return activeIndex{}, err
+		}
+		if err := validateReservation(ctx, set, s.policies); err != nil {
+			return activeIndex{}, err
+		}
+		if _, exists := groups[set.GroupID]; exists {
+			return activeIndex{}, fmt.Errorf("%w: duplicate active reservation group ID", ErrInvalidReservation)
+		}
+		groups[set.GroupID] = struct{}{}
+		index.groups[set.GroupID] = struct{}{}
+		volumeKey := s.policies.Volumes.Key(set.Directory)
+		for _, artifact := range set.Artifacts {
+			if err := ctx.Err(); err != nil {
+				return activeIndex{}, err
+			}
+			claim := destinationKey{volume: volumeKey, name: s.policies.Names.Key(artifact.Basename)}
+			if _, exists := index.claims[claim]; exists {
+				return activeIndex{}, fmt.Errorf("%w: duplicate active destination claim", ErrInvalidReservation)
+			}
+			index.claims[claim] = struct{}{}
+		}
+	}
+	return index, nil
+}
+
+func (s *Selector) occupied(ctx context.Context, set ReservationSet, active activeIndex) (bool, error) {
+	volumeKey := s.policies.Volumes.Key(set.Directory)
 	for _, artifact := range set.Artifacts {
-		for _, existing := range active {
-			if !s.policies.Volumes.Equal(set.Directory, existing.Directory) {
-				continue
-			}
-			for _, reserved := range existing.Artifacts {
-				if s.policies.Names.Equal(artifact.Basename, reserved.Basename) {
-					return true, nil
-				}
-			}
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		claim := destinationKey{volume: volumeKey, name: s.policies.Names.Key(artifact.Basename)}
+		if _, exists := active.claims[claim]; exists {
+			return true, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return false, err
 		}
 		availability, err := s.probe.Probe(ctx, set.Directory, artifact.Basename)
 		if err != nil {
+			return false, err
+		}
+		if err := ctx.Err(); err != nil {
 			return false, err
 		}
 		if availability != Available {

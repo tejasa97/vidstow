@@ -81,10 +81,166 @@ func TestFoldedNamesHasExplicitUnicodeCaseAndNormalizationSemantics(t *testing.T
 	if !policy.Equal("Δownload.MP4", "δOWNLOAD.mp4") {
 		t.Fatal("FoldedNames did not apply Unicode case folding")
 	}
+	for _, pair := range [][2]string{{"Σ", "σ"}, {"Σ", "ς"}, {"σ", "ς"}} {
+		if !policy.Equal(pair[0], pair[1]) || policy.Key(pair[0]) != policy.Key(pair[1]) {
+			t.Fatalf("simple-fold equivalence inconsistent for %q and %q", pair[0], pair[1])
+		}
+	}
 	composed := "Café.mp4"
 	decomposed := "Cafe\u0301.mp4"
 	if policy.Equal(composed, decomposed) {
 		t.Fatal("FoldedNames silently normalized Unicode; a volume policy must state that behavior")
+	}
+}
+
+func TestActiveIndexRejectsDuplicateGroupsAndDestinationClaims(t *testing.T) {
+	t.Parallel()
+	root := testVolume(t)
+	probe := &recordingProbe{}
+	selector := testSelector(t, FoldedNames{}, probe)
+	callback, err := selector.Callback(singleRequest(root, "Title.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateGroup := []ReservationSet{
+		{GroupID: "same", Directory: root, Artifacts: []ReservedArtifact{{Kind: "primary", Identity: "one", Basename: "One.mp4"}}},
+		{GroupID: "same", Directory: root, Artifacts: []ReservedArtifact{{Kind: "primary", Identity: "two", Basename: "Two.mp4"}}},
+	}
+	if _, err := callback(context.Background(), duplicateGroup); !errors.Is(err, ErrInvalidReservation) {
+		t.Fatalf("duplicate group error = %v, want ErrInvalidReservation", err)
+	}
+	duplicateClaim := []ReservationSet{
+		{GroupID: "one", Directory: root, Artifacts: []ReservedArtifact{{Kind: "primary", Identity: "one", Basename: "Title.mp4"}}},
+		{GroupID: "two", Directory: root, Artifacts: []ReservedArtifact{{Kind: "primary", Identity: "two", Basename: "title.MP4"}}},
+	}
+	if _, err := callback(context.Background(), duplicateClaim); !errors.Is(err, ErrInvalidReservation) {
+		t.Fatalf("duplicate claim error = %v, want ErrInvalidReservation", err)
+	}
+	if _, err := callback(context.Background(), []ReservationSet{{
+		GroupID:   "job",
+		Directory: root,
+		Artifacts: []ReservedArtifact{{Kind: "primary", Identity: "active", Basename: "Other.mp4"}},
+	}}); !errors.Is(err, ErrInvalidReservation) {
+		t.Fatalf("existing request group error = %v, want ErrInvalidReservation", err)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("invalid active/request group input reached probe %d times", probe.calls)
+	}
+}
+
+func TestCandidateBasenameCollisionFailsBeforeProbing(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		policy NameComparison
+	}{
+		{name: "exact", policy: ExactNames{}},
+		{name: "folded", policy: FoldedNames{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testVolume(t)
+			prefix := strings.Repeat("p", 240)
+			caseA, caseB := "A", "A"
+			if tc.name == "folded" {
+				caseB = "a"
+			}
+			first := prefix + caseA + "sharedX.mp4"
+			second := prefix + caseB + "sharedY.mp4"
+			probe := &recordingProbe{}
+			selector := testSelector(t, tc.policy, probe)
+			callback, err := selector.Callback(SelectionRequest{
+				GroupID:   "new-job",
+				Directory: root,
+				Artifacts: []ArtifactDeclaration{{Kind: "primary", Identity: "one", ProposedBasename: first}, {Kind: "sidecar", Identity: "two", ProposedBasename: second}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			active := []ReservationSet{{
+				GroupID:   "old-job",
+				Directory: root,
+				Artifacts: []ReservedArtifact{{Kind: "primary", Identity: "one", Basename: first}, {Kind: "sidecar", Identity: "two", Basename: second}},
+			}}
+			if _, err := callback(context.Background(), active); !errors.Is(err, ErrNoAvailableName) {
+				t.Fatalf("collision error = %v, want ErrNoAvailableName", err)
+			}
+			if probe.calls != 0 {
+				t.Fatalf("candidate collision reached probe %d times", probe.calls)
+			}
+		})
+	}
+}
+
+func TestSelectionHasBoundedProbeWorkAndHonoursCancellation(t *testing.T) {
+	t.Parallel()
+	root := testVolume(t)
+	occupied := map[string]bool{"Second.mp4": true}
+	for suffix := uint64(2); suffix <= 4; suffix++ {
+		occupied[suffixedBasenameForTest("Second.mp4", suffix)] = true
+	}
+	probe := &recordingProbe{occupied: occupied}
+	selector, err := NewSelector(Options{
+		Policies:  Policies{Names: ExactNames{}, Volumes: CanonicalVolumes{}},
+		Probe:     probe,
+		MaxSuffix: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := SelectionRequest{
+		GroupID:   "bounded",
+		Directory: root,
+		Artifacts: []ArtifactDeclaration{{Kind: "primary", Identity: "one", ProposedBasename: "First.mp4"}, {Kind: "primary", Identity: "two", ProposedBasename: "Second.mp4"}},
+	}
+	if _, err := selector.Select(context.Background(), request, nil); !errors.Is(err, ErrNoAvailableName) {
+		t.Fatalf("bounded selection error = %v, want ErrNoAvailableName", err)
+	}
+	if probe.calls != 8 {
+		t.Fatalf("probe calls = %d, want exactly maxSuffix*artifactCount = 8", probe.calls)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelProbe := &cancelingProbe{cancel: cancel}
+	selector = testSelector(t, ExactNames{}, cancelProbe)
+	_, err = selector.Select(ctx, request, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled selection error = %v, want context.Canceled", err)
+	}
+	if cancelProbe.calls != 1 {
+		t.Fatalf("canceled selection probes = %d, want one", cancelProbe.calls)
+	}
+}
+
+func TestSuffixFitsPortableByteLimitWithoutBreakingUTF8(t *testing.T) {
+	t.Parallel()
+	root := testVolume(t)
+	cases := []struct {
+		name string
+		want string
+	}{
+		{name: strings.Repeat("a", 251) + ".mp4", want: ".mp4"},
+		{name: "aa" + strings.Repeat("界", 83) + ".mp4", want: ".mp4"},
+		{name: ".profile", want: ".profile (2)"},
+		{name: "Title.tar.gz", want: "Title.tar (2).gz"},
+	}
+	for _, tc := range cases {
+		selector := testSelector(t, ExactNames{}, &recordingProbe{occupied: map[string]bool{tc.name: true}})
+		set, err := selector.Select(context.Background(), singleRequest(root, tc.name), nil)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.name, err)
+		}
+		got := set.Artifacts[0].Basename
+		if !utf8.ValidString(got) || len(got) > MaxBasenameBytes {
+			t.Fatalf("%q selected invalid fitted basename %q (%d bytes)", tc.name, got, len(got))
+		}
+		if !strings.HasSuffix(got, tc.want) && got != tc.want {
+			t.Fatalf("%q selected %q, want suffix/filename %q", tc.name, got, tc.want)
+		}
+		if tc.name == ".profile" || strings.Contains(tc.name, ".tar.") {
+			if got != tc.want {
+				t.Fatalf("%q selected %q, want %q", tc.name, got, tc.want)
+			}
+		}
 	}
 }
 
@@ -120,6 +276,24 @@ func TestNewSelectorRequiresRootBoundProbeAndPolicies(t *testing.T) {
 	}
 	if _, err := selector.Select(context.Background(), singleRequest(testVolume(t), "Title.mp4"), nil); !errors.Is(err, ErrNoAvailableName) {
 		t.Fatalf("bounded suffix selection error = %v, want ErrNoAvailableName", err)
+	}
+}
+
+func TestNewSelectorRejectsTypedNilDependencies(t *testing.T) {
+	t.Parallel()
+	var nilNames *typedNilNames
+	var nilVolumes *typedNilVolumes
+	var nilProbe *recordingProbe
+	validProbe := &recordingProbe{}
+	validPolicies := Policies{Names: ExactNames{}, Volumes: CanonicalVolumes{}}
+	if _, err := NewSelector(Options{Policies: Policies{Names: nilNames, Volumes: CanonicalVolumes{}}, Probe: validProbe}); err == nil {
+		t.Fatal("NewSelector accepted typed-nil NameComparison")
+	}
+	if _, err := NewSelector(Options{Policies: Policies{Names: ExactNames{}, Volumes: nilVolumes}, Probe: validProbe}); err == nil {
+		t.Fatal("NewSelector accepted typed-nil VolumeComparison")
+	}
+	if _, err := NewSelector(Options{Policies: validPolicies, Probe: nilProbe}); err == nil {
+		t.Fatal("NewSelector accepted typed-nil AvailabilityProbe")
 	}
 }
 
@@ -216,28 +390,34 @@ func TestStoreOwnedCallbackCommitAndLateConflictDoNotRetry(t *testing.T) {
 func TestConcurrentStoreTransactionsCannotDuplicateAReservation(t *testing.T) {
 	root := testVolume(t)
 	selector := testSelector(t, ExactNames{}, &recordingProbe{})
-	callback, err := selector.Callback(singleRequest(root, "Title.mp4"))
-	if err != nil {
-		t.Fatal(err)
+	const workers = 32
+	callbacks := make([]SelectionCallback, workers)
+	for i := range callbacks {
+		request := singleRequest(root, "Title.mp4")
+		request.GroupID = fmt.Sprintf("job-%d", i)
+		callback, err := selector.Callback(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		callbacks[i] = callback
 	}
 	store := &callbackStore{}
-	const workers = 32
 	start := make(chan struct{})
 	results := make(chan string, workers)
 	errs := make(chan error, workers)
 	var wg sync.WaitGroup
-	for range workers {
+	for i := range workers {
 		wg.Add(1)
-		go func() {
+		go func(index int) {
 			defer wg.Done()
 			<-start
-			set, err := store.Transact(context.Background(), callback, nil)
+			set, err := store.Transact(context.Background(), callbacks[index], nil)
 			if err != nil {
 				errs <- err
 				return
 			}
 			results <- set.Artifacts[0].Basename
-		}()
+		}(i)
 	}
 	close(start)
 	wg.Wait()
@@ -318,7 +498,7 @@ func TestValidationBoundsBeforeProbe(t *testing.T) {
 
 func TestValidateBasenameRejectsPortablePathWindowsAndEncodingHazards(t *testing.T) {
 	t.Parallel()
-	invalid := []string{"", ".", "..", "nested/file.mp4", `nested\\file.mp4`, "C:clip.mp4", "CON", "aux.txt", "CON .txt", "NUL .", "clip.", "clip ", "clip?.mp4", "clip\x00.mp4", string([]byte{0xff}), "clip\u0085.mp4", strings.Repeat("a", MaxBasenameBytes+1)}
+	invalid := []string{"", ".", "..", "nested/file.mp4", `nested\\file.mp4`, "C:clip.mp4", "CON", "aux.txt", "CON .txt", "NUL .", "CONIN$", "CONOUT$.txt", "CLOCK$", "COM¹", "COM².txt", "COM³", "LPT¹", "LPT².log", "LPT³", "clip.", "clip ", "clip?.mp4", "clip\x00.mp4", string([]byte{0xff}), "clip\u0085.mp4", strings.Repeat("a", MaxBasenameBytes+1)}
 	for _, name := range invalid {
 		if err := ValidateBasename(name); !errors.Is(err, ErrInvalidDeclaration) {
 			t.Errorf("ValidateBasename(%q) error = %v, want ErrInvalidDeclaration", name, err)
@@ -412,6 +592,27 @@ type recordingProbe struct {
 	err      error
 	calls    int
 }
+
+type cancelingProbe struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (p *cancelingProbe) Probe(_ context.Context, _ Volume, _ string) (Availability, error) {
+	p.calls++
+	p.cancel()
+	return Available, nil
+}
+
+type typedNilNames struct{}
+
+func (*typedNilNames) Equal(a, b string) bool { return a == b }
+func (*typedNilNames) Key(name string) string { return name }
+
+type typedNilVolumes struct{}
+
+func (*typedNilVolumes) Equal(a, b Volume) bool   { return a.Identity == b.Identity }
+func (*typedNilVolumes) Key(volume Volume) string { return volume.Identity }
 
 func (p *recordingProbe) Probe(_ context.Context, _ Volume, basename string) (Availability, error) {
 	p.calls++

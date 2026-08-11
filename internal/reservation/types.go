@@ -1,9 +1,11 @@
 package reservation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -86,6 +88,10 @@ type SelectionRequest struct {
 // output volume. Implementations may use the filesystem's native rules.
 type NameComparison interface {
 	Equal(a, b string) bool
+	// Key returns the same key for every pair of names for which Equal is true.
+	// It lets selection index bounded durable claims without repeatedly scanning
+	// them for every suffix candidate.
+	Key(name string) string
 }
 
 // VolumeComparison defines when two canonical output roots refer to the same
@@ -93,6 +99,8 @@ type NameComparison interface {
 // identities and path casing are platform-specific.
 type VolumeComparison interface {
 	Equal(a, b Volume) bool
+	// Key returns the same key for every pair of volumes for which Equal is true.
+	Key(volume Volume) string
 }
 
 // Policies contains the caller-selected platform policy pair.
@@ -105,12 +113,30 @@ type Policies struct {
 type ExactNames struct{}
 
 func (ExactNames) Equal(a, b string) bool { return a == b }
+func (ExactNames) Key(name string) string { return name }
 
-// FoldedNames compares basenames with Unicode simple case folding. A caller
-// that knows a volume uses different rules can provide its own policy.
+// FoldedNames compares basenames using Unicode simple-fold equivalence. It
+// intentionally does not perform Unicode normalization; a caller that knows a
+// volume uses different normalization rules can provide its own policy.
 type FoldedNames struct{}
 
-func (FoldedNames) Equal(a, b string) bool { return strings.EqualFold(a, b) }
+func (FoldedNames) Equal(a, b string) bool { return simpleFoldKey(a) == simpleFoldKey(b) }
+func (FoldedNames) Key(name string) string { return simpleFoldKey(name) }
+
+func simpleFoldKey(value string) string {
+	var builder strings.Builder
+	builder.Grow(len(value))
+	for _, r := range value {
+		canonical := r
+		for folded := unicode.SimpleFold(r); folded != r; folded = unicode.SimpleFold(folded) {
+			if folded < canonical {
+				canonical = folded
+			}
+		}
+		builder.WriteRune(canonical)
+	}
+	return builder.String()
+}
 
 // CanonicalVolumes compares stable directory identities. Output-root
 // canonicalization and identity acquisition are intentionally owned outside
@@ -120,8 +146,24 @@ type CanonicalVolumes struct{}
 func (CanonicalVolumes) Equal(a, b Volume) bool {
 	return a.Identity == b.Identity
 }
+func (CanonicalVolumes) Key(volume Volume) string { return volume.Identity }
 
-func (p Policies) valid() bool { return p.Names != nil && p.Volumes != nil }
+func (p Policies) valid() bool {
+	return !isTypedNil(p.Names) && !isTypedNil(p.Volumes)
+}
+
+func isTypedNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return rv.IsNil()
+	default:
+		return false
+	}
+}
 
 func validateVolume(volume Volume) error {
 	if err := validateBoundedText("output root", volume.CanonicalPath, MaxCanonicalPathBytes); err != nil {
@@ -197,13 +239,19 @@ func ValidateBasename(name string) error {
 	}
 	base = strings.TrimRight(base, " .")
 	switch strings.ToUpper(base) {
-	case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+	case "CON", "PRN", "AUX", "NUL", "CLOCK$", "CONIN$", "CONOUT$",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+		"COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³":
 		return fmt.Errorf("%w: Windows reserved basename", ErrInvalidDeclaration)
 	}
 	return nil
 }
 
-func validateReservation(set ReservationSet, policies Policies) error {
+func validateReservation(ctx context.Context, set ReservationSet, policies Policies) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := validateBoundedText("reservation group ID", set.GroupID, MaxGroupIDBytes); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidReservation, err)
 	}
@@ -216,6 +264,9 @@ func validateReservation(set ReservationSet, policies Policies) error {
 	seenIDs := make(map[string]struct{}, len(set.Artifacts))
 	seenNames := make([]string, 0, len(set.Artifacts))
 	for _, artifact := range set.Artifacts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := validateBoundedText("reserved artifact kind", artifact.Kind, MaxKindBytes); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalidReservation, err)
 		}
