@@ -2,10 +2,8 @@
   import { createEventDispatcher } from 'svelte';
   import LifecycleJobRow, { type LifecycleJobActionEvent } from './LifecycleJobRow.svelte';
   import QueueSummary from './QueueSummary.svelte';
-  import type {
-    LifecycleJobEventDetail,
-    QueueOverviewViewModel,
-  } from './types.js';
+  import { isValidCommandToken } from './types.js';
+  import type { LifecycleJobEventDetail, QueueOverviewViewModel } from './types.js';
 
   export interface QueueOverviewEvents {
     'pause-all': void;
@@ -23,13 +21,30 @@
   interface Props {
     model: QueueOverviewViewModel;
     title?: string;
+    onPauseAll?: () => void;
+    onClearCompleted?: () => void;
+    onAction?: (event: LifecycleJobActionEvent) => void;
   }
 
-  let { model, title = 'Queue' }: Props = $props();
+  let { model, title = 'Queue', onPauseAll, onClearCompleted, onAction }: Props = $props();
   const dispatch = createEventDispatcher<QueueOverviewEvents>();
+  const hasQueueAuthority = $derived(isValidCommandToken(model.commandToken));
 
   function forward(event: LifecycleJobActionEvent): void {
-    dispatch(event.action, { jobId: event.jobId });
+    dispatch(event.action, { jobId: event.jobId, commandToken: event.commandToken });
+    onAction?.(event);
+  }
+
+  function pauseAll(): void {
+    if (!(model.canPauseAll === true && hasQueueAuthority)) return;
+    dispatch('pause-all');
+    onPauseAll?.();
+  }
+
+  function clearCompleted(): void {
+    if (!(model.canClearCompleted === true && hasQueueAuthority)) return;
+    dispatch('clear-completed');
+    onClearCompleted?.();
   }
 </script>
 
@@ -43,14 +58,14 @@
       <button
         type="button"
         class="secondary-button"
-        disabled={!model.canPauseAll}
-        onclick={() => dispatch('pause-all')}
+        disabled={!(model.canPauseAll === true && hasQueueAuthority)}
+        onclick={pauseAll}
       >Pause All</button>
       <button
         type="button"
         class="secondary-button"
-        disabled={!model.canClearCompleted}
-        onclick={() => dispatch('clear-completed')}
+        disabled={!(model.canClearCompleted === true && hasQueueAuthority)}
+        onclick={clearCompleted}
       >Clear Completed</button>
     </div>
   </header>

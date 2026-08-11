@@ -28,6 +28,7 @@ function queueModel(overrides: Partial<QueueOverviewViewModel> = {}): QueueOverv
     jobs: [],
     canPauseAll: false,
     canClearCompleted: false,
+    commandToken: 'queue-token-7',
     ...overrides,
   };
 }
@@ -93,6 +94,7 @@ describe('backend-authored capabilities', () => {
       phase: 'downloading',
       occupiesSlot: true,
       capabilities: { pause: false, cancel: false },
+      commandToken: 'job-token-7',
     };
     const user = userEvent.setup();
 
@@ -110,6 +112,32 @@ describe('backend-authored capabilities', () => {
     expect(onPause).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
     expect(screen.getByLabelText('Downloading, occupies an active slot')).toBeInTheDocument();
+  });
+
+  test('row actions require an opaque token and echo it without deriving authority', async () => {
+    const onResume = vi.fn<(event: CustomEvent<LifecycleJobEventDetail>) => void>();
+    const user = userEvent.setup();
+    render(LifecycleJobRow, {
+      props: {
+        job: {
+          id: 'paused-1', title: 'Paused video', lifecycle: 'paused', occupiesSlot: false,
+          capabilities: { resume: true }, commandToken: 'backend-command-token',
+        },
+      },
+      events: { resume: onResume },
+    });
+    await user.click(screen.getByRole('button', { name: 'Resume download' }));
+    expect(onResume.mock.calls[0][0].detail).toEqual({ jobId: 'paused-1', commandToken: 'backend-command-token' });
+  });
+
+  test('persistence-revoked queue data can render but cannot authorize controls', () => {
+    render(QueueOverview, {
+      props: { model: queueModel({ commandToken: undefined, canPauseAll: false, canClearCompleted: false, jobs: [{ id: 'active-1', title: 'Active', lifecycle: 'active', occupiesSlot: true, capabilities: {}, commandToken: undefined }] }) },
+    });
+    expect(screen.getByRole('button', { name: 'Pause All' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Clear Completed' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Pause download' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Cancel download' })).toBeDisabled();
   });
 });
 

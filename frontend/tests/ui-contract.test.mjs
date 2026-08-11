@@ -26,9 +26,10 @@ test('page titles and controls match the approved redesign', async () => {
   assert.match(home, />Choose Download</);
   assert.match(home, />Add to Queue</);
   assert.match(home, /'Analyze'/);
-  assert.match(queue, />Pause All</);
+  assert.match(queue, /<QueueOverview/);
+  assert.match(queue, /api\.queue\.pauseAll/);
+  assert.match(queue, /api\.queue\.clearCompleted/);
   assert.match(queue, /Jobs are saved automatically\./);
-  assert.match(queue, /Clear Completed/);
   assert.match(downloads, /View your recently downloaded items\./);
   assert.match(downloads, /placeholder="Search downloads…"/);
   assert.match(settings, /Configure downloads, queue behavior, and external tools\./);
@@ -109,8 +110,8 @@ test('queue distinguishes temporary in-memory storage from durable automatic sav
     read('../src/pages/Queue.svelte'),
     read('../src/lib/stores.ts'),
   ]);
-  assert.match(queue, /#if !\$persistence\.available/);
-  assert.match(queue, /temporary in-memory storage/);
+  assert.match(queue, /view\?\.persistence/);
+  assert.match(queue, /Queue actions are disabled/);
   assert.match(queue, /Jobs are saved automatically/);
   assert.match(stores, /persistence = writable<PersistenceStatus>/);
 });

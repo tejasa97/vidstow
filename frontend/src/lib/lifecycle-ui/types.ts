@@ -25,6 +25,8 @@ export type PresentationPhase =
   | 'publishing'
   | 'cleaning-up';
 
+export type DesiredState = 'running' | 'paused' | 'canceled';
+
 export type LifecycleBadgeTone = 'neutral' | 'info' | 'warning' | 'danger' | 'success';
 
 export type LifecycleJobAction =
@@ -60,6 +62,7 @@ export interface LifecycleJobViewModel {
   thumbnailUrl?: string;
   lifecycle: DurableLifecycle;
   phase?: PresentationPhase;
+  desired?: DesiredState;
   occupiesSlot: boolean;
   progress?: number;
   progressLabel?: string;
@@ -69,6 +72,8 @@ export interface LifecycleJobViewModel {
   queuePosition?: number;
   queueLabel?: string;
   capabilities?: LifecycleJobCapabilities;
+  /** Opaque backend-issued authority. Missing or malformed values disable all actions. */
+  commandToken?: string;
 }
 
 export interface QueueSummaryViewModel {
@@ -76,6 +81,8 @@ export interface QueueSummaryViewModel {
   runningJobs: number;
   occupiedSlots: number;
   slotLimit: number;
+  processingOccupied?: number;
+  processingLimit?: number;
   waitingJobs: number;
   pausedJobs: number;
 }
@@ -87,6 +94,7 @@ export interface QueueOverviewViewModel {
   jobs: LifecycleJobViewModel[];
   canPauseAll: boolean;
   canClearCompleted: boolean;
+  commandToken?: string;
   sectionTitle?: string;
   notice?: string;
   noticeTone?: QueueNoticeTone;
@@ -120,12 +128,22 @@ export interface DestinationConflictViewModel {
   proposedNameAvailable: boolean;
 }
 
+/** Mirrors the bridge queue contract without importing legacy JobSnapshot. */
+export interface QueueView {
+  revision: number;
+  rows: LifecycleJobViewModel[];
+  summary: QueueSummaryViewModel;
+  capabilities: { pauseAll?: boolean; clearCompleted?: boolean; commandToken?: string };
+  persistence: { available: boolean; healthy: boolean; message?: string };
+}
+
 export interface DestinationConflictEventDetail {
   conflictToken: string;
 }
 
 export interface LifecycleJobEventDetail {
   jobId: string;
+  commandToken: string;
 }
 
 export type LifecycleJobEventName =
@@ -172,6 +190,8 @@ export function isValidConflictToken(value: unknown): value is string {
   }
   return true;
 }
+
+export const isValidCommandToken = isValidConflictToken;
 
 export function lifecycleLabel(
   lifecycle: DurableLifecycle,

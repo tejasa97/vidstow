@@ -111,7 +111,6 @@ export interface Settings {
   downloadConcurrency: number;
   perVideoSubfolder: boolean;
   confirmBeforeDownload: boolean;
-  restoreInterruptedJobs: boolean;
 }
 
 export interface UrlCheckResult {

@@ -10,6 +10,7 @@ export { default as RecoveryRequiredShell } from './RecoveryRequiredShell.svelte
 export type {
   DestinationConflictViewModel,
   DestinationConflictEventDetail,
+  DesiredState,
   DurableLifecycle,
   LifecycleBadgeTone,
   LifecycleJobAction,
@@ -22,6 +23,7 @@ export type {
   QueueOverviewViewModel,
   QueueSettingsViewModel,
   QueueSummaryViewModel,
+  QueueView,
   QuitConfirmationViewModel,
   RecoveryRequiredViewModel,
 } from './types.js';
@@ -38,6 +40,7 @@ export {
   lifecycleMessage,
   lifecycleTone,
   isValidConflictToken,
+  isValidCommandToken,
   queuePositionLabel,
 } from './types.js';
 

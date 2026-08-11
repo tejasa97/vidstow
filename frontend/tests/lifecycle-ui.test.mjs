@@ -144,8 +144,9 @@ test('queue-wide actions require positive backend capabilities', async () => {
   ]);
   assert.match(types, /canPauseAll:\s*boolean/);
   assert.match(types, /canClearCompleted:\s*boolean/);
-  assert.match(overview, /disabled=\{!model\.canPauseAll\}/);
-  assert.match(overview, /disabled=\{!model\.canClearCompleted\}/);
+  assert.match(overview, /isValidCommandToken\(model\.commandToken\)/);
+  assert.match(overview, /model\.canPauseAll === true/);
+  assert.match(overview, /model\.canClearCompleted === true/);
   assert.doesNotMatch(types, /pauseAllDisabled\?|clearCompletedDisabled\?/);
 });
 

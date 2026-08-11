@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { api } from './lib/api.js';
-  import { errorMessage, ffmpeg, history, jobs, route, settings, modal, persistence, showBanner } from './lib/stores.js';
+  import { errorMessage, ffmpeg, history, jobs, queueView, route, settings, modal, persistence, showBanner } from './lib/stores.js';
+  import type { QueueView } from './lib/lifecycle-ui/types.js';
+  import { newestQueueView } from './lib/queue-view.js';
   import type { JobSnapshot, QuitSummary, StartupStatus } from './lib/types.js';
   import { DEFAULT_RECOVERY_REQUIRED, type RecoveryRequiredViewModel } from './lib/lifecycle-ui/types.js';
   import QuitConfirmationDialog from './lib/lifecycle-ui/QuitConfirmationDialog.svelte';
@@ -25,6 +27,8 @@
     unsubAll = [
       api.events.onJobUpdate(updateJobInList),
       api.events.onQueue((list) => jobs.set(list ?? [])),
+      api.events.onQueueView(applyQueueView),
+      api.events.onJobQueueView(applyQueueView),
       api.events.onHistory((entries) => history.set(entries ?? [])),
       api.events.onSettings((value) => settings.set(value)),
       api.events.onFFmpeg((status) => ffmpeg.set(status)),
@@ -47,15 +51,17 @@
         };
         return;
       }
-      const [savedSettings, initialJobs, savedHistory, ffmpegStatus, persistenceStatus] = await Promise.all([
+      const [savedSettings, initialJobs, initialQueueView, savedHistory, ffmpegStatus, persistenceStatus] = await Promise.all([
         api.settings.get(),
         api.jobs.list(),
+        api.queue.get(),
         api.downloads.list(),
         api.ffmpeg.status(),
         api.app.persistenceStatus(),
       ]);
       settings.set(savedSettings);
       jobs.set(initialJobs ?? []);
+      applyQueueView(initialQueueView);
       history.set(savedHistory ?? []);
       ffmpeg.set(ffmpegStatus);
       persistence.set(persistenceStatus);
@@ -80,6 +86,13 @@
       copy[idx] = { ...copy[idx], ...updated };
       return copy;
     });
+  }
+
+  function applyQueueView(next: QueueView) {
+    queueView.update((current) => {
+      return newestQueueView(current, next);
+    });
+    if (next?.persistence) persistence.set(next.persistence);
   }
 
   function navigate(target: 'home' | 'queue' | 'downloads' | 'settings' | 'about') {

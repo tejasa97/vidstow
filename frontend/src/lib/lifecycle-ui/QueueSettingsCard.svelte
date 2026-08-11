@@ -15,9 +15,10 @@
   interface Props {
     model: QueueSettingsViewModel;
     heading?: string;
+    onConcurrencyChange?: (value: number) => void;
   }
 
-  let { model, heading = 'Queue & recovery' }: Props = $props();
+  let { model, heading = 'Queue & recovery', onConcurrencyChange }: Props = $props();
   const dispatch = createEventDispatcher<QueueSettingsEvents>();
 
   const minimum = $derived(model.minimum ?? MIN_CONCURRENCY);
@@ -30,6 +31,7 @@
     const value = Number(select.value);
     if (Number.isInteger(value) && value >= minimum && value <= maximum) {
       dispatch('concurrency-change', { value });
+      onConcurrencyChange?.(value);
     }
   }
 </script>

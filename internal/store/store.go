@@ -21,14 +21,13 @@ import (
 
 // Settings is the JSON-serialized user settings document.
 type Settings struct {
-	DownloadFolder         string `json:"downloadFolder"`
-	FFmpegPath             string `json:"ffmpegPath"`
-	WindowWidth            int    `json:"windowWidth"`
-	WindowHeight           int    `json:"windowHeight"`
-	DownloadConcurrency    int    `json:"downloadConcurrency"`
-	PerVideoSubfolder      bool   `json:"perVideoSubfolder"`
-	ConfirmBeforeDownload  bool   `json:"confirmBeforeDownload"`
-	RestoreInterruptedJobs bool   `json:"restoreInterruptedJobs"`
+	DownloadFolder        string `json:"downloadFolder"`
+	FFmpegPath            string `json:"ffmpegPath"`
+	WindowWidth           int    `json:"windowWidth"`
+	WindowHeight          int    `json:"windowHeight"`
+	DownloadConcurrency   int    `json:"downloadConcurrency"`
+	PerVideoSubfolder     bool   `json:"perVideoSubfolder"`
+	ConfirmBeforeDownload bool   `json:"confirmBeforeDownload"`
 }
 
 // HistoryEntry is one completed download shown in the Downloads page.
@@ -112,10 +111,8 @@ func Open(path string) (*Store, error) {
 		}
 	}
 	if s.state.Version == 0 {
-		// Version 0 predates these opt-out settings, so missing JSON booleans
-		// must migrate to the product defaults rather than false.
+		// Version 0 predates the current settings shape.
 		s.state.Settings.PerVideoSubfolder = true
-		s.state.Settings.RestoreInterruptedJobs = true
 		s.state.Version = 1
 	}
 	s.state.Settings = normalizeSettings(s.state.Settings)
@@ -126,12 +123,11 @@ func defaultState() State {
 	return State{
 		Version: 1,
 		Settings: Settings{
-			DownloadFolder:         defaultDownloadDir(),
-			WindowWidth:            1180,
-			WindowHeight:           760,
-			DownloadConcurrency:    2,
-			PerVideoSubfolder:      true,
-			RestoreInterruptedJobs: true,
+			DownloadFolder:      defaultDownloadDir(),
+			WindowWidth:         1180,
+			WindowHeight:        760,
+			DownloadConcurrency: 2,
+			PerVideoSubfolder:   true,
 		},
 		History: []HistoryEntry{},
 		Jobs:    []jobs.PersistedJob{},

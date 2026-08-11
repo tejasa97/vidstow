@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestProbeFFmpeg(t *testing.T) {
@@ -36,7 +37,13 @@ func TestConfigureUsesSiblingFFprobe(t *testing.T) {
 		t.Skip("POSIX test binaries")
 	}
 	binDir := fakeToolDir(t, true)
-	status := ConfigurePath(context.Background(), filepath.Join(binDir, "ffmpeg"))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// Exercise the configured-pair behavior directly with a generous test
+	// deadline. ConfigurePath's production four-second UI timeout remains
+	// covered by its own boundary; sharing it across two subprocesses made this
+	// fixture scheduler-sensitive under aggregate race load.
+	status := probeConfigured(ctx, filepath.Join(binDir, "ffmpeg"))
 	if !status.Available {
 		t.Fatalf("configured pair should be available: %+v", status)
 	}
