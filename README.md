@@ -179,6 +179,4 @@ VidStow is an independent open-source project. It is not affiliated with, endors
 
 ## History and license
 
-VidStow was extracted with filtered Git history from the former `apps/desktop` subtree of [`tejasa97/youtube_dlp`](https://github.com/tejasa97/youtube_dlp). The relevant commits and their original authorship are preserved.
-
 Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution details.
