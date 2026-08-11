@@ -45,6 +45,10 @@ const (
 	MaxProcessingConcurrency   = 3
 )
 
+// ErrClosed is returned when an operation would start new manager activity
+// after Close has begun.
+var ErrClosed = errors.New("jobs: manager is closed")
+
 // AllQualities is the fixed V0 quality list.
 var AllQualities = []Quality{
 	QualityBest, Quality4K, Quality1440p, Quality1080p, Quality720p, QualityAudioOnly,
@@ -220,6 +224,15 @@ type Manager struct {
 	eventSignal        chan struct{}
 	eventMu            sync.Mutex
 	pendingEvents      []Event
+	eventStop          chan struct{}
+	eventDone          chan struct{}
+	eventClosed        bool
+	closeOnce          sync.Once
+	closeDone          chan struct{}
+	closeErr           error
+	closing            bool
+	closed             bool
+	analysisWG         sync.WaitGroup
 	runDownload        downloadRunner
 	ffmpegLocation     string
 	mu                 sync.Mutex
@@ -264,6 +277,8 @@ func New(client *engine.Client, listener Listener) *Manager {
 	manager := &Manager{
 		client:      client,
 		listener:    listener,
+		closeDone:   make(chan struct{}),
+		eventDone:   make(chan struct{}),
 		runDownload: defaultDownloadRunner,
 		all:         make(map[string]*jobState),
 		active:      make(map[string]struct{}),
@@ -273,7 +288,10 @@ func New(client *engine.Client, listener Listener) *Manager {
 	}
 	if listener != nil {
 		manager.eventSignal = make(chan struct{}, 1)
+		manager.eventStop = make(chan struct{})
 		go manager.dispatchEvents()
+	} else {
+		close(manager.eventDone)
 	}
 	return manager
 }
@@ -291,20 +309,66 @@ func newFocusedClient(options ...engine.Option) *engine.Client {
 	return engine.NewClient(provideryoutube.NewComposition(), options...)
 }
 
-// Close flushes the persisted queue and releases the analysis client.
+// Close stops new manager activity, flushes persistence, drains every event
+// accepted before dispatcher shutdown, and releases the analysis client.
+// It is idempotent; concurrent callers receive the same final error.
 func (m *Manager) Close() error {
+	m.closeOnce.Do(func() {
+		m.closeErr = m.close()
+		close(m.closeDone)
+	})
+	<-m.closeDone
+	return m.closeErr
+}
+
+func (m *Manager) close() error {
 	m.mu.Lock()
-	stop, done := m.persistStop, m.persistDone
-	m.persistStop = nil
+	m.closing = true
+	workerDone := make([]<-chan struct{}, 0, len(m.active))
+	for id := range m.active {
+		state := m.all[id]
+		if state == nil {
+			continue
+		}
+		state.pauseRequested = true
+		state.snap.CanPause = false
+		if state.cancel != nil {
+			state.cancel()
+		}
+		if state.done != nil {
+			workerDone = append(workerDone, state.done)
+		}
+	}
 	m.mu.Unlock()
+
+	// Existing workers must publish their final state before persistence and
+	// the event dispatcher are shut down. No worker can start another job while
+	// closing is true, so this is a complete join of manager-owned work.
+	for _, finished := range workerDone {
+		<-finished
+	}
+	m.analysisWG.Wait()
+
+	m.mu.Lock()
+	stop, persistDone := m.persistStop, m.persistDone
+	m.persistStop = nil
+	m.persistSignal = nil
+	m.mu.Unlock()
+
 	if stop != nil {
 		close(stop)
-		<-done
+		<-persistDone
 	}
 	// Stop the debounce loop before the final write so its result is the one
 	// returned to shutdown and no later background flush can obscure it.
 	flushErr := m.FlushPersistence()
-	m.client.Close()
+	m.stopDispatcher()
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	if m.client != nil {
+		m.client.Close()
+	}
 	return flushErr
 }
 
@@ -318,6 +382,10 @@ func (m *Manager) SetPersistence(persistence Persistence, restoreInterrupted boo
 		return err
 	}
 	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return ErrClosed
+	}
 	if m.persistence != nil {
 		m.mu.Unlock()
 		return errors.New("jobs: persistence already configured")
@@ -336,12 +404,16 @@ func (m *Manager) SetPersistence(persistence Persistence, restoreInterrupted boo
 		m.emitLocked(Event{Name: EventPersistence, Persistence: &status})
 	}
 	signal, stop, done := m.persistSignal, m.persistStop, m.persistDone
-	m.mu.Unlock()
 	go m.persistLoop(signal, stop, done)
+	m.mu.Unlock()
 	if !restoreInterrupted {
 		return m.FlushPersistence()
 	}
 	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return ErrClosed
+	}
 	m.maybeStartNextLocked()
 	m.emitQueueLocked()
 	m.schedulePersistLocked()
@@ -458,24 +530,48 @@ func (m *Manager) FlushPersistence() error {
 // unbounded: listeners perform completion side effects such as writing
 // download history, so dropping or coalescing events would corrupt behavior.
 // The production Wails listener must remain fast and nonblocking; emitters
-// never hold the manager lock while waiting for it.
+// never hold the manager lock while waiting for it. eventStop is separate from
+// eventSignal because emitters may still be sending wakeups while shutdown
+// marks the mailbox closed.
 func (m *Manager) dispatchEvents() {
-	for range m.eventSignal {
-		for {
-			m.eventMu.Lock()
-			if len(m.pendingEvents) == 0 {
-				// Do not retain references through the backing array after a drain.
-				m.pendingEvents = nil
-				m.eventMu.Unlock()
-				break
-			}
-			event := m.pendingEvents[0]
-			m.pendingEvents[0] = Event{}
-			m.pendingEvents = m.pendingEvents[1:]
-			m.eventMu.Unlock()
-			m.listener(event)
+	defer close(m.eventDone)
+	for {
+		select {
+		case <-m.eventSignal:
+			m.drainEvents()
+		case <-m.eventStop:
+			m.drainEvents()
+			return
 		}
 	}
+}
+
+func (m *Manager) drainEvents() {
+	for {
+		m.eventMu.Lock()
+		if len(m.pendingEvents) == 0 {
+			// Do not retain references through the backing array after a drain.
+			m.pendingEvents = nil
+			m.eventMu.Unlock()
+			return
+		}
+		event := m.pendingEvents[0]
+		m.pendingEvents[0] = Event{}
+		m.pendingEvents = m.pendingEvents[1:]
+		m.eventMu.Unlock()
+		m.listener(event)
+	}
+}
+
+func (m *Manager) stopDispatcher() {
+	if m.listener == nil {
+		return
+	}
+	m.eventMu.Lock()
+	m.eventClosed = true
+	m.eventMu.Unlock()
+	close(m.eventStop)
+	<-m.eventDone
 }
 
 // PersistenceStatus returns the current durable-queue health. It is safe for
@@ -499,7 +595,10 @@ func (m *Manager) recordPersistenceResult(durable bool, err error) {
 	m.persistStatus = next
 	if changed {
 		status := next
-		m.emitLocked(Event{Name: EventPersistence, Persistence: &status})
+		// A final flush runs after the manager stops accepting new activity, but
+		// its health transition is still part of the ordered shutdown event
+		// stream and must be delivered before Close returns.
+		m.enqueueEvent(Event{Name: EventPersistence, Persistence: &status})
 	}
 	m.mu.Unlock()
 }
@@ -527,6 +626,10 @@ func persistenceStatus(durable bool, err error) PersistenceStatus {
 // download is already running.
 func (m *Manager) SetFFmpegLocation(path string) {
 	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return
+	}
 	m.ffmpegLocation = strings.TrimSpace(path)
 	m.mu.Unlock()
 }
@@ -595,6 +698,10 @@ func (m *Manager) Submit(req Request) (string, error) {
 	}
 
 	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return "", ErrClosed
+	}
 	m.all[id] = state
 	m.order = append(m.order, id)
 	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
@@ -617,6 +724,10 @@ func (m *Manager) List() []JobSnapshot {
 // caller can rely on the state to flow.
 func (m *Manager) Cancel(id string) {
 	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return
+	}
 	state, ok := m.all[id]
 	if !ok {
 		m.mu.Unlock()
@@ -659,6 +770,9 @@ func (m *Manager) Cancel(id string) {
 func (m *Manager) Pause(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closing || m.closed {
+		return ErrClosed
+	}
 	state, ok := m.all[id]
 	if !ok {
 		return fmt.Errorf("jobs: unknown job %q", id)
@@ -695,6 +809,10 @@ func (m *Manager) Pause(id string) error {
 // media-processing critical section. It returns the number accepted.
 func (m *Manager) PauseAll() int {
 	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return 0
+	}
 	ids := make([]string, 0, len(m.all))
 	for id, state := range m.all {
 		if state.snap.Status == StatusPending || (state.snap.Status == StatusActive && !state.snap.Processing) {
@@ -716,6 +834,9 @@ func (m *Manager) PauseAll() int {
 func (m *Manager) Resume(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closing || m.closed {
+		return ErrClosed
+	}
 	state, ok := m.all[id]
 	if !ok {
 		return fmt.Errorf("jobs: unknown job %q", id)
@@ -742,6 +863,10 @@ func (m *Manager) Resume(id string) error {
 // leave their critical sections, and durably records the remaining queue.
 func (m *Manager) Shutdown(ctx context.Context) {
 	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return
+	}
 	done := make([]<-chan struct{}, 0, len(m.active))
 	for id := range m.active {
 		state := m.all[id]
@@ -772,6 +897,10 @@ func (m *Manager) Shutdown(ctx context.Context) {
 // fields from the stored snapshot so the caller only needs the id.
 func (m *Manager) Retry(id string) error {
 	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return ErrClosed
+	}
 	state, ok := m.all[id]
 	if !ok {
 		m.mu.Unlock()
@@ -805,6 +934,10 @@ func (m *Manager) Retry(id string) error {
 // Remove drops a terminal job from the manager entirely.
 func (m *Manager) Remove(id string) {
 	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return
+	}
 	state, ok := m.all[id]
 	if !ok {
 		m.mu.Unlock()
@@ -825,6 +958,10 @@ func (m *Manager) Remove(id string) {
 // ClearTerminal removes every job in a terminal state.
 func (m *Manager) ClearTerminal() {
 	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return
+	}
 	for id, state := range m.all {
 		switch state.snap.Status {
 		case StatusComplete, StatusFailed, StatusCanceled:
@@ -867,6 +1004,11 @@ func (m *Manager) SetConcurrency(value int) int {
 		value = MaxDownloadConcurrency
 	}
 	m.mu.Lock()
+	if m.closing || m.closed {
+		current := m.concurrency
+		m.mu.Unlock()
+		return current
+	}
 	m.concurrency = value
 	m.maybeStartNextLocked()
 	m.emitQueueLocked()
@@ -883,6 +1025,9 @@ func (m *Manager) Concurrency() int {
 // maybeStartNextLocked fills every available download slot from the FIFO.
 // Caller must hold m.mu.
 func (m *Manager) maybeStartNextLocked() {
+	if m.closing || m.closed {
+		return
+	}
 	for len(m.active) < m.concurrency && len(m.order) > 0 {
 		id := m.order[0]
 		state, ok := m.all[id]
@@ -1100,10 +1245,18 @@ func (m *Manager) handleEvent(state *jobState, ev engine.Event) {
 // safely ask the manager for a fresh snapshot without deadlocking.
 func (m *Manager) emitLocked(ev Event) {
 	m.schedulePersistLocked()
+	m.enqueueEvent(ev)
+}
+
+func (m *Manager) enqueueEvent(ev Event) {
 	if m.listener == nil {
 		return
 	}
 	m.eventMu.Lock()
+	if m.eventClosed {
+		m.eventMu.Unlock()
+		return
+	}
 	m.pendingEvents = append(m.pendingEvents, ev)
 	m.eventMu.Unlock()
 	select {
@@ -1279,12 +1432,21 @@ func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, erro
 	if rawURL == "" {
 		return InfoSummary{}, errors.New("analyze: empty url")
 	}
+	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return InfoSummary{}, ErrClosed
+	}
+	ffmpegLocation := m.ffmpegLocation
+	m.analysisWG.Add(1)
+	m.mu.Unlock()
+	defer m.analysisWG.Done()
 	req := engine.Request{
 		URL:      rawURL,
 		Simulate: true,
 		Playlist: engine.PlaylistOptions{Disabled: true},
 		Filesystem: engine.FilesystemOptions{
-			FfmpegLocation: m.ffmpegLocationSnapshot(),
+			FfmpegLocation: ffmpegLocation,
 		},
 	}
 	result, err := m.client.Run(ctx, req)
@@ -1391,6 +1553,9 @@ func metadataText(info map[string]any, key string) string {
 func (m *Manager) cachePlans(videoID string, plans []outputplan.Plan) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closing || m.closed {
+		return
+	}
 	if len(m.planCache) >= 32 {
 		for key := range m.planCache {
 			delete(m.planCache, key)
@@ -1408,6 +1573,9 @@ func (m *Manager) ResolvePlan(videoID, planID string) (outputplan.Plan, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closing || m.closed {
+		return outputplan.Plan{}, ErrClosed
+	}
 	cached, ok := m.planCache[videoID]
 	if !ok || time.Now().After(cached.expiresAt) {
 		delete(m.planCache, videoID)
