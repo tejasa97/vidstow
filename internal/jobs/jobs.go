@@ -1511,7 +1511,7 @@ func (m *Manager) queueViewLocked() QueueView {
 			lifecycle = lifecycleForStatus(snap.Status)
 		}
 		row := QueueRow{
-			ID: snap.ID, Title: snap.Title, Metadata: queueMetadata(snap), ThumbnailURL: snap.Thumbnail,
+			ID: snap.ID, Title: snap.Title, Metadata: queueMetadata(snap), ThumbnailURL: queueThumbnailURL(snap),
 			Lifecycle: lifecycle, Phase: snap.Phase, Desired: snap.Desired,
 			OccupiesSlot: m.active[snap.ID] != nil, QueuePosition: positions[snap.ID],
 			Progress: snap.Progress, Message: snap.Message,
@@ -1614,6 +1614,21 @@ func lifecycleForStatus(status Status) jobmodel.Lifecycle {
 	default:
 		return jobmodel.LifecycleActionRequired
 	}
+}
+
+func queueThumbnailURL(snap JobSnapshot) string {
+	if snap.Thumbnail != "" {
+		return snap.Thumbnail
+	}
+	if len(snap.VideoID) < 6 || len(snap.VideoID) > 32 {
+		return ""
+	}
+	for _, r := range snap.VideoID {
+		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return ""
+		}
+	}
+	return "https://i.ytimg.com/vi/" + snap.VideoID + "/hqdefault.jpg"
 }
 
 func queueMetadata(snap JobSnapshot) string {
