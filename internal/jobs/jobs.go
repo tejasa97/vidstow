@@ -1620,7 +1620,7 @@ func queueThumbnailURL(snap JobSnapshot) string {
 	if snap.Thumbnail != "" {
 		return snap.Thumbnail
 	}
-	if len(snap.VideoID) < 6 || len(snap.VideoID) > 32 {
+	if len(snap.VideoID) != 11 {
 		return ""
 	}
 	for _, r := range snap.VideoID {
