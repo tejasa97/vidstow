@@ -165,7 +165,10 @@ npm run test:ui
 npm run build
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for project conventions and dependency-boundary requirements. Generated Wails bindings under `frontend/wailsjs/` are intentionally not tracked.
+See [Architecture](docs/ARCHITECTURE.md) for the current ownership and trust
+boundaries, and [CONTRIBUTING.md](CONTRIBUTING.md) for project conventions.
+Generated Wails bindings under `frontend/wailsjs/` are intentionally not
+tracked.
 
 ## Project scope
 
