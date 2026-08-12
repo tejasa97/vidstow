@@ -19,7 +19,7 @@ A focused, local-first downloader built with Go, Wails, and Svelte.
 
 </div>
 
-![VidStow showing video download options](docs/assets/screenshots/video-options.jpg)
+![VidStow analyzing Big Buck Bunny and showing complete video output choices](docs/assets/screenshots/video-options.png)
 
 > [!IMPORTANT]
 > VidStow is early-stage software with a deliberately narrow product surface.
@@ -41,7 +41,7 @@ queue, local history, and explicit recovery states.
 - **A real concurrent queue** — FIFO scheduling with configurable concurrency
   from 1–10 downloads and a default of 2.
 - **Explicit lifecycle controls** — Pause, Resume, Pause All, Cancel, Retry,
-  Download again, removal, and bounded pause-and-quit behavior.
+  removal, and bounded pause-and-quit behavior.
 - **Durable local state** — queue lifecycle, settings, reservations, history,
   and pending cleanup obligations are stored together in a versioned State v2
   file.
@@ -67,7 +67,6 @@ queue, local history, and explicit recovery states.
 | Pause and Resume | Typed pause intent with retained work where the engine can validate it |
 | Cancel | Stops the job and discards resumable session work; cleanup obligations remain visible until settled |
 | Retry | Retries a failed logical job using validated retained evidence when safe |
-| Download again | Starts a canceled item as a fresh job with new execution and session identities |
 | Restart recovery | Reconciles durable queue and engine evidence before any worker or cleanup task starts |
 | History | Persistent, searchable completed-download records with open and reveal actions |
 | Destinations | Root-identity validation, whole-output reservation, and no silent overwrite |
@@ -83,7 +82,7 @@ Pending ── Pause ────────────────► Paused
                           │            ▼
                           ├── error ─► Failed ── Retry
                           ├── Pause ─► Paused
-                          ├── Cancel ► Canceled ── Download again
+                          ├── Cancel ► Canceled
                           └──────────► Completed ── Open / Reveal
 ```
 
@@ -96,25 +95,24 @@ active job merely to satisfy the new limit.
 <table>
   <tr>
     <td width="50%">
-      <strong>Output choices</strong><br>
-      Choose a complete video plan or a focused audio output without exposing
-      raw format selectors.<br><br>
-      <img src="docs/assets/screenshots/audio-options.jpg" alt="VidStow audio output choices">
+      <strong>Durable lifecycle queue</strong><br>
+      Resume interrupted work, retry failures, and inspect terminal outcomes
+      from one workspace. The examples use Blender Foundation open movies.<br><br>
+      <img src="docs/assets/screenshots/queue-lifecycle.png" alt="VidStow queue with paused, failed, canceled, and completed Blender open movies">
     </td>
     <td width="50%">
-      <strong>Download queue</strong><br>
-      Follow pending, active, paused, failed, canceled, and completed work from
-      one workspace.<br><br>
-      <img src="docs/assets/screenshots/queue.jpg" alt="VidStow download queue">
+      <strong>Fail-closed recovery</strong><br>
+      Corrupt or unreadable state disables automatic mutation while preserving
+      media and recovery files for review.<br><br>
+      <img src="docs/assets/screenshots/recovery-required.png" alt="VidStow recovery-required screen preserving saved media">
     </td>
   </tr>
   <tr>
     <td colspan="2">
-      <strong>Desktop settings</strong><br>
-      Select the output folder, download concurrency, and FFmpeg installation.
-      Interrupted work follows VidStow's conservative recovery policy rather
-      than a user preference.<br><br>
-      <img src="docs/assets/screenshots/settings.jpg" alt="VidStow settings">
+      <strong>Queue and recovery settings</strong><br>
+      Select the output folder and concurrency limit, verify FFmpeg, and see
+      the fixed restore-as-paused policy.<br><br>
+      <img src="docs/assets/screenshots/settings-lifecycle.png" alt="VidStow settings showing concurrency and restart recovery policy">
     </td>
   </tr>
 </table>
