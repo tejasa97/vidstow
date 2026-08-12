@@ -28,12 +28,38 @@ func TestQueueThumbnailURL(t *testing.T) {
 		}
 	})
 
-	for _, videoID := range []string{"short", "contains/slash", "contains?query", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"} {
-		t.Run("rejects unsafe "+videoID, func(t *testing.T) {
+	for _, videoID := range []string{"short", "tenletters", "twelveletter", "contains/slash", "contains?query", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"} {
+		t.Run("rejects invalid "+videoID, func(t *testing.T) {
 			if got := queueThumbnailURL(JobSnapshot{VideoID: videoID}); got != "" {
-				t.Fatalf("queueThumbnailURL() = %q for unsafe video ID", got)
+				t.Fatalf("queueThumbnailURL() = %q for invalid YouTube video ID", got)
 			}
 		})
+	}
+}
+
+func TestRestoredStateV2QueueViewDerivesThumbnailURL(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "job-restored-thumbnail")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecyclePaused
+	store.state.Jobs[0].Desired = jobmodel.DesiredPaused
+	store.state.Jobs[0].Request.VideoID = "aqz-KE-bpKQ"
+	store.state.Jobs[0].Request.SourceURL = "https://www.youtube.com/watch?v=aqz-KE-bpKQ"
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+
+	view := manager.QueueView()
+	if len(view.Rows) != 1 {
+		t.Fatalf("QueueView() rows = %d, want 1", len(view.Rows))
+	}
+	const want = "https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg"
+	if got := view.Rows[0].ThumbnailURL; got != want {
+		t.Fatalf("restored QueueView thumbnail URL = %q, want %q", got, want)
 	}
 }
 
