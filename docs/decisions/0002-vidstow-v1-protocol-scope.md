@@ -1,58 +1,37 @@
-# Decision 0002: VidStow V1 protocol scope
+# Decision 0002: VidStow protocol scope
 
 Status: Accepted
 
 Date: 2026-08-11
 
-Applies to: First reliable concurrency/lifecycle release
-
 ## Context
 
-The engine contains and continues to develop several media transport paths.
-VidStow V1 needs a bounded, testable set whose Pause/Resume, finalization,
-publication, and recovery behavior can be proven on every supported platform.
-Experimental engine capability is not automatically a supported desktop
-product workflow.
+The engine contains more transport behavior than the focused desktop product
+exposes. Engine capability is not automatically supported VidStow behavior.
+The desktop boundary must remain explicit and testable.
 
 ## Decision
 
-VidStow V1 includes these resumable engine paths:
+VidStow's durable desktop session boundary covers:
 
 1. direct HTTP media;
-2. multi-track download plus FFmpeg merge/processing;
+2. separate-track download plus FFmpeg processing;
 3. finite HLS VOD; and
 4. static DASH.
 
-SABR/UMP remains experimental engine work. It is excluded from VidStow V1,
-must not be selectable through a VidStow output plan, and is not an engine E3,
-E5, combined-test, or VidStow release gate.
-
-Live HLS, dynamic DASH, and other live workflows also remain outside VidStow
-V1. Their within-run engine behavior must not be presented as durable desktop
-resume support.
+Experimental SABR/UMP behavior and live workflows are outside the current
+VidStow product scope. Within-run engine behavior for an excluded protocol must
+not be presented as durable desktop resume support.
 
 ## Consequences
 
-- Engine SABR/UMP work may continue independently without blocking VidStow.
-- VidStow output-plan filtering must fail closed if an analyzed plan would
-  require an excluded protocol.
-- Release evidence and fixtures cover direct, multi-track/FFmpeg, finite HLS
-  VOD, and static DASH only.
-- Documentation must distinguish engine experimentation from supported VidStow
-  behavior.
-
-## Reconsideration
-
-A later decision may add SABR/UMP or live workflows only after they have:
-
-- stable public engine contracts;
-- durable identity and credential-free checkpoint semantics;
-- staged no-replace publication and crash reconciliation;
-- native Windows, macOS, and Linux evidence; and
-- an explicit VidStow UX and output-plan acceptance decision.
+- Output planning must fail closed when a selection requires an excluded
+  protocol.
+- User documentation distinguishes engine capability from behavior exposed and
+  supported by VidStow.
+- Validation claims for VidStow are limited to the protocols listed above.
 
 ## Related material
 
+- [Current architecture](../ARCHITECTURE.md)
 - [Decision 0001: concurrency and lifecycle v1](0001-concurrency-lifecycle-v1.md)
-- [Confirmed product plan](../CONCURRENCY_LIFECYCLE_PLAN.md)
-- [Technical implementation plan](../CONCURRENCY_LIFECYCLE_TECHNICAL_PLAN.md)
