@@ -28,11 +28,10 @@ A local desktop application built with Go, Wails, and Svelte.
 
 ## Download
 
-When published, VidStow `v0.1.0-beta.1` will provide two installation routes:
-
-- a prebuilt `VidStow-0.1.0-beta.1-darwin-arm64.zip` for macOS Apple Silicon;
-  and
-- Apache-2.0 source with [local build instructions](#run-locally).
+VidStow can be built from the Apache-2.0 source using the
+[local build instructions](#run-locally). When `v0.1.0-beta.1` is published, it
+will also provide a prebuilt `VidStow-0.1.0-beta.1-darwin-arm64.zip` for macOS
+Apple Silicon.
 
 The beta release will include `SHA256SUMS` and build metadata identifying the
 exact source revision and engine dependency. FFmpeg and FFprobe are external
@@ -111,7 +110,7 @@ application and engine versions and by artifact-specific validation.
 | Area | Supported boundary |
 | --- | --- |
 | Product | Beta; focused public single-video YouTube workflow |
-| Package | macOS Apple Silicon `v0.1.0-beta.1` preview |
+| Package | `v0.1.0-beta.1` will provide a macOS Apple Silicon preview when published |
 | Source | Apache-2.0 source and self-build instructions |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
 | Engine | `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.0` |
