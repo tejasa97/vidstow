@@ -1,5 +1,5 @@
 #!/bin/sh
-# Create versioned launch archives and SHA-256 checksums from Wails build output.
+# Create versioned release archives and SHA-256 checksums from Wails build output.
 # Usage: package-release-archives.sh <version> <os> <arch> <artifact-path>
 # Examples:
 #   package-release-archives.sh 0.1.0 darwin arm64 build/bin/VidStow.app
@@ -76,7 +76,7 @@ case "$os_name" in
       echo "package-release-archives: missing ytdlp-js-helper.exe beside $artifact_abs" >&2
       exit 1
     fi
-    # Prefer a portable zip for first public launch; NSIS installers are optional extras.
+    # Prefer a portable zip; NSIS installers are optional extras.
     archive_name="VidStow-${version}-windows-${arch}.zip"
     (
       cd "$staging_root"

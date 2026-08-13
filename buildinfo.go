@@ -6,9 +6,9 @@ import (
 )
 
 const (
-	appVersion          = "0.1.0"
+	appVersion          = "0.1.0-beta.1"
 	engineModulePath    = "github.com/tejasa97/youtube_dlp"
-	pinnedEngineVersion = "v0.1.1-0.20260807091708-09a8354be2be"
+	pinnedEngineVersion = "v0.2.0"
 )
 
 // BuildInfo is the single backend-owned release identity exposed to the UI

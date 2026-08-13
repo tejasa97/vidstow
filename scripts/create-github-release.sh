@@ -1,38 +1,80 @@
 #!/usr/bin/env bash
-# Create or update a GitHub Release from packaged archives and SHA256SUMS.
+# Create or update a draft GitHub prerelease from a verified candidate bundle.
+# This script deliberately cannot publish a release.
 #
 # Usage:
-#   scripts/create-github-release.sh <tag> <archives-dir>
-#
-# Example:
-#   scripts/create-github-release.sh v0.1.0 dist/archives
-#
-# Requires: gh authenticated for tejasa97/vidstow, and the archives already built.
+#   scripts/create-github-release.sh <tag> <archives-dir> [target-commit]
 
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <tag> <archives-dir>" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  echo "usage: $0 <tag> <archives-dir> [target-commit]" >&2
   exit 2
 fi
 
 tag=$1
 archives_dir=$2
+target=${3:-}
 
+if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+  echo "create-github-release: expected a beta tag, got: $tag" >&2
+  exit 2
+fi
 if [[ ! -d "$archives_dir" ]]; then
   echo "create-github-release: missing archives dir: $archives_dir" >&2
   exit 1
 fi
-
 if [[ ! -f "$archives_dir/SHA256SUMS" ]]; then
   echo "create-github-release: missing SHA256SUMS in $archives_dir" >&2
+  exit 1
+fi
+if [[ ! -f "$archives_dir/RELEASE-METADATA.txt" ]]; then
+  echo "create-github-release: missing RELEASE-METADATA.txt in $archives_dir" >&2
+  exit 1
+fi
+version=${tag#v}
+archive_name="VidStow-${version}-darwin-arm64.zip"
+if [[ ! -f "$archives_dir/$archive_name" ]]; then
+  echo "create-github-release: missing candidate archive: $archive_name" >&2
   exit 1
 fi
 
 shopt -s nullglob
 assets=("$archives_dir"/*)
-if [[ ${#assets[@]} -eq 0 ]]; then
-  echo "create-github-release: no assets found in $archives_dir" >&2
+if [[ ${#assets[@]} -ne 3 ]]; then
+  echo "create-github-release: expected exactly archive, metadata, and checksums" >&2
+  exit 1
+fi
+for asset in "${assets[@]}"; do
+  case "$(basename "$asset")" in
+    "$archive_name"|RELEASE-METADATA.txt|SHA256SUMS) ;;
+    *)
+      echo "create-github-release: unexpected candidate asset: $(basename "$asset")" >&2
+      exit 1
+      ;;
+  esac
+done
+checksum_names=$(awk '{print $2}' "$archives_dir/SHA256SUMS" | LC_ALL=C sort)
+expected_names=$(printf '%s\n' "$archive_name" RELEASE-METADATA.txt | LC_ALL=C sort)
+if [[ "$checksum_names" != "$expected_names" ]]; then
+  echo "create-github-release: checksum manifest does not name the exact candidate files" >&2
+  exit 1
+fi
+if ! (cd "$archives_dir" && sha256sum -c SHA256SUMS); then
+  echo "create-github-release: candidate checksum verification failed" >&2
+  exit 1
+fi
+
+if [[ -z "$target" ]]; then
+  echo "create-github-release: target commit is required" >&2
+  exit 1
+fi
+remote_tag=$(git ls-remote --tags origin "refs/tags/$tag^{}" | awk 'NR == 1 {print $1}')
+if [[ -z "$remote_tag" ]]; then
+  remote_tag=$(git ls-remote --tags origin "refs/tags/$tag" | awk 'NR == 1 {print $1}')
+fi
+if [[ "$remote_tag" != "$target" ]]; then
+  echo "create-github-release: remote tag $tag does not point to target $target" >&2
   exit 1
 fi
 
@@ -42,40 +84,56 @@ trap 'rm -f "$notes_file"' EXIT
 cat >"$notes_file" <<EOF
 ## VidStow ${tag}
 
-Focused desktop downloader for public single-video YouTube URLs.
+This beta preview targets **macOS on Apple Silicon only**.
 
-### Downloads
+### Download
 
-- **macOS**: \`.zip\` containing \`VidStow.app\` (Apple Silicon and Intel builds are separate)
-- **Windows**: portable \`.zip\` and optional NSIS \`.exe\` installer
-- **Linux**: \`.tar.gz\` containing the binary and JS helper
+- \`VidStow-${tag#v}-darwin-arm64.zip\`
+- External FFmpeg and FFprobe are required.
+- Updates are installed manually from this project's releases.
+- \`SHA256SUMS\` verifies the downloaded candidate files.
+- \`RELEASE-METADATA.txt\` records the exact source commit, engine module,
+  toolchain, workflow, and artifact metadata.
 
-### Requirements
+Technical users can also build this Apache-2.0 project from the source attached
+to this release by following the repository's build instructions.
 
-- [FFmpeg](https://ffmpeg.org/download.html) on \`PATH\` (or configured in Settings)
-- Internet access for analyzing and downloading public YouTube videos
+### Scope
 
-### Unsigned builds
+VidStow accepts public, on-demand, single-video YouTube URLs exposed by its UI.
+It does not support playlists, channels, search, Shorts, live streams,
+authentication, cookies, private media, DRM, or access-control circumvention.
+Pause/Resume does not guarantee universal byte reuse; saved bytes are reused
+only when the engine can validate their identity.
 
-This early release ships **unsigned** artifacts so people can try VidStow without waiting for platform signing certificates.
-
-- **macOS**: right-click → Open the first time (Gatekeeper)
-- **Windows**: SmartScreen may warn; choose More info → Run anyway
-- **Linux**: extract and run \`./vidstow\`
-
-See [docs/RELEASE.md](docs/RELEASE.md) for packaging details and signing roadmap.
-
-Verify downloads against \`SHA256SUMS\`.
+See the repository's release packaging guide and documented limitations before
+testing.
 EOF
 
 if gh release view "$tag" >/dev/null 2>&1; then
-  echo "create-github-release: updating existing release $tag"
+  is_draft=$(gh release view "$tag" --json isDraft --jq .isDraft)
+  if [[ "$is_draft" != "true" ]]; then
+    echo "create-github-release: refusing to overwrite published release $tag" >&2
+    exit 1
+  fi
+  echo "create-github-release: updating draft prerelease $tag"
   gh release upload "$tag" "${assets[@]}" --clobber
-else
-  echo "create-github-release: creating release $tag"
-  gh release create "$tag" "${assets[@]}" \
+  gh release edit "$tag" \
+    --draft \
+    --prerelease \
     --title "VidStow ${tag}" \
     --notes-file "$notes_file"
+else
+  echo "create-github-release: creating draft prerelease $tag"
+  create_args=(
+    "$tag" "${assets[@]}"
+    --draft
+    --prerelease
+    --title "VidStow ${tag}"
+    --notes-file "$notes_file"
+  )
+  create_args+=(--target "$target" --verify-tag)
+  gh release create "${create_args[@]}"
 fi
 
-echo "create-github-release: done ($tag)"
+echo "create-github-release: draft ready; publication remains a separate maintainer action ($tag)"
