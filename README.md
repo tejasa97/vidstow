@@ -8,7 +8,7 @@
 
 A local desktop application built with Go, Wails, and Svelte.
 
-[![Status: early access](https://img.shields.io/badge/status-early_access-f59e0b.svg)](#project-status)
+[![Status: beta preview](https://img.shields.io/badge/status-beta_preview-f59e0b.svg)](#project-status)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-4c7cf3.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](go.mod)
 [![Wails](https://img.shields.io/badge/Wails-v2-CB2D3E)](https://wails.io/)
@@ -22,27 +22,26 @@ A local desktop application built with Go, Wails, and Svelte.
 ![VidStow analyzing Big Buck Bunny and showing video output choices](docs/assets/screenshots/video-options.png)
 
 > [!IMPORTANT]
-> VidStow is early-stage software with a deliberately narrow product surface.
-> It accepts public, on-demand, single-video YouTube URLs. Playlists, channels,
-> search, live streams, authenticated downloads, and other sites are not exposed
-> by the desktop application.
+> VidStow is beta software for public, on-demand, single-video YouTube URLs.
+> Playlists, channels, search, Shorts, live streams, authenticated downloads,
+> and other sites are outside the supported application scope.
 
 ## Download
 
-For `v0.1.0-beta.1`, choose either:
+When published, VidStow `v0.1.0-beta.1` will provide two installation routes:
 
-- the prebuilt `VidStow-0.1.0-beta.1-darwin-arm64.zip` for macOS Apple Silicon;
-  or
-- the Apache-2.0 source and the [local build instructions](#run-locally).
+- a prebuilt `VidStow-0.1.0-beta.1-darwin-arm64.zip` for macOS Apple Silicon;
+  and
+- Apache-2.0 source with [local build instructions](#run-locally).
 
-The release includes `SHA256SUMS` and build metadata identifying the exact
-source revision and engine dependency. FFmpeg and FFprobe are external
-requirements. Updates are installed manually from the project's GitHub
-Releases page.
+The beta release will include `SHA256SUMS` and build metadata identifying the
+exact source revision and engine dependency. FFmpeg and FFprobe are external
+requirements. Updates are installed manually from the project's GitHub Releases
+page.
 
-Windows, Linux, and macOS Intel packages are outside the current supported
-release scope. See the [release guide](docs/RELEASE.md) for artifact packaging
-and verification details.
+Windows, Linux, and macOS Intel packages are outside the supported release
+scope. See the [release guide](docs/RELEASE.md) for artifact packaging and
+verification details.
 
 ## Features
 
@@ -51,8 +50,9 @@ and verification details.
 - **Focused output choices** — choose best available video, capped resolutions,
   original audio, or MP3 when the analyzed media supports those choices.
 - **FIFO queue** — configure 1–10 concurrent downloads; the default is 2.
-- **Explicit lifecycle controls** — the backend authorizes Pause, Resume,
-  Pause All, Cancel, Retry, Open, and removal actions for each current row.
+- **Explicit lifecycle controls** — each queue row presents only the Pause,
+  Resume, Cancel, Retry, Open, or removal actions authorized by the application;
+  Pause All is available for eligible queued work.
 - **Durable application state** — State v2 stores queue lifecycle, settings,
   reservations, history, and pending cleanup obligations.
 - **Conservative recovery** — corrupt, unsafe, contended, unavailable, or
@@ -61,8 +61,8 @@ and verification details.
   collision decision, and an unrelated destination is not silently replaced.
 - **External FFmpeg support** — VidStow detects FFmpeg and FFprobe on `PATH` or
   validates a user-selected FFmpeg/FFprobe pair.
-- **Focused engine composition** — VidStow imports the provider-neutral engine
-  and the YouTube provider; the engine's wider catalog is not a VidStow feature.
+- **Focused engine composition** — the desktop application supports only its
+  explicitly exposed YouTube workflow, not the engine's wider extractor catalog.
 
 ### Lifecycle boundaries
 
@@ -105,10 +105,10 @@ required instead of claiming success.
 
 ## Project status
 
-VidStow is beta software. Supported behavior remains bounded by the exact
+VidStow is beta software. Supported behavior is bounded by the exact
 application and engine versions and by artifact-specific validation.
 
-| Area | Current boundary |
+| Area | Supported boundary |
 | --- | --- |
 | Product | Beta; focused public single-video YouTube workflow |
 | Package | macOS Apple Silicon `v0.1.0-beta.1` preview |
@@ -119,14 +119,13 @@ application and engine versions and by artifact-specific validation.
 | Updates | Manual downloads from GitHub Releases |
 
 The underlying [`youtube_dlp`](https://github.com/tejasa97/youtube_dlp)
-project has broader extractor and CLI capabilities. Those capabilities do not
-become VidStow features unless the desktop application exposes and validates
-them.
+project has broader extractor and CLI capabilities. VidStow supports only the
+workflow documented here and exposed by its desktop UI.
 
 ## Prerequisites
 
-- [Go 1.25.12](https://go.dev/dl/) or a compatible newer toolchain
-- [Node.js 20](https://nodejs.org/) or newer, with npm
+- [Go 1.25.12](https://go.dev/dl/)
+- [Node.js 22](https://nodejs.org/) with npm
 - [FFmpeg and FFprobe](https://ffmpeg.org/download.html) on `PATH`, or a
   user-selected FFmpeg executable with matching FFprobe beside it
 - [Wails CLI v2.13.0](https://wails.io/docs/gettingstarted/installation/)
@@ -204,11 +203,11 @@ selected output root.
 State v2 must not persist media delivery URLs, request headers, cookies,
 credentials, signed query parameters, or media encryption keys. VidStow does
 not require a hosted account and does not provide cloud sync. Normal operation
-still contacts YouTube and its media or thumbnail hosts, and may start the
-locally installed FFmpeg/FFprobe tools when the selected output requires them.
+contacts YouTube and its media or thumbnail hosts, and may start the locally
+installed FFmpeg/FFprobe tools when the selected output requires them.
 
 Errors shown by lifecycle and recovery views are bounded for presentation, but
-users should still review diagnostic material before sharing it.
+users should review diagnostic material before sharing it.
 
 ## Development
 
@@ -229,20 +228,21 @@ go test -race -count=1 ./...
 go build ./...
 ```
 
-See [Architecture](docs/ARCHITECTURE.md) for the current ownership and trust
-boundaries, and [CONTRIBUTING.md](CONTRIBUTING.md) for project conventions and
+See [Architecture](docs/ARCHITECTURE.md) for ownership and trust boundaries,
+and [CONTRIBUTING.md](CONTRIBUTING.md) for project conventions and
 dependency boundaries. Generated Wails bindings under `frontend/wailsjs/` are
 intentionally not tracked.
 
-## Current scope and limitations
+## Scope and limitations
 
-VidStow does not currently claim:
+VidStow does not support:
 
-- playlists, channels, search, live streams, or authenticated workflows;
-- providers other than the explicitly composed YouTube family;
+- playlists, channels, search, Shorts, live streams, or authenticated workflows;
+- sites other than YouTube;
 - DRM decryption or access-control circumvention;
 - universal resumability or byte reuse when media equivalence is unproved;
-- successful cleanup, publication, or recovery from uncertain evidence;
+- treating cleanup, publication, or recovery as successful when evidence is
+  uncertain;
 - automatic updates or packages outside macOS Apple Silicon; or
 - feature parity with yt-dlp or the broader `youtube_dlp` CLI.
 
