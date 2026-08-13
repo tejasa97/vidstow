@@ -15,6 +15,7 @@ func TestValidate_Accepts(t *testing.T) {
 		{"youtu.be short", "https://youtu.be/dQw4w9WgXcQ", "dQw4w9WgXcQ"},
 		{"youtube-nocookie embed", "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ", "dQw4w9WgXcQ"},
 		{"with extra params", "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s", "dQw4w9WgXcQ"},
+		{"with playlist context", "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123&index=7", "dQw4w9WgXcQ"},
 		{"http scheme", "http://youtube.com/watch?v=dQw4w9WgXcQ", "dQw4w9WgXcQ"},
 	}
 	for _, tc := range cases {
@@ -29,6 +30,10 @@ func TestValidate_Accepts(t *testing.T) {
 			if got.Kind != "single_video" {
 				t.Fatalf("kind = %q, want single_video", got.Kind)
 			}
+			wantURL := "https://www.youtube.com/watch?v=" + tc.wantID
+			if got.URL != wantURL {
+				t.Fatalf("URL = %q, want %q", got.URL, wantURL)
+			}
 		})
 	}
 }
@@ -42,7 +47,8 @@ func TestValidate_Rejects(t *testing.T) {
 		{"empty", "", ReasonEmpty},
 		{"not youtube", "https://example.com/watch?v=abcd", ReasonNotYouTube},
 		{"playlist", "https://www.youtube.com/playlist?list=PL123", ReasonPlaylist},
-		{"watch with list", "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123", ReasonPlaylist},
+		{"watch with list but no video", "https://www.youtube.com/watch?list=PL123&index=7", ReasonPlaylist},
+		{"watch with list and invalid video", "https://www.youtube.com/watch?v=too-short&list=PL123", ReasonMissingVideoID},
 		{"search", "https://www.youtube.com/results?search_query=hello", ReasonSearch},
 		{"channel at", "https://www.youtube.com/@veritasium", ReasonChannel},
 		{"shorts", "https://www.youtube.com/shorts/abcdefghijk", ReasonShorts},

@@ -83,12 +83,13 @@ func Validate(raw string) (Result, error) {
 		return Result{}, reject(ReasonNotYouTube, "Only YouTube video links are supported.")
 	}
 
-	// Reject known non-video entry points early.
+	// Reject known non-video entry points early. A /watch URL with a video ID
+	// is still a single-video URL when it includes playlist context such as list
+	// or index; extractVideoID and canonical deliberately ignore that context.
+	// Without v, however, /watch?list=... remains a playlist rejection.
 	switch {
-	case parsed.Path == "/watch":
-		if list := parsed.Query().Get("list"); list != "" {
-			return Result{}, reject(ReasonPlaylist, "Playlist links are not supported yet. Paste a single YouTube video link.")
-		}
+	case parsed.Path == "/watch" && parsed.Query().Get("list") != "" && parsed.Query().Get("v") == "":
+		return Result{}, reject(ReasonPlaylist, "Playlist links are not supported yet. Paste a single YouTube video link.")
 	case strings.HasPrefix(parsed.Path, "/playlist"):
 		return Result{}, reject(ReasonPlaylist, "Playlist links are not supported yet. Paste a single YouTube video link.")
 	case parsed.Path == "/results" || strings.HasPrefix(parsed.Path, "/search"):
