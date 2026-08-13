@@ -1,83 +1,71 @@
 # Release packaging
 
-VidStow ships native desktop builds for macOS, Windows, and Linux. Wails cannot
-cross-compile webview apps, so each platform must be built on a matching runner
-or machine.
+The current packaged release scope is a macOS Apple Silicon beta. VidStow's
+Apache-2.0 source and self-build instructions remain available for users who
+prefer to build it themselves.
 
-## Artifacts for v0.1.0
+## Artifact for v0.1.0-beta.1
 
 | Platform | Artifact | Contents |
 | --- | --- | --- |
-| macOS Apple Silicon | `VidStow-0.1.0-darwin-arm64.zip` | `VidStow.app` with embedded `ytdlp-js-helper` |
-| macOS Intel | `VidStow-0.1.0-darwin-amd64.zip` | `VidStow.app` with embedded `ytdlp-js-helper` |
-| Windows x64 | `VidStow-0.1.0-windows-amd64.zip` | portable `vidstow.exe` + `ytdlp-js-helper.exe` |
-| Windows x64 installer | `VidStow-0.1.0-windows-amd64-installer.exe` | NSIS installer that also installs the helper |
-| Linux x64 | `VidStow-0.1.0-linux-amd64.tar.gz` | `vidstow` + `ytdlp-js-helper` |
+| macOS Apple Silicon | `VidStow-0.1.0-beta.1-darwin-arm64.zip` | `VidStow.app` with embedded `ytdlp-js-helper` |
 
-Every GitHub Release also includes `SHA256SUMS`.
+The release also includes `SHA256SUMS` and build metadata identifying the exact
+source revision and `youtube_dlp` module version. A checksum establishes file
+identity only; it does not establish publisher identity, notarization, safety,
+or reproducibility.
+
+Windows, Linux, and macOS Intel packages are outside the current supported
+release scope.
 
 ## Local packaging
 
+Install the documented Go, Node.js, Wails, and Xcode command-line tool versions,
+then build on an Apple Silicon Mac:
+
 ```sh
-# Install Wails once
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
-
-# macOS
 wails build -platform darwin/arm64 -clean
-./scripts/package-release-archives.sh 0.1.0 darwin arm64 build/bin/VidStow.app
-
-# Windows (on Windows)
-wails build -platform windows/amd64 -nsis -clean
-./scripts/package-release-archives.sh 0.1.0 windows amd64 build/bin/vidstow.exe
-
-# Linux
-wails build -platform linux/amd64 -clean
-./scripts/package-release-archives.sh 0.1.0 linux amd64 build/bin/vidstow
+./scripts/package-release-archives.sh \
+  0.1.0-beta.1 darwin arm64 build/bin/VidStow.app
 ```
 
-Post-build hooks package and verify `ytdlp-js-helper` beside the executable on
-Windows and Linux. On macOS the helper is placed inside the app bundle and the
-bundle is ad-hoc re-signed.
+The macOS post-build hook places `ytdlp-js-helper` inside the app bundle and
+ad-hoc re-signs the bundle after modification. Verify the bundle, helper,
+archive layout, architecture, version, and checksum before creating a release
+candidate.
 
-## Current signing status
+## Artifact signature
 
-Current locally produced artifacts do not carry an endorsed distribution
-signature:
+The current macOS bundle is ad-hoc signed. An ad-hoc signature can detect some
+post-signing modifications, but it does not establish publisher identity or
+Apple notarization.
 
-- macOS bundles are ad-hoc signed, not Developer ID signed or notarized.
-- Windows binaries do not carry an Authenticode signature.
-- Linux archives do not carry a separate desktop-distribution signature.
-
-Release notes must describe the signature on the exact artifact and must not
-instruct users to disable or bypass operating-system security controls.
-
-## Signing and notarization requirements
-
-A Gatekeeper-accepted macOS artifact requires a Developer ID Application
-signature, Apple notarization, and stapling. CI must obtain signing and
-notarization credentials from protected secrets and must verify the resulting
-artifact before release.
-
-If a Windows artifact is described as signed, the exact binary and installer
-must carry a verifiable Authenticode signature. The installer signing hooks are
-in `build/windows/installer/project.nsi`.
+Release notes must describe the exact artifact accurately and must not claim
+Apple verification or instruct users to disable or bypass operating-system
+security controls.
 
 ## FFmpeg
 
-FFmpeg is **not** bundled in v0.1 because redistribution raises LGPL/GPL notice
-and update-maintenance questions. The app detects FFmpeg/FFprobe on `PATH` and
-lets the user pick a custom binary. Release notes and the README tell users how
-to install it.
+FFmpeg and FFprobe are not bundled. The app detects them on `PATH` and lets the
+user select custom binaries. The README and release notes must state this
+external requirement.
 
-## GitHub Release automation
+## Updates
 
-`.github/workflows/release.yml` defines the repository's tagged-build
-automation. It builds on matching platform runners and assembles archives plus
-`SHA256SUMS`. Any published release must identify the exact source revision,
-supported platforms, dependency versions, and signing status of its artifacts.
+The beta does not include an automatic updater. Users obtain updates manually
+from the project's GitHub Releases page or build a newer source revision.
 
-Manual archive creation after local builds:
+## GitHub release automation
 
-```sh
-./scripts/create-github-release.sh v0.1.0 dist
-```
+The release-candidate workflow must:
+
+1. run only by explicit manual dispatch from `main`;
+2. accept only the exact beta version configured in the source;
+3. build and validate macOS Apple Silicon only;
+4. record the source commit and dependency versions;
+5. produce the ZIP, `SHA256SUMS`, and build metadata; and
+6. create or update a draft prerelease without publishing it.
+
+A maintainer reviews the draft and its validation evidence before publication.
+Tag creation, release approval, and publication remain manual authority.
