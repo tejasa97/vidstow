@@ -4,104 +4,130 @@
 
 # VidStow
 
-### Save the videos you're allowed to keep—without living in a terminal.
+### Download public YouTube videos with a focused desktop queue.
 
-A focused desktop downloader built with Go, Wails, and Svelte.
+A local desktop application built with Go, Wails, and Svelte.
 
+[![Status: beta preview](https://img.shields.io/badge/status-beta_preview-f59e0b.svg)](#project-status)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-4c7cf3.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](go.mod)
 [![Wails](https://img.shields.io/badge/Wails-v2-CB2D3E)](https://wails.io/)
 [![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)](frontend/package.json)
-[![Engine](https://img.shields.io/badge/youtube__dlp-09a8354-20232A)](https://github.com/tejasa97/youtube_dlp/commit/09a8354be2be)
+[![Engine](https://img.shields.io/badge/youtube__dlp-v0.2.0-20232A)](go.mod)
 
-[Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Contributing](CONTRIBUTING.md)
+[Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Project status](#project-status) · [Run locally](#run-locally) · [How it works](#how-it-works) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
-![VidStow showing video download options](docs/assets/screenshots/video-options.jpg)
+![VidStow analyzing Big Buck Bunny and showing video output choices](docs/assets/screenshots/video-options.png)
 
 > [!IMPORTANT]
-> VidStow is early-stage software. The UI intentionally supports public, single-video YouTube URLs; playlists, channels, search, live streams, Shorts, and other sites are not yet exposed. The first public builds are unsigned.
+> VidStow is beta software for public, on-demand, single-video YouTube URLs.
+> Playlists, channels, search, Shorts, live streams, authenticated downloads,
+> and other sites are outside the supported application scope.
 
 ## Download
 
-Grab the latest [GitHub Release](https://github.com/tejasa97/vidstow/releases/latest) once `v0.1.0` is published:
+VidStow can be built from the Apache-2.0 source using the
+[local build instructions](#run-locally). When `v0.1.0-beta.1` is published, it
+will also provide a prebuilt `VidStow-0.1.0-beta.1-darwin-arm64.zip` for macOS
+Apple Silicon.
 
-| Platform | Artifact |
-| --- | --- |
-| macOS Apple Silicon | `VidStow-0.1.0-darwin-arm64.zip` |
-| macOS Intel | `VidStow-0.1.0-darwin-amd64.zip` |
-| Windows | `VidStow-0.1.0-windows-amd64.zip` (portable) or `VidStow-0.1.0-windows-amd64-installer.exe` |
-| Linux | `VidStow-0.1.0-linux-amd64.tar.gz` |
+The beta release will include `SHA256SUMS` and build metadata identifying the
+exact source revision and engine dependency. FFmpeg and FFprobe are external
+requirements. Updates are installed manually from the project's GitHub Releases
+page.
 
-Every release also ships `SHA256SUMS`.
-
-### First-run notes
-
-- **FFmpeg** — install FFmpeg and FFprobe, or point VidStow at them in Settings.
-- **macOS (unsigned)** — right-click the app → Open, or remove the quarantine attribute: `xattr -dr com.apple.quarantine /path/to/VidStow.app`.
-- **Windows (unsigned)** — SmartScreen may warn on first launch; choose More info → Run anyway.
-- **Linux** — extract the archive and run `./vidstow`. Keep `ytdlp-js-helper` beside the executable.
-- **JavaScript helper** — release packages include `ytdlp-js-helper` next to the app binary. Do not delete it.
-
-See [docs/RELEASE.md](docs/RELEASE.md) for packaging, signing status, and maintainer instructions.
-
-## Why VidStow?
-
-Downloading a video should not require memorising command-line flags. VidStow wraps a focused YouTube extraction engine in a small native desktop app with clear choices, persistent history, and understandable errors.
-
-- **Purpose-built UI** — paste a URL, preview the video, choose a quality, and download.
-- **Six useful presets** — Best, 4K, 1440p, 1080p, 720p, and audio only.
-- **A real queue** — one active download at a time, with progress, speed, ETA, cancellation, retry, and removal.
-- **Local history** — search past downloads and open or reveal completed files.
-- **FFmpeg awareness** — automatic detection, custom-path support, and actionable setup guidance.
-- **Focused by construction** — the app imports `engine` plus `providers/youtube`; it does not compile in the broad multi-site extractor catalog.
+Windows, Linux, and macOS Intel packages are outside the supported release
+scope. See the [release guide](docs/RELEASE.md) for artifact packaging and
+verification details.
 
 ## Features
 
-| Workflow | What VidStow provides |
-| --- | --- |
-| Analyze | Title, thumbnail, duration, and channel preview before downloading |
-| Choose quality | Best, resolution-capped video, or audio-only presets |
-| Download | Output-folder selection and FFmpeg-backed media processing |
-| Queue | FIFO execution with progress, speed, ETA, cancellation, retry, and removal |
-| History | Persistent, searchable download records with open and reveal actions |
-| Diagnose | FFmpeg status, configurable binary path, and privacy-conscious diagnostics |
+- **Analyze before downloading** — inspect the title, thumbnail, duration,
+  channel, and available output choices.
+- **Focused output choices** — choose best available video, capped resolutions,
+  original audio, or MP3 when the analyzed media supports those choices.
+- **FIFO queue** — configure 1–10 concurrent downloads; the default is 2.
+- **Explicit lifecycle controls** — each queue row presents only the Pause,
+  Resume, Cancel, Retry, Open, or removal actions authorized by the application;
+  Pause All is available for eligible queued work.
+- **Durable application state** — State v2 stores queue lifecycle, settings,
+  reservations, history, and pending cleanup obligations.
+- **Conservative recovery** — corrupt, unsafe, contended, unavailable, or
+  indeterminate evidence does not authorize automatic destructive mutation.
+- **Destination reservations** — related artifacts for a job receive one
+  collision decision, and an unrelated destination is not silently replaced.
+- **External FFmpeg support** — VidStow detects FFmpeg and FFprobe on `PATH` or
+  validates a user-selected FFmpeg/FFprobe pair.
+- **Focused engine composition** — the desktop application supports only its
+  explicitly exposed YouTube workflow, not the engine's wider extractor catalog.
 
-VidStow stores settings and download history in the operating system's user-config directory. It does not require an account or a hosted VidStow service.
+### Lifecycle boundaries
+
+VidStow persists logical job, execution-attempt, and engine-session identities
+separately. Pause requests are cooperative: a transfer may settle as paused,
+while work already finalizing may complete. Resume and Retry enqueue work; reuse
+of retained bytes depends on the exact engine release, selected protocol, and
+valid session evidence. VidStow does not promise universal continuation or byte
+reuse.
+
+Cancel requests engine-session discard. If cleanup cannot be proved complete,
+the application retains a cleanup obligation or reports that user action is
+required instead of claiming success.
 
 ## Screenshots
 
 <table>
   <tr>
     <td width="50%">
-      <strong>Audio formats</strong><br>
-      Choose original audio or convert it to a familiar MP3 bitrate.<br><br>
-      <img src="docs/assets/screenshots/audio-options.jpg" alt="VidStow audio format options">
+      <strong>Lifecycle queue</strong><br>
+      Inspect paused, failed, canceled, and completed rows from one workspace.
+      The examples use Blender Foundation open movies.<br><br>
+      <img src="docs/assets/screenshots/queue-lifecycle.png" alt="VidStow queue with paused, failed, canceled, and completed Blender open movies">
     </td>
     <td width="50%">
-      <strong>Persistent queue</strong><br>
-      Track active and queued downloads from one focused workspace.<br><br>
-      <img src="docs/assets/screenshots/queue.jpg" alt="VidStow download queue">
+      <strong>Recovery-required state</strong><br>
+      Unsafe or unreadable application state disables ordinary queue mutation
+      and preserves available recovery evidence for review.<br><br>
+      <img src="docs/assets/screenshots/recovery-required.png" alt="VidStow recovery-required screen preserving available recovery evidence">
     </td>
   </tr>
   <tr>
     <td colspan="2">
-      <strong>Desktop settings</strong><br>
-      Configure the output folder, concurrency, recovery behavior, and FFmpeg installation.<br><br>
-      <img src="docs/assets/screenshots/settings.jpg" alt="VidStow settings">
+      <strong>Queue and recovery settings</strong><br>
+      Select the output folder and concurrency limit and verify FFmpeg status.<br><br>
+      <img src="docs/assets/screenshots/settings-lifecycle.png" alt="VidStow settings showing output, concurrency, recovery, and FFmpeg controls">
     </td>
   </tr>
 </table>
 
-## Quick start
+## Project status
 
-### Prerequisites
+VidStow is beta software. Supported behavior is bounded by the exact
+application and engine versions and by artifact-specific validation.
 
-- [Go 1.25.12](https://go.dev/dl/) or newer
-- [Node.js 20](https://nodejs.org/) or newer, with npm
-- [FFmpeg](https://ffmpeg.org/download.html) available on `PATH`, or configured in VidStow
-- [Wails CLI v2](https://wails.io/docs/gettingstarted/installation/) for native development and packaging
+| Area | Supported boundary |
+| --- | --- |
+| Product | Beta; focused public single-video YouTube workflow |
+| Package | `v0.1.0-beta.1` will provide a macOS Apple Silicon preview when published |
+| Source | Apache-2.0 source and self-build instructions |
+| Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
+| Engine | `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.0` |
+| Resume | Session reuse is evidence-dependent; no universal transfer continuation or guaranteed byte reuse |
+| Updates | Manual downloads from GitHub Releases |
+
+The underlying [`youtube_dlp`](https://github.com/tejasa97/youtube_dlp)
+project has broader extractor and CLI capabilities. VidStow supports only the
+workflow documented here and exposed by its desktop UI.
+
+## Prerequisites
+
+- [Go 1.25.12](https://go.dev/dl/)
+- [Node.js 22](https://nodejs.org/) with npm
+- [FFmpeg and FFprobe](https://ffmpeg.org/download.html) on `PATH`, or a
+  user-selected FFmpeg executable with matching FFprobe beside it
+- [Wails CLI v2.13.0](https://wails.io/docs/gettingstarted/installation/)
 
 Install the pinned Wails CLI:
 
@@ -109,7 +135,7 @@ Install the pinned Wails CLI:
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 ```
 
-### Run locally
+## Run locally
 
 ```sh
 git clone https://github.com/tejasa97/vidstow.git
@@ -122,64 +148,113 @@ cd ..
 wails dev
 ```
 
-### Build the desktop app
+## Build the desktop app
 
 ```sh
 wails build
 ```
 
-The native artifact is written beneath `build/bin/`. On macOS, the post-build hook also builds and verifies the matching `ytdlp-js-helper` beside the app executable.
+The native artifact is written beneath `build/bin/`. A JavaScript helper used
+by the pinned engine is built and verified by the repository's packaging hooks;
+it must remain in the location expected by the resulting application bundle or
+binary layout.
 
 ## How it works
 
 ```mermaid
 flowchart LR
     UI["Svelte UI"] --> Bridge["Wails bridge"]
-    Bridge --> Queue["Download queue"]
-    Bridge --> Store["Local settings & history"]
-    Queue --> Engine["youtube_dlp engine"]
-    Engine --> Provider["YouTube provider composition"]
+    Bridge --> Admission["Admission and output planning"]
+    Bridge --> Manager["Queue manager"]
+    Admission --> State["State v2 store"]
+    Manager --> State
+    Manager --> Engine["youtube_dlp engine"]
+    Engine --> Session["Engine session workspace"]
     Engine --> FFmpeg["FFmpeg / FFprobe"]
-    FFmpeg --> Files["Local media files"]
+    Session --> Output["Reserved output"]
+    FFmpeg --> Output
 ```
 
-VidStow pins the provider-neutral [`youtube_dlp`](https://github.com/tejasa97/youtube_dlp) engine at immutable Go module pseudo-version [`v0.1.1-0.20260807091708-09a8354be2be`](https://github.com/tejasa97/youtube_dlp/commit/09a8354be2be). Both metadata analysis and downloads use the same explicit YouTube composition.
+VidStow owns the desktop workflow, queue scheduling, State v2 application
+lifecycle, destination reservations, recovery presentation, and UI. The engine
+owns extraction, transport, protocol-specific session evidence, media
+processing, and output-publication primitives. State v2 and an engine session
+manifest are separate authorities; neither substitutes for the other.
 
-The UI is the product boundary: if a workflow appears in VidStow, it is supported by VidStow. The underlying provider package can evolve independently without silently exposing new workflows in the desktop application.
+The manager produces the queue view and action capabilities consumed by the
+frontend. The frontend presents those capabilities rather than inferring
+lifecycle authority from status text.
+
+## Local data and privacy
+
+VidStow stores application state in the operating system's per-user
+configuration directory. State v2 can include:
+
+- settings, including the selected download folder and an optional FFmpeg path;
+- canonical public YouTube watch URLs and video IDs;
+- display metadata such as title, channel, duration, and selected quality;
+- job, attempt, session, queue, lifecycle, reservation, and cleanup records;
+- completed-download history, including output paths and media metadata.
+
+Engine session work is stored beneath an engine-owned hidden directory in the
+selected output root.
+
+State v2 must not persist media delivery URLs, request headers, cookies,
+credentials, signed query parameters, or media encryption keys. VidStow does
+not require a hosted account and does not provide cloud sync. Normal operation
+contacts YouTube and its media or thumbnail hosts, and may start the locally
+installed FFmpeg/FFprobe tools when the selected output requires them.
+
+Errors shown by lifecycle and recovery views are bounded for presentation, but
+users should review diagnostic material before sharing it.
 
 ## Development
 
-Run the complete validation suite before submitting a change:
+Run the validation suite before submitting a change:
 
 ```sh
-go mod tidy -diff
-go vet ./...
-go test -count=1 ./...
-go test -race -count=1 ./...
-go build ./...
-
 cd frontend
 npm ci
 npm run check
 npm run test:ui
 npm run build
+cd ..
+
+go mod tidy -diff
+go vet ./...
+go test -count=1 ./...
+go test -race -count=1 ./...
+go build ./...
 ```
 
-See [Architecture](docs/ARCHITECTURE.md) for the current ownership and trust
-boundaries, and [CONTRIBUTING.md](CONTRIBUTING.md) for project conventions.
-Generated Wails bindings under `frontend/wailsjs/` are intentionally not
-tracked.
+See [Architecture](docs/ARCHITECTURE.md) for ownership and trust boundaries,
+and [CONTRIBUTING.md](CONTRIBUTING.md) for project conventions and
+dependency boundaries. Generated Wails bindings under `frontend/wailsjs/` are
+intentionally not tracked.
 
-## Project scope
+## Scope and limitations
 
-VidStow deliberately starts narrow. Today, an option shown in the UI is an option the application supports. New providers or YouTube workflows should be added by importing the relevant provider package and designing the corresponding end-user experience—not by enabling hidden runtime gates.
+VidStow does not support:
+
+- playlists, channels, search, Shorts, live streams, or authenticated workflows;
+- sites other than YouTube;
+- DRM decryption or access-control circumvention;
+- universal resumability or byte reuse when media equivalence is unproved;
+- treating cleanup, publication, or recovery as successful when evidence is
+  uncertain;
+- automatic updates or packages outside macOS Apple Silicon; or
+- feature parity with yt-dlp or the broader `youtube_dlp` CLI.
 
 ## Responsible use
 
-Use VidStow only for content you own or are authorized to download. You are responsible for following applicable laws, rights-holder permissions, and platform terms.
+Use VidStow only for content you own or are authorized to download. You are
+responsible for following applicable laws, rights-holder permissions, and
+platform terms.
 
-VidStow is an independent open-source project. It is not affiliated with, endorsed by, or sponsored by YouTube or Google.
+VidStow is an independent open-source project. It is not affiliated with,
+endorsed by, or sponsored by YouTube, Google, yt-dlp, or any supported service.
 
-## History and license
+## License
 
-Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution details.
+Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for
+attribution details.
