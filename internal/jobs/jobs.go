@@ -359,6 +359,7 @@ type Manager struct {
 	detachedWG         sync.WaitGroup
 	runDownload        downloadRunner
 	runAnalyze         analyzeRunner
+	inspectResume      resumeInspector
 	ffmpegLocation     string
 	mu                 sync.Mutex
 	all                map[string]*jobState
@@ -388,6 +389,8 @@ type cachedPlans struct {
 type downloadRunner func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error)
 
 type analyzeRunner func(context.Context, engine.Request) (engine.Result, error)
+
+type resumeInspector func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error)
 
 // worker is runtime-only attempt state. It is never restored from State v2;
 // active is the sole live occupancy authority and retains this value until
@@ -436,6 +439,7 @@ func New(client *engine.Client, listener Listener) *Manager {
 		lifecycleCancel:   lifecycleCancel,
 		runDownload:       defaultDownloadRunner,
 		runAnalyze:        client.Run,
+		inspectResume:     engine.InspectResumeState,
 		all:               make(map[string]*jobState),
 		active:            make(map[string]*worker),
 		concurrency:       DefaultDownloadConcurrency,
@@ -2382,9 +2386,103 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	return shutdownErr
 }
 
+type retryResumeDecision uint8
+
+const (
+	retryResumeReuse retryResumeDecision = iota + 1
+	retryResumeActionRequired
+)
+
+// classifyRetryResume authorizes reuse only for an available, validated
+// manifest. Every other result preserves the old authority for explicit
+// reconciliation. In particular, unavailable_root is not proof of absence:
+// the engine also uses it for lease/open failures after finding a workspace.
+func classifyRetryResume(summary engine.ResumeSummary) (retryResumeDecision, string) {
+	if summary.LeaseContended {
+		return retryResumeActionRequired, "session-lease-contended"
+	}
+	if string(summary.Publication) == "committed" || string(summary.Publication) == "indeterminate" {
+		return retryResumeActionRequired, "publication-reconciliation-required"
+	}
+	if string(summary.Cleanup) == "indeterminate" || string(summary.Status) == "needs_reconciliation" {
+		return retryResumeActionRequired, "session-reconciliation-required"
+	}
+
+	classes := append([]engine.ResumeInspectionClass{summary.Classification}, summary.Classifications...)
+	seen := make(map[engine.ResumeInspectionClass]struct{}, len(classes))
+	hasAvailable := false
+	for _, class := range classes {
+		if class == "" {
+			continue
+		}
+		if _, duplicate := seen[class]; duplicate {
+			continue
+		}
+		seen[class] = struct{}{}
+		switch string(class) {
+		case "available":
+			hasAvailable = true
+		case "unavailable_root":
+			return retryResumeActionRequired, "recovery-session-unavailable"
+		case "publication_indeterminate", "manifest_commit_indeterminate":
+			return retryResumeActionRequired, "publication-reconciliation-required"
+		case "unknown_manifest_version":
+			return retryResumeActionRequired, "session-version-unknown"
+		case "corrupt_manifest":
+			return retryResumeActionRequired, "session-manifest-corrupt"
+		case "unsafe_path":
+			return retryResumeActionRequired, "session-path-unsafe"
+		case "lease_contention":
+			return retryResumeActionRequired, "session-lease-contended"
+		case "missing_lease", "needs_reconciliation", "discard_pending":
+			return retryResumeActionRequired, "session-reconciliation-required"
+		default:
+			return retryResumeActionRequired, "session-reconciliation-required"
+		}
+	}
+
+	if summary.HasManifest && hasAvailable && len(seen) == 1 {
+		return retryResumeReuse, ""
+	}
+	return retryResumeActionRequired, "session-reconciliation-required"
+}
+
+func (m *Manager) requireRetryAction(state *jobState, code string) error {
+	if code == "" {
+		code = "session-reconciliation-required"
+	}
+	if err := m.commitDurable(state, func(job *jobmodel.DurableJob, _ *jobmodel.State) error {
+		job.Lifecycle = jobmodel.LifecycleActionRequired
+		job.Desired = jobmodel.DesiredPaused
+		job.ActionRequiredCode = code
+		job.LastErrorCode = code
+		return nil
+	}); err != nil {
+		m.mu.Lock()
+		state.commanding = false
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.all[state.snap.ID] != state || state.snap.Status != StatusFailed || !state.commanding {
+		state.commanding = false
+		return errors.New("jobs: stale retry reconciliation")
+	}
+	state.snap.Status = StatusActionRequired
+	state.snap.Message = "Retry needs review because saved download evidence could not be verified."
+	state.snap.ErrorReason = code
+	state.snap.CanPause = false
+	state.commanding = false
+	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	m.emitQueueLocked()
+	return nil
+}
+
 // Retry re-queues a failed job under the same logical ID. It always creates a
-// new attempt and FIFO ordinal; a resumable session is retained only when the
-// public engine inspection finds usable evidence.
+// new attempt and FIFO ordinal after inspection authorizes either validated
+// reuse or a fresh session. Uncertain evidence is retained as Action required
+// and never silently rotated away.
 func (m *Manager) Retry(id string) error {
 	var state *jobState
 	for {
@@ -2435,10 +2533,13 @@ func (m *Manager) Retry(id string) error {
 			sessionID = newSessionID()
 			retryMode = jobmodel.RetryModeRestartNewSession
 		} else {
-			summary, inspectErr := engine.InspectResumeState(context.Background(), engineRootRef(state.durable.OutputRoot), sessionID)
-			if inspectErr != nil || !summary.HasManifest {
-				sessionID = newSessionID()
-				retryMode = jobmodel.RetryModeRestartNewSession
+			summary, inspectErr := m.inspectResume(context.Background(), engineRootRef(state.durable.OutputRoot), sessionID)
+			if inspectErr != nil {
+				return m.requireRetryAction(state, "recovery-session-unavailable")
+			}
+			decision, actionCode := classifyRetryResume(summary)
+			if decision != retryResumeReuse {
+				return m.requireRetryAction(state, actionCode)
 			}
 		}
 		if err := m.commitDurable(state, func(job *jobmodel.DurableJob, document *jobmodel.State) error {

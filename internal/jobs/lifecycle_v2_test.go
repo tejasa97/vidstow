@@ -438,42 +438,135 @@ func TestV2CompletionAndHistoryShareOneTerminalTransaction(t *testing.T) {
 	}
 }
 
-func TestV2FailedRetryChangesAttemptAndSessionButKeepsLogicalID(t *testing.T) {
+func TestV2FailedRetryWithoutAuthoritativeWorkspaceRequiresAction(t *testing.T) {
 	store, root, plan := newV2TestStore(t, "job-failed")
 	manager := New(nil, nil)
 	defer manager.Close()
 	if err := manager.SetStateStore(store); err != nil {
 		t.Fatal(err)
 	}
-	var calls int
 	attempts := make(chan string, 2)
 	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
-		calls++
 		attempts <- request.Filesystem.Resume.SessionID
-		if calls == 1 {
-			return engine.Result{}, errors.New("network failed")
-		}
-		return engine.Result{}, nil
+		return engine.Result{}, errors.New("network failed before the injected runner created a workspace")
 	}
 	if _, err := manager.SubmitAdmitted("job-failed", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
 		t.Fatal(err)
 	}
+	firstSession := <-attempts
 	first := waitForV2Job(t, store, "job-failed", jobmodel.LifecycleFailed)
 	if err := manager.Retry("job-failed"); err != nil {
 		t.Fatal(err)
 	}
-	second := waitForV2Job(t, store, "job-failed", jobmodel.LifecycleCompleted)
-	if first.ID != second.ID || first.AttemptID == second.AttemptID || first.SessionID == second.SessionID {
-		t.Fatalf("retry identities first=%#v second=%#v; want same job/new attempt/session", first, second)
+	second := waitForV2Job(t, store, "job-failed", jobmodel.LifecycleActionRequired)
+	if first.ID != second.ID || first.AttemptID != second.AttemptID || first.SessionID != second.SessionID || second.SessionID != firstSession {
+		t.Fatalf("unavailable retry rotated authority: first=%#v second=%#v runner session=%q", first, second, firstSession)
 	}
-	if first.QueueOrdinal >= second.QueueOrdinal {
-		t.Fatalf("retry ordinal first=%d second=%d; want FIFO tail", first.QueueOrdinal, second.QueueOrdinal)
+	select {
+	case sessionID := <-attempts:
+		t.Fatalf("unavailable retry started a second session %q", sessionID)
+	default:
 	}
-	if len(store.Snapshot().History) != 1 {
-		t.Fatalf("history after failed retry = %#v; want one successful row", store.Snapshot().History)
+}
+
+func TestV2RetryReusesOnlyAvailableManifest(t *testing.T) {
+	store, root, _ := newV2TestStore(t, "job-reuse")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleFailed
+	store.state.Jobs[0].Desired = jobmodel.DesiredRunning
+	original := store.state.Jobs[0]
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
 	}
-	_ = <-attempts
-	_ = <-attempts
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{HasManifest: true, Classification: "available"}, nil
+	}
+	requests := make(chan engine.Request, 1)
+	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		requests <- request
+		return engine.Result{Filename: filepath.Join(root, "Demo [abc123] [1080p].mp4")}, nil
+	}
+
+	if err := manager.Retry("job-reuse"); err != nil {
+		t.Fatal(err)
+	}
+	request := <-requests
+	if request.Filesystem.Resume.SessionID != original.SessionID {
+		t.Fatalf("retry session = %q; want validated session %q", request.Filesystem.Resume.SessionID, original.SessionID)
+	}
+	completed := waitForV2Job(t, store, "job-reuse", jobmodel.LifecycleCompleted)
+	if completed.AttemptID == original.AttemptID || completed.RetryMode != jobmodel.RetryModeResumeValidated {
+		t.Fatalf("validated retry identity/mode = %#v; want new attempt and resume-validated", completed)
+	}
+}
+
+func TestV2RetryPreservesUncertainSessionAsActionRequired(t *testing.T) {
+	tests := []struct {
+		name    string
+		summary engine.ResumeSummary
+		err     error
+		code    string
+	}{
+		{name: "inspection error", err: errors.New("inspection unavailable"), code: "recovery-session-unavailable"},
+		{name: "unclassified missing manifest", summary: engine.ResumeSummary{}, code: "session-reconciliation-required"},
+		{name: "unavailable root", summary: engine.ResumeSummary{Classification: "unavailable_root"}, code: "recovery-session-unavailable"},
+		{name: "corrupt manifest", summary: engine.ResumeSummary{Classification: "corrupt_manifest"}, code: "session-manifest-corrupt"},
+		{name: "unknown manifest", summary: engine.ResumeSummary{Classification: "unknown_manifest_version"}, code: "session-version-unknown"},
+		{name: "unsafe path", summary: engine.ResumeSummary{Classification: "unsafe_path"}, code: "session-path-unsafe"},
+		{name: "lease contention", summary: engine.ResumeSummary{LeaseContended: true, Classification: "lease_contention"}, code: "session-lease-contended"},
+		{name: "manifest commit indeterminate", summary: engine.ResumeSummary{Classification: "manifest_commit_indeterminate"}, code: "publication-reconciliation-required"},
+		{name: "publication indeterminate", summary: engine.ResumeSummary{HasManifest: true, Classification: "available", Publication: "indeterminate"}, code: "publication-reconciliation-required"},
+		{name: "publication already committed", summary: engine.ResumeSummary{HasManifest: true, Classification: "available", Publication: "committed"}, code: "publication-reconciliation-required"},
+		{name: "discard pending", summary: engine.ResumeSummary{Classification: "discard_pending"}, code: "session-reconciliation-required"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, _, _ := newV2TestStore(t, "job-uncertain")
+			store.state.Jobs[0].Lifecycle = jobmodel.LifecycleFailed
+			store.state.Jobs[0].Desired = jobmodel.DesiredRunning
+			original := store.state.Jobs[0]
+
+			manager := New(nil, nil)
+			defer manager.Close()
+			if err := manager.SetStateStore(store); err != nil {
+				t.Fatal(err)
+			}
+			if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+				t.Fatal(err)
+			}
+			manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+				return test.summary, test.err
+			}
+			runs := 0
+			manager.runDownload = func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error) {
+				runs++
+				return engine.Result{}, nil
+			}
+
+			if err := manager.Retry("job-uncertain"); err != nil {
+				t.Fatalf("Retry() = %v; want accepted Action-required transition", err)
+			}
+			if runs != 0 {
+				t.Fatalf("uncertain retry started %d runners; want 0", runs)
+			}
+			after := store.Snapshot().Jobs[0]
+			if after.Lifecycle != jobmodel.LifecycleActionRequired || after.Desired != jobmodel.DesiredPaused || after.ActionRequiredCode != test.code || after.LastErrorCode != test.code {
+				t.Fatalf("uncertain retry durable result = %#v; want Action required code %q", after, test.code)
+			}
+			if after.SessionID != original.SessionID || after.AttemptID != original.AttemptID || after.QueueOrdinal != original.QueueOrdinal {
+				t.Fatalf("uncertain retry rotated authority: before=%#v after=%#v", original, after)
+			}
+			snapshot, ok := manager.Find("job-uncertain")
+			if !ok || snapshot.Status != StatusActionRequired || snapshot.ErrorReason != test.code {
+				t.Fatalf("uncertain retry runtime result = %#v, %v; want Action required", snapshot, ok)
+			}
+		})
+	}
 }
 
 func TestV2DownloadAgainKeepsCanceledRowAndFreshReservationGroup(t *testing.T) {
@@ -726,6 +819,9 @@ func TestV2CompletionHistoryAndStaleAttemptEventAreIdempotent(t *testing.T) {
 		oldWorker = &worker{JobID: "job-idempotent", AttemptID: "stale"}
 	}
 	waitForV2Job(t, store, "job-idempotent", jobmodel.LifecycleFailed)
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{HasManifest: true, Classification: "available"}, nil
+	}
 	if err := manager.Retry("job-idempotent"); err != nil {
 		t.Fatal(err)
 	}
