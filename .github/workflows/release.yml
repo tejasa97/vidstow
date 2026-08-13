@@ -1,62 +1,51 @@
-name: Release
+name: Beta release candidate
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create or overwrite (for example v0.1.0)"
+        description: "Draft prerelease tag"
         required: true
+        default: "v0.1.0-beta.1"
         type: string
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: beta-release-candidate
   cancel-in-progress: false
 
 env:
+  APP_VERSION: "0.1.0-beta.1"
   GO_VERSION: "1.25.12"
   WAILS_VERSION: "v2.13.0"
-  NODE_VERSION: "20"
+  NODE_VERSION: "22"
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            platform: darwin
-            arch: arm64
-            goos: darwin
-            goarch: arm64
-            wails_platform: darwin/arm64
-          - os: macos-15-intel
-            platform: darwin
-            arch: amd64
-            goos: darwin
-            goarch: amd64
-            wails_platform: darwin/amd64
-          - os: windows-latest
-            platform: windows
-            arch: amd64
-            goos: windows
-            goarch: amd64
-            wails_platform: windows/amd64
-          - os: ubuntu-22.04
-            platform: linux
-            arch: amd64
-            goos: linux
-            goarch: amd64
-            wails_platform: linux/amd64
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-15
     steps:
-      - name: Checkout
+      - name: Checkout exact candidate
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release authority
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_TAG" = "v$APP_VERSION"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse "refs/tags/$REQUESTED_TAG^{commit}")" = "$GITHUB_SHA"
+          grep -Eq "appVersion[[:space:]]*= \"$APP_VERSION\"" buildinfo.go
+          engine_version=$(awk '$1 == "github.com/tejasa97/youtube_dlp" {print $2}' go.mod)
+          test -n "$engine_version"
+          grep -Fq "pinnedEngineVersion = \"$engine_version\"" buildinfo.go
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -71,119 +60,120 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install Linux webview dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev pkg-config
-
       - name: Install Wails CLI
         shell: bash
         run: |
           go install github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: Install NSIS
-        if: runner.os == 'Windows'
-        shell: bash
-        run: choco install nsis -y
-
-      - name: Build frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build macOS app
-        if: runner.os == 'macOS'
+      - name: Validate source
         shell: bash
         run: |
-          wails build -clean -platform "${{ matrix.wails_platform }}"
-          test -d "build/bin/VidStow.app"
-          test -x "build/bin/VidStow.app/Contents/MacOS/ytdlp-js-helper"
-          "build/bin/VidStow.app/Contents/MacOS/ytdlp-js-helper" --version
+          set -euo pipefail
+          cd frontend
+          npm ci
+          npm run check
+          npm run test:ui
+          npm run build
+          cd ..
+          go mod tidy -diff
+          go vet ./...
+          go test -count=1 ./...
+          go test -race -count=1 ./...
+          go build ./...
 
-      - name: Build Windows app + installer
-        if: runner.os == 'Windows'
+      - name: Build macOS Apple Silicon app
         shell: bash
         run: |
-          wails build -clean -platform "${{ matrix.wails_platform }}" -nsis
-          test -f "build/bin/vidstow.exe"
-          test -f "build/bin/ytdlp-js-helper.exe"
-          "./build/bin/ytdlp-js-helper.exe" --version
-          ls -la build/bin
+          set -euo pipefail
+          wails build -clean -platform darwin/arm64
+          app="build/bin/VidStow.app"
+          test -d "$app"
+          main_executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
+          test -x "$app/Contents/MacOS/$main_executable"
+          test -x "$app/Contents/MacOS/ytdlp-js-helper"
+          test "$(lipo -archs "$app/Contents/MacOS/$main_executable")" = "arm64"
+          test "$(lipo -archs "$app/Contents/MacOS/ytdlp-js-helper")" = "arm64"
+          "$app/Contents/MacOS/ytdlp-js-helper" --version
+          codesign --verify --deep --strict --verbose=2 "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :VidStowReleaseVersion' "$app/Contents/Info.plist")" = "$APP_VERSION"
 
-      - name: Build Linux app
-        if: runner.os == 'Linux'
+      - name: Package candidate and metadata
         shell: bash
         run: |
-          wails build -clean -platform "${{ matrix.wails_platform }}"
-          test -x "build/bin/vidstow"
-          test -x "build/bin/ytdlp-js-helper"
-          "./build/bin/ytdlp-js-helper" --version
-
-      - name: Package release archives
-        shell: bash
-        env:
-          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-        run: |
-          chmod +x scripts/package-release-archives.sh
-          case "${{ matrix.platform }}" in
-            darwin) artifact="build/bin/VidStow.app" ;;
-            windows) artifact="build/bin/vidstow.exe" ;;
-            linux) artifact="build/bin/vidstow" ;;
-          esac
+          set -euo pipefail
+          rm -rf dist
           ./scripts/package-release-archives.sh \
-            "${VERSION#v}" \
-            "${{ matrix.platform }}" \
-            "${{ matrix.arch }}" \
-            "$artifact"
-          ls -la dist
+            "$APP_VERSION" darwin arm64 build/bin/VidStow.app
+          archive="dist/VidStow-${APP_VERSION}-darwin-arm64.zip"
+          test -f "$archive"
+          verify_dir=$(mktemp -d)
+          trap 'rm -rf "$verify_dir"' EXIT
+          ditto -x -k "$archive" "$verify_dir"
+          archived_app="$verify_dir/VidStow/VidStow.app"
+          test -d "$archived_app"
+          archived_executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$archived_app/Contents/Info.plist")
+          test "$(lipo -archs "$archived_app/Contents/MacOS/$archived_executable")" = "arm64"
+          test "$(lipo -archs "$archived_app/Contents/MacOS/ytdlp-js-helper")" = "arm64"
+          codesign --verify --deep --strict --verbose=2 "$archived_app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :VidStowReleaseVersion' "$archived_app/Contents/Info.plist")" = "$APP_VERSION"
+          engine_version=$(go list -m -f '{{.Version}}' github.com/tejasa97/youtube_dlp)
+          {
+            echo "VidStow version: $APP_VERSION"
+            echo "VidStow commit: $GITHUB_SHA"
+            echo "youtube_dlp module: $engine_version"
+            echo "Go: $(go version)"
+            echo "Node: $(node --version)"
+            echo "Wails: $WAILS_VERSION"
+            echo "Runner: $RUNNER_OS/$RUNNER_ARCH"
+            echo "Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Bundle signature: ad-hoc"
+          } > dist/RELEASE-METADATA.txt
+          (
+            cd dist
+            rm -f SHA256SUMS
+            shasum -a 256 VidStow-* RELEASE-METADATA.txt > SHA256SUMS
+          )
+          (cd dist && shasum -a 256 -c SHA256SUMS)
 
-      - name: Upload release artifacts
+      - name: Upload candidate artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vidstow-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            dist/*
-            !dist/SHA256SUMS
+          name: vidstow-darwin-arm64
+          path: dist/*
           if-no-files-found: error
           retention-days: 14
 
-  publish:
+      - name: Attest candidate provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/VidStow-${{ env.APP_VERSION }}-darwin-arm64.zip
+
+  draft:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout release scripts
         uses: actions/checkout@v4
 
-      - name: Download artifacts
+      - name: Download candidate artifact
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          pattern: vidstow-*
-          merge-multiple: true
+          name: vidstow-darwin-arm64
+          path: dist
 
-      - name: Prepare release directory
+      - name: Verify downloaded candidate
         shell: bash
         run: |
-          mkdir -p dist
-          find artifacts -maxdepth 2 -type f -print
-          cp -a artifacts/. dist/ 2>/dev/null || true
-          # When merge-multiple is true, files land directly under artifacts/
-          if [ -z "$(ls -A dist 2>/dev/null)" ]; then
-            find artifacts -type f -exec cp {} dist/ \;
-          fi
-          (
-            cd dist
-            LC_ALL=C sha256sum * > SHA256SUMS
-          )
-          ls -la dist
-          test -n "$(ls -A dist)"
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
 
-      - name: Create GitHub Release
+      - name: Create or update draft prerelease
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          VERSION: ${{ inputs.tag }}
         run: |
-          chmod +x scripts/create-github-release.sh
-          ./scripts/create-github-release.sh "${VERSION}" dist
+          set -euo pipefail
+          ./scripts/create-github-release.sh "$VERSION" dist "$GITHUB_SHA"
