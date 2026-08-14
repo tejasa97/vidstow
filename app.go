@@ -422,7 +422,7 @@ func (a *App) AnalyzePlaylist(raw string) (jobs.PlaylistSummary, error) {
 		wailsruntime.LogErrorf(a.ctx, "desktop: analyze playlist: %v", err)
 		return jobs.PlaylistSummary{}, errors.New(friendlyAnalyzeError(err))
 	}
-	summary.URL, summary.ID = res.PlaylistURL, res.PlaylistID
+	summary.URL = res.PlaylistURL
 	return summary, nil
 }
 

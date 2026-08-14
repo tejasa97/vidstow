@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -48,6 +49,7 @@ const (
 	MaxDownloadConcurrency     = 10
 	MaxProcessingConcurrency   = 3
 	MaxPlaylistEntries         = 500
+	maxCachedPlaylistPreviews  = 32
 	DefaultShutdownTimeout     = 3 * time.Second
 )
 
@@ -3497,12 +3499,31 @@ func (m *Manager) AnalyzePlaylist(ctx context.Context, rawURL string) (PlaylistS
 	if err != nil {
 		return PlaylistSummary{}, err
 	}
+	expectedID := playlistIDFromURL(rawURL)
+	if expectedID == "" || summary.ID != expectedID {
+		return PlaylistSummary{}, errors.New("analyze playlist: playlist identity mismatch")
+	}
 	if len(summary.Entries) == 0 {
 		return PlaylistSummary{}, errors.New("analyze playlist: no downloadable videos found")
 	}
 	m.mu.Lock()
 	if !m.closing && !m.closed {
-		m.playlistCache[summary.ID] = cachedPlaylist{summary: summary, expiresAt: time.Now().Add(30 * time.Minute)}
+		now := time.Now()
+		for id, cached := range m.playlistCache {
+			if !now.Before(cached.expiresAt) {
+				delete(m.playlistCache, id)
+			}
+		}
+		if len(m.playlistCache) >= maxCachedPlaylistPreviews {
+			oldestID, oldestExpiry := "", time.Time{}
+			for id, cached := range m.playlistCache {
+				if oldestID == "" || cached.expiresAt.Before(oldestExpiry) {
+					oldestID, oldestExpiry = id, cached.expiresAt
+				}
+			}
+			delete(m.playlistCache, oldestID)
+		}
+		m.playlistCache[summary.ID] = cachedPlaylist{summary: summary, expiresAt: now.Add(30 * time.Minute)}
 	}
 	m.mu.Unlock()
 	return summary, nil
@@ -3517,7 +3538,11 @@ func summarizePlaylist(result engine.Result, rawURL string) (PlaylistSummary, er
 	if summary.Channel == "" {
 		summary.Channel = metadataText(parent, "uploader")
 	}
-	for position, child := range result.Entries {
+	entries := result.Entries
+	if len(entries) > MaxPlaylistEntries {
+		entries = entries[:MaxPlaylistEntries]
+	}
+	for position, child := range entries {
 		var info map[string]any
 		if json.Unmarshal(child.InfoJSON, &info) != nil {
 			continue
@@ -3526,8 +3551,8 @@ func summarizePlaylist(result engine.Result, rawURL string) (PlaylistSummary, er
 		if index <= 0 {
 			index = position + 1
 		}
-		id, title, childURL := metadataText(info, "id"), metadataText(info, "title"), metadataText(info, "url")
-		available := videoIDPattern.MatchString(id) && strings.HasPrefix(childURL, "https://www.youtube.com/watch?")
+		id, title, reportedURL := metadataText(info, "id"), metadataText(info, "title"), metadataText(info, "url")
+		childURL, available := canonicalPlaylistChildURL(id, reportedURL)
 		thumbnail := metadataText(info, "thumbnail")
 		if thumbnail == "" && videoIDPattern.MatchString(id) {
 			thumbnail = "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg"
@@ -3564,6 +3589,31 @@ func summarizePlaylist(result engine.Result, rawURL string) (PlaylistSummary, er
 }
 
 var videoIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
+
+func playlistIDFromURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Query().Get("list")
+}
+
+func canonicalPlaylistChildURL(videoID, reportedURL string) (string, bool) {
+	if !videoIDPattern.MatchString(videoID) {
+		return "", false
+	}
+	parsed, err := url.Parse(reportedURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Path != "/watch" || parsed.Query().Get("v") != videoID {
+		return "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	host = strings.TrimPrefix(host, "www.")
+	host = strings.TrimPrefix(host, "m.")
+	if host != "youtube.com" {
+		return "", false
+	}
+	return "https://www.youtube.com/watch?v=" + url.QueryEscape(videoID), true
+}
 
 // Analyze calls engine.Run with Simulate=true to extract metadata for
 // the Home page preview. It uses NoPlaylist so watch?v=...&list= links
