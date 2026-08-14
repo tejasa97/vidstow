@@ -673,9 +673,10 @@ func defaultStateV2() jobmodel.State {
 			DownloadConcurrency: 2,
 			PerVideoSubfolder:   true,
 		},
-		Jobs:    []jobmodel.DurableJob{},
-		History: []jobmodel.HistoryEntry{},
-		Cleanup: []jobmodel.CleanupTombstone{},
+		Jobs:        []jobmodel.DurableJob{},
+		Collections: []jobmodel.DurableCollection{},
+		History:     []jobmodel.HistoryEntry{},
+		Cleanup:     []jobmodel.CleanupTombstone{},
 	}
 }
 
@@ -712,11 +713,12 @@ func validateState(state jobmodel.State) error {
 	if !validSettings(state.Settings) || state.Settings.DownloadConcurrency < 1 || state.Settings.DownloadConcurrency > 10 {
 		return errors.New("store: invalid download concurrency")
 	}
-	if len(state.Jobs) > maxJobs || len(state.History) > maxHistory || len(state.Cleanup) > maxCleanup {
+	if len(state.Jobs) > maxJobs || len(state.Collections) > maxCollections || len(state.History) > maxHistory || len(state.Cleanup) > maxCleanup {
 		return errors.New("store: state collection exceeds limit")
 	}
 	seen, attempts, sessions, ordinals, cleanupJobs := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[uint64]struct{}{}, map[string]struct{}{}
 	jobsByID := map[string]jobmodel.DurableJob{}
+	collectionJobs := map[string]map[int]string{}
 	reservationClaims := map[string]string{}
 	for _, job := range state.Jobs {
 		if !validID(job.ID) || !validID(job.AttemptID) || !validSessionID(job.SessionID) || job.Revision == 0 || job.Revision > maxDurableCounter || job.QueueOrdinal == 0 || job.QueueOrdinal >= state.NextQueueOrdinal || !validTimestampPair(job.CreatedAt, job.UpdatedAt) {
@@ -736,6 +738,20 @@ func validateState(state jobmodel.State) error {
 		}
 		seen[job.ID] = struct{}{}
 		jobsByID[job.ID] = job
+		if (job.CollectionID == "") != (job.CollectionIndex == 0) || job.CollectionIndex < 0 || job.CollectionIndex > maxCollectionChildren || (job.CollectionID != "" && !validID(job.CollectionID)) {
+			return errors.New("store: invalid durable collection membership")
+		}
+		if job.CollectionID != "" {
+			members := collectionJobs[job.CollectionID]
+			if members == nil {
+				members = map[int]string{}
+				collectionJobs[job.CollectionID] = members
+			}
+			if _, duplicate := members[job.CollectionIndex]; duplicate {
+				return errors.New("store: duplicate collection child index")
+			}
+			members[job.CollectionIndex] = job.ID
+		}
 		attempts[job.AttemptID], sessions[job.SessionID], ordinals[job.QueueOrdinal] = struct{}{}, struct{}{}, struct{}{}
 		if !validLifecycle(job.Lifecycle) || !validPhase(job.Phase) || !validDesired(job.Desired) || !validRetryMode(job.RetryMode) {
 			return errors.New("store: invalid durable job enum")
@@ -760,6 +776,40 @@ func validateState(state jobmodel.State) error {
 				}
 				reservationClaims[key] = job.ID
 			}
+		}
+	}
+	seenCollections := map[string]struct{}{}
+	for _, collection := range state.Collections {
+		if !validID(collection.ID) || collection.Revision == 0 || collection.Revision > maxDurableCounter ||
+			!validText(collection.PlaylistID, maxIDBytes, true) || !validText(collection.SourceURL, maxText, true) ||
+			!validText(collection.Title, maxText, true) || !validText(collection.Channel, maxText, false) ||
+			!validText(collection.Thumbnail, maxText, false) || !validText(collection.Policy, maxShortText, true) ||
+			!validTimestampPair(collection.CreatedAt, collection.UpdatedAt) || len(collection.ChildJobIDs) == 0 || len(collection.ChildJobIDs) > maxCollectionChildren {
+			return errors.New("store: invalid durable collection")
+		}
+		if _, duplicate := seenCollections[collection.ID]; duplicate {
+			return errors.New("store: duplicate collection id")
+		}
+		if _, conflictsWithJob := seen[collection.ID]; conflictsWithJob {
+			return errors.New("store: collection id conflicts with job id")
+		}
+		seenCollections[collection.ID] = struct{}{}
+		members := collectionJobs[collection.ID]
+		lastIndex := 0
+		for _, childID := range collection.ChildJobIDs {
+			child, ok := jobsByID[childID]
+			if !ok || child.CollectionID != collection.ID || child.CollectionIndex <= lastIndex || members[child.CollectionIndex] != childID {
+				return errors.New("store: collection child membership mismatch")
+			}
+			lastIndex = child.CollectionIndex
+		}
+		if len(members) != len(collection.ChildJobIDs) {
+			return errors.New("store: collection has unlisted child")
+		}
+	}
+	for collectionID := range collectionJobs {
+		if _, ok := seenCollections[collectionID]; !ok {
+			return errors.New("store: job references missing collection")
 		}
 	}
 	for _, tombstone := range state.Cleanup {
@@ -882,6 +932,8 @@ func writeTempFile(target string, data []byte) (string, error) {
 const (
 	maxStateBytes          = 8 << 20
 	maxJobs                = 10_000
+	maxCollections         = 2_000
+	maxCollectionChildren  = 500
 	maxHistory             = 10_000
 	maxCleanup             = 10_000
 	maxArtifacts           = 32

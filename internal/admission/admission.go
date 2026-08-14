@@ -48,11 +48,12 @@ type StateStore interface {
 
 // Dependencies are the side-effecting owners used by Coordinator.
 type Dependencies struct {
-	Store    StateStore
-	Resolver PlanResolver
-	Queue    Queue
-	Now      func() time.Time
-	NewIDs   func() (jobID, attemptID, sessionID string)
+	Store           StateStore
+	Resolver        PlanResolver
+	Queue           Queue
+	Now             func() time.Time
+	NewIDs          func() (jobID, attemptID, sessionID string)
+	NewCollectionID func() string
 }
 
 // Request is the safe, analyzed input for one curated output plan. Metadata
@@ -98,6 +99,9 @@ func NewCoordinator(deps Dependencies) (*Coordinator, error) {
 	}
 	if deps.NewIDs == nil {
 		deps.NewIDs = defaultIDs
+	}
+	if deps.NewCollectionID == nil {
+		deps.NewCollectionID = uuid.NewString
 	}
 	return &Coordinator{deps: deps, maxSuffix: reservation.DefaultMaxSuffix}, nil
 }
