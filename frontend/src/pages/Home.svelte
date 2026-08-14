@@ -8,7 +8,7 @@
   const dispatch = createEventDispatcher<{ goto: 'home' | 'queue' | 'downloads' | 'settings' | 'about' }>();
 
   let url = '';
-  let analyzedURL = '';
+  let analysisGeneration = 0;
   let busy = false;
   let folder = '';
   let selectedPlanId = '';
@@ -46,24 +46,28 @@
   function clearAnalysis() {
     preview = null;
     playlist = null;
-    analyzedURL = '';
     selectedItems = new Set();
     selectedPlanId = '';
     search = '';
   }
 
   function updateURL(event: Event) {
-    url = (event.currentTarget as HTMLInputElement).value;
-    if (analyzedURL && url.trim() !== analyzedURL) clearAnalysis();
+    const nextURL = (event.currentTarget as HTMLInputElement).value;
+    if (nextURL === url) return;
+    url = nextURL;
+    analysisGeneration += 1;
+    busy = false;
+    if (preview || playlist) clearAnalysis();
   }
 
-  async function analyzeTarget(target: UrlCheckResult) {
+  async function analyzeTarget(target: UrlCheckResult, requestGeneration: number) {
+    if (requestGeneration !== analysisGeneration) return;
     clearAnalysis();
     if (target.kind === 'playlist') {
       const canonicalURL = target.playlistUrl!;
       const summary = await api.analyse.playlist(canonicalURL);
+      if (requestGeneration !== analysisGeneration) return;
       url = canonicalURL;
-      analyzedURL = canonicalURL;
       playlist = summary;
       selectedItems = new Set(summary.entries.filter((entry) => entry.available).map((entry) => entry.index));
       rangeStart = summary.entries[0]?.index ? String(summary.entries[0].index) : '1';
@@ -71,8 +75,8 @@
     } else {
       const canonicalURL = target.videoUrl!;
       const summary = await api.analyse.url(canonicalURL);
+      if (requestGeneration !== analysisGeneration) return;
       url = canonicalURL;
-      analyzedURL = canonicalURL;
       preview = summary;
       const recommended = summary.plans.find((plan) => plan.recommended) ?? summary.plans[0];
       selectedPlanId = recommended?.id ?? '';
@@ -81,46 +85,52 @@
   }
 
   async function analyze() {
-    if (!url.trim()) return;
+    const submittedURL = url.trim();
+    if (!submittedURL) return;
+    const requestGeneration = ++analysisGeneration;
     busy = true;
     try {
-      const accepted = await api.validation.url(url.trim());
+      const accepted = await api.validation.url(submittedURL);
+      if (requestGeneration !== analysisGeneration) return;
       if (accepted.kind === 'video_playlist') {
         modal.set({
           kind: 'confirm',
           title: 'This link includes a playlist',
           message: 'Choose what you want to review.',
           actions: [
-            { label: 'This video only', action: () => withBusy(() => analyzeTarget({ ...accepted, kind: 'single_video', url: accepted.videoUrl! })) },
-            { label: 'Full playlist', primary: true, action: () => withBusy(() => analyzeTarget({ ...accepted, kind: 'playlist', url: accepted.playlistUrl! })) },
+            { label: 'This video only', action: () => withBusy(() => analyzeTarget({ ...accepted, kind: 'single_video', url: accepted.videoUrl! }, requestGeneration), requestGeneration) },
+            { label: 'Full playlist', primary: true, action: () => withBusy(() => analyzeTarget({ ...accepted, kind: 'playlist', url: accepted.playlistUrl! }, requestGeneration), requestGeneration) },
           ],
         });
       } else {
-        await analyzeTarget(accepted);
+        await analyzeTarget(accepted, requestGeneration);
       }
     } catch (err) {
+      if (requestGeneration !== analysisGeneration) return;
       modal.set({
         kind: 'error',
         title: 'Unsupported URL',
         message: errorMessage(err, 'VidStow could not extract information from this URL. Make sure it is a valid, publicly accessible YouTube video or playlist.'),
       });
     } finally {
-      busy = false;
+      if (requestGeneration === analysisGeneration) busy = false;
     }
   }
 
-  async function withBusy(action: () => Promise<void>) {
+  async function withBusy(action: () => Promise<void>, requestGeneration: number) {
+    if (requestGeneration !== analysisGeneration) return;
     busy = true;
     try {
       await action();
     } catch (err) {
+      if (requestGeneration !== analysisGeneration) return;
       modal.set({
         kind: 'error',
         title: 'Could not analyze link',
         message: errorMessage(err, 'Could not analyze this link.'),
       });
     } finally {
-      busy = false;
+      if (requestGeneration === analysisGeneration) busy = false;
     }
   }
 
@@ -234,6 +244,10 @@
 
   async function enqueuePlaylist() {
     if (!playlist || !selectedItems.size) return;
+    if (!folder) {
+      showBanner('warning', 'Choose a download folder before adding this playlist.');
+      return;
+    }
     const quality: Quality = playlistTab === 'audio' ? 'audio' : playlistQuality;
     const audioBitrate = playlistTab === 'audio' && audioChoice !== 'original' ? Number(audioChoice) : 0;
     if (audioBitrate && !$ffmpeg.available) {
@@ -374,7 +388,7 @@
           <small title={`${playlist.title} [${playlist.id}]`}>Playlist folder · {shortTitle(playlist.title, 48)}</small>
         </div>
         <button type="button" class="secondary" on:click={pickFolder}>Change…</button>
-        <button type="button" class="primary queue" on:click={enqueuePlaylist} disabled={!selectedItems.size}>
+        <button type="button" class="primary queue" on:click={enqueuePlaylist} disabled={!selectedItems.size || !folder}>
           Add {selectedItems.size} {selectedItems.size === 1 ? 'Video' : 'Videos'} to Queue
         </button>
       </footer>
