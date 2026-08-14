@@ -8,6 +8,7 @@
   const dispatch = createEventDispatcher<{ goto: 'home' | 'queue' | 'downloads' | 'settings' | 'about' }>();
 
   let url = '';
+  let analyzedURL = '';
   let busy = false;
   let folder = '';
   let selectedPlanId = '';
@@ -30,6 +31,8 @@
   $: query = search.trim().toLowerCase();
   $: filteredEntries = playlist?.entries.filter((entry) => !query || entry.title.toLowerCase().includes(query)) ?? [];
   $: availableCount = playlist?.available ?? 0;
+  $: playlistFirstIndex = playlist?.entries[0]?.index ?? 1;
+  $: playlistLastIndex = playlist?.entries.at(-1)?.index ?? playlist?.entryCount ?? 1;
   $: allAvailableSelected = availableCount > 0 && selectedItems.size === availableCount;
   $: if (selectAllBox && playlist) {
     selectAllBox.indeterminate = selectedItems.size > 0 && selectedItems.size < availableCount;
@@ -40,22 +43,38 @@
     (event.currentTarget as HTMLImageElement).style.display = 'none';
   };
 
-  async function analyzeTarget(target: UrlCheckResult) {
+  function clearAnalysis() {
     preview = null;
     playlist = null;
+    analyzedURL = '';
     selectedItems = new Set();
     selectedPlanId = '';
     search = '';
+  }
+
+  function updateURL(event: Event) {
+    url = (event.currentTarget as HTMLInputElement).value;
+    if (analyzedURL && url.trim() !== analyzedURL) clearAnalysis();
+  }
+
+  async function analyzeTarget(target: UrlCheckResult) {
+    clearAnalysis();
     if (target.kind === 'playlist') {
-      url = target.playlistUrl!;
-      playlist = await api.analyse.playlist(target.playlistUrl!);
-      selectedItems = new Set(playlist.entries.filter((entry) => entry.available).map((entry) => entry.index));
-      rangeStart = playlist.entries[0]?.index ? String(playlist.entries[0].index) : '1';
-      rangeEnd = playlist.entries.at(-1)?.index ? String(playlist.entries.at(-1)!.index) : String(playlist.entryCount);
+      const canonicalURL = target.playlistUrl!;
+      const summary = await api.analyse.playlist(canonicalURL);
+      url = canonicalURL;
+      analyzedURL = canonicalURL;
+      playlist = summary;
+      selectedItems = new Set(summary.entries.filter((entry) => entry.available).map((entry) => entry.index));
+      rangeStart = summary.entries[0]?.index ? String(summary.entries[0].index) : '1';
+      rangeEnd = summary.entries.at(-1)?.index ? String(summary.entries.at(-1)!.index) : String(summary.entryCount);
     } else {
-      url = target.videoUrl!;
-      preview = await api.analyse.url(target.videoUrl!);
-      const recommended = preview.plans.find((plan) => plan.recommended) ?? preview.plans[0];
+      const canonicalURL = target.videoUrl!;
+      const summary = await api.analyse.url(canonicalURL);
+      url = canonicalURL;
+      analyzedURL = canonicalURL;
+      preview = summary;
+      const recommended = summary.plans.find((plan) => plan.recommended) ?? summary.plans[0];
       selectedPlanId = recommended?.id ?? '';
       tab = recommended?.kind ?? 'video';
     }
@@ -106,15 +125,25 @@
   }
 
   async function pickFolder() {
-    const path = await api.folder.pick();
-    if (!path) return;
-    const updated = await api.settings.update({ ...$settings, downloadFolder: path });
-    settings.set(updated);
-    folder = path;
+    try {
+      const path = await api.folder.pick();
+      if (!path) return;
+      const updated = await api.settings.update({ ...$settings, downloadFolder: path });
+      settings.set(updated);
+      folder = path;
+    } catch (err) {
+      modal.set({ kind: 'error', title: 'Folder could not be changed', message: errorMessage(err, 'Could not update the download folder.') });
+    }
   }
 
   function choose(plan: OutputPlan) {
     selectedPlanId = plan.id;
+  }
+
+  function setTab(kind: 'video' | 'audio') {
+    tab = kind;
+    const compatible = plans.find((plan) => plan.kind === kind && plan.recommended) ?? plans.find((plan) => plan.kind === kind);
+    selectedPlanId = compatible?.id ?? '';
   }
 
   function planDetail(plan: OutputPlan) {
@@ -145,7 +174,10 @@
     if (!playlist) return;
     const start = Number(rangeStart);
     const end = Number(rangeEnd);
-    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < 1) return;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < playlistFirstIndex || end < playlistFirstIndex || start > playlistLastIndex || end > playlistLastIndex) {
+      showBanner('warning', `Enter whole-number positions from ${playlistFirstIndex} to ${playlistLastIndex}.`);
+      return;
+    }
     const low = Math.min(start, end);
     const high = Math.max(start, end);
     selectedItems = new Set(
@@ -250,7 +282,7 @@
 
   <form class="analyze-bar" on:submit|preventDefault={analyze}>
     <label class="visually-hidden" for="video-url">YouTube video or playlist URL</label>
-    <input id="video-url" type="url" bind:value={url} placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" />
+    <input id="video-url" type="url" value={url} on:input={updateURL} placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" />
     <button class="primary" type="submit" disabled={busy || !url.trim()}>{busy ? 'Analyzing…' : 'Analyze'}</button>
   </form>
 
@@ -272,9 +304,9 @@
         </div>
         <div class="policy">
           <h2>Format</h2>
-          <div class="segment" role="tablist" aria-label="Output type">
-            <button type="button" class:active={playlistTab === 'video'} on:click={() => playlistTab = 'video'}>Video</button>
-            <button type="button" class:active={playlistTab === 'audio'} on:click={() => playlistTab = 'audio'}>Audio</button>
+          <div class="segment" aria-label="Output type">
+            <button type="button" aria-pressed={playlistTab === 'video'} class:active={playlistTab === 'video'} on:click={() => playlistTab = 'video'}>Video</button>
+            <button type="button" aria-pressed={playlistTab === 'audio'} class:active={playlistTab === 'audio'} on:click={() => playlistTab = 'audio'}>Audio</button>
           </div>
           {#if playlistTab === 'video'}
             <label class="visually-hidden" for="playlist-quality">Video quality</label>
@@ -305,9 +337,9 @@
         <button type="button" class="ghost" on:click={clearSelection} disabled={!selectedItems.size}>Clear</button>
         <form class="range" on:submit|preventDefault={applyRange}>
           <span>Range</span>
-          <input type="number" min="1" inputmode="numeric" bind:value={rangeStart} aria-label="Range start" />
+          <input type="number" min={playlistFirstIndex} max={playlistLastIndex} step="1" inputmode="numeric" bind:value={rangeStart} aria-label="Range start" />
           <span class="dash">–</span>
-          <input type="number" min="1" inputmode="numeric" bind:value={rangeEnd} aria-label="Range end" />
+          <input type="number" min={playlistFirstIndex} max={playlistLastIndex} step="1" inputmode="numeric" bind:value={rangeEnd} aria-label="Range end" />
           <button type="submit" class="ghost">Apply</button>
         </form>
         <input type="search" bind:value={search} placeholder="Search playlist…" aria-label="Search playlist" />
@@ -361,9 +393,9 @@
         </div>
         <div class="policy">
           <h2>Choose Download</h2>
-          <div class="segment" role="tablist" aria-label="Output type">
-            <button type="button" class:active={tab === 'video'} on:click={() => tab = 'video'}>Video</button>
-            <button type="button" class:active={tab === 'audio'} on:click={() => tab = 'audio'}>Audio</button>
+          <div class="segment" aria-label="Output type">
+            <button type="button" aria-pressed={tab === 'video'} class:active={tab === 'video'} on:click={() => setTab('video')}>Video</button>
+            <button type="button" aria-pressed={tab === 'audio'} class:active={tab === 'audio'} on:click={() => setTab('audio')}>Audio</button>
           </div>
         </div>
       </header>
