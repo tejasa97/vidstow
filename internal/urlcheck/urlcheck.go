@@ -1,9 +1,4 @@
-// Package urlcheck validates incoming URLs at the desktop boundary.
-//
-// The desktop application is intentionally limited to single, public
-// YouTube videos. Anything else (playlists, channels, search results,
-// live streams, other sites) is rejected with a friendly reason that
-// the UI surfaces directly.
+// Package urlcheck validates and classifies YouTube URLs at the desktop boundary.
 package urlcheck
 
 import (
@@ -13,8 +8,6 @@ import (
 	"strings"
 )
 
-// Reason is the machine-readable reason a URL was rejected. The UI
-// translates the reason into user-facing copy.
 type Reason string
 
 const (
@@ -30,45 +23,41 @@ const (
 	ReasonMissingVideoID Reason = "missing_video_id"
 )
 
-// Result describes a validated URL.
+const (
+	KindSingleVideo   = "single_video"
+	KindPlaylist      = "playlist"
+	KindVideoPlaylist = "video_playlist"
+)
+
 type Result struct {
-	URL     string `json:"url"`
-	VideoID string `json:"videoId"`
-	Kind    string `json:"kind"`
+	URL         string `json:"url"`
+	VideoID     string `json:"videoId,omitempty"`
+	PlaylistID  string `json:"playlistId,omitempty"`
+	Kind        string `json:"kind"`
+	VideoURL    string `json:"videoUrl,omitempty"`
+	PlaylistURL string `json:"playlistUrl,omitempty"`
 }
 
-// videoIDPattern matches the 11-character YouTube video ID.
-var videoIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
+var (
+	videoIDPattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
+	playlistIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{2,128}$`)
+	ErrRejected       = errors.New("rejected")
+)
 
-// ErrRejected is the sentinel returned by Validate. Use errors.Is to
-// detect it; the textual prefix is the Reason.
-var ErrRejected = errors.New("rejected")
-
-// Rejection keeps the machine-readable reason available to Go callers while
-// exposing only clear, non-technical copy across the Wails boundary.
 type Rejection struct {
 	Reason  Reason
 	Message string
 }
 
-func (rejection *Rejection) Error() string { return rejection.Message }
+func (r *Rejection) Error() string               { return r.Message }
+func (r *Rejection) Is(target error) bool        { return target == ErrRejected }
+func reject(reason Reason, message string) error { return &Rejection{reason, message} }
 
-func (rejection *Rejection) Is(target error) bool { return target == ErrRejected }
-
-func reject(reason Reason, message string) error {
-	return &Rejection{Reason: reason, Message: message}
-}
-
-// Validate returns a populated Result when the URL is a single, public
-// YouTube video. Otherwise it returns a Reason explaining why it was
-// rejected. The Reason values are part of the app's stable contract with
-// the UI.
 func Validate(raw string) (Result, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return Result{}, reject(ReasonEmpty, "Paste a YouTube video link.")
+		return Result{}, reject(ReasonEmpty, "Paste a YouTube video or playlist link.")
 	}
-
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
 		return Result{}, reject(ReasonMalformed, "That link is not a valid web address.")
@@ -76,49 +65,53 @@ func Validate(raw string) (Result, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return Result{}, reject(ReasonInvalidScheme, "Paste a link that starts with http:// or https://.")
 	}
-	host := strings.ToLower(parsed.Host)
+	host := strings.ToLower(parsed.Hostname())
 	host = strings.TrimPrefix(host, "www.")
 	host = strings.TrimPrefix(host, "m.")
 	if host != "youtube.com" && host != "youtu.be" && host != "youtube-nocookie.com" {
-		return Result{}, reject(ReasonNotYouTube, "Only YouTube video links are supported.")
+		return Result{}, reject(ReasonNotYouTube, "Only YouTube video and playlist links are supported.")
 	}
 
-	// Reject known non-video entry points early. A /watch URL with a video ID
-	// is still a single-video URL when it includes playlist context such as list
-	// or index; extractVideoID and canonical deliberately ignore that context.
-	// Without v, however, /watch?list=... remains a playlist rejection.
 	switch {
-	case parsed.Path == "/watch" && parsed.Query().Get("list") != "" && parsed.Query().Get("v") == "":
-		return Result{}, reject(ReasonPlaylist, "Playlist links are not supported yet. Paste a single YouTube video link.")
-	case strings.HasPrefix(parsed.Path, "/playlist"):
-		return Result{}, reject(ReasonPlaylist, "Playlist links are not supported yet. Paste a single YouTube video link.")
 	case parsed.Path == "/results" || strings.HasPrefix(parsed.Path, "/search"):
-		return Result{}, reject(ReasonSearch, "YouTube search pages are not supported. Paste a single video link.")
-	case strings.HasPrefix(parsed.Path, "/channel/") || strings.HasPrefix(parsed.Path, "/c/") || strings.HasPrefix(parsed.Path, "/@"):
-		return Result{}, reject(ReasonChannel, "YouTube channel pages are not supported. Paste a single video link.")
+		return Result{}, reject(ReasonSearch, "YouTube search pages are not supported. Paste a video or playlist link.")
+	case strings.HasPrefix(parsed.Path, "/channel/") || strings.HasPrefix(parsed.Path, "/c/") || strings.HasPrefix(parsed.Path, "/user/") || strings.HasPrefix(parsed.Path, "/@"):
+		return Result{}, reject(ReasonChannel, "YouTube channel pages are not supported. Paste a video or playlist link.")
 	case strings.HasPrefix(parsed.Path, "/shorts"):
 		return Result{}, reject(ReasonShorts, "YouTube Shorts are not supported in this version.")
 	case parsed.Path == "/live" || strings.HasPrefix(parsed.Path, "/live/"):
 		return Result{}, reject(ReasonLive, "YouTube live streams are not supported in this version.")
 	}
 
+	playlistID := parsed.Query().Get("list")
+	if playlistID != "" && !playlistIDPattern.MatchString(playlistID) {
+		return Result{}, reject(ReasonPlaylist, "That YouTube playlist link is not valid.")
+	}
 	videoID := extractVideoID(parsed, host)
-	if videoID == "" || !videoIDPattern.MatchString(videoID) {
+	if videoID != "" && !videoIDPattern.MatchString(videoID) {
 		return Result{}, reject(ReasonMissingVideoID, "We could not find a video in that link. Copy the link directly from YouTube.")
 	}
 
-	return Result{
-		URL:     canonical(parsed, videoID),
-		VideoID: videoID,
-		Kind:    "single_video",
-	}, nil
+	videoURL, playlistURL := "", ""
+	if videoID != "" {
+		videoURL = canonicalVideo(videoID)
+	}
+	if playlistID != "" {
+		playlistURL = canonicalPlaylist(playlistID)
+	}
+	switch {
+	case videoID != "" && playlistID != "":
+		return Result{URL: trimmed, VideoID: videoID, PlaylistID: playlistID, Kind: KindVideoPlaylist, VideoURL: videoURL, PlaylistURL: playlistURL}, nil
+	case playlistID != "" && (parsed.Path == "/playlist" || parsed.Path == "/watch"):
+		return Result{URL: playlistURL, PlaylistID: playlistID, Kind: KindPlaylist, PlaylistURL: playlistURL}, nil
+	case videoID != "":
+		return Result{URL: videoURL, VideoID: videoID, Kind: KindSingleVideo, VideoURL: videoURL}, nil
+	default:
+		return Result{}, reject(ReasonMissingVideoID, "We could not find a video or playlist in that link. Copy the link directly from YouTube.")
+	}
 }
 
-// IsRejected reports whether err came from this package's validator.
 func IsRejected(err error) bool { return errors.Is(err, ErrRejected) }
-
-// ReasonOf extracts the Reason prefix from a rejection error. It returns
-// an empty string when err is nil or not from this package.
 func ReasonOf(err error) Reason {
 	if err == nil {
 		return ""
@@ -129,22 +122,16 @@ func ReasonOf(err error) Reason {
 	}
 	return ReasonMalformed
 }
-
 func isReason(s string) bool {
 	switch Reason(s) {
-	case ReasonEmpty, ReasonNotYouTube, ReasonChannel, ReasonPlaylist,
-		ReasonSearch, ReasonLive, ReasonShorts, ReasonInvalidScheme,
-		ReasonMalformed, ReasonMissingVideoID:
+	case ReasonEmpty, ReasonNotYouTube, ReasonChannel, ReasonPlaylist, ReasonSearch, ReasonLive, ReasonShorts, ReasonInvalidScheme, ReasonMalformed, ReasonMissingVideoID:
 		return true
 	}
 	return false
 }
-
 func extractVideoID(parsed *url.URL, host string) string {
 	if host == "youtu.be" {
-		id := strings.TrimPrefix(parsed.Path, "/")
-		id = strings.SplitN(id, "/", 2)[0]
-		return id
+		return strings.SplitN(strings.TrimPrefix(parsed.Path, "/"), "/", 2)[0]
 	}
 	if parsed.Path == "/watch" {
 		return parsed.Query().Get("v")
@@ -157,13 +144,9 @@ func extractVideoID(parsed *url.URL, host string) string {
 	}
 	return ""
 }
-
-func canonical(parsed *url.URL, id string) string {
-	out := url.URL{
-		Scheme:   "https",
-		Host:     "www.youtube.com",
-		Path:     "/watch",
-		RawQuery: "v=" + id,
-	}
-	return out.String()
+func canonicalVideo(id string) string {
+	return "https://www.youtube.com/watch?v=" + url.QueryEscape(id)
+}
+func canonicalPlaylist(id string) string {
+	return "https://www.youtube.com/playlist?list=" + url.QueryEscape(id)
 }

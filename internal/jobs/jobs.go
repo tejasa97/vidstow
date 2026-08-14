@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/url"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +48,8 @@ const (
 	DefaultDownloadConcurrency = 2
 	MaxDownloadConcurrency     = 10
 	MaxProcessingConcurrency   = 3
+	MaxPlaylistEntries         = 500
+	maxCachedPlaylistPreviews  = 32
 	DefaultShutdownTimeout     = 3 * time.Second
 )
 
@@ -372,6 +376,7 @@ type Manager struct {
 	queueAuthoritySig  string
 	stateStore         StateStore
 	planCache          map[string]cachedPlans
+	playlistCache      map[string]cachedPlaylist
 	persistence        Persistence
 	persistenceDurable bool
 	persistMu          sync.Mutex
@@ -383,6 +388,11 @@ type Manager struct {
 
 type cachedPlans struct {
 	plans     []outputplan.Plan
+	expiresAt time.Time
+}
+
+type cachedPlaylist struct {
+	summary   PlaylistSummary
 	expiresAt time.Time
 }
 
@@ -446,6 +456,7 @@ func New(client *engine.Client, listener Listener) *Manager {
 		processing:        make(chan struct{}, MaxProcessingConcurrency),
 		queueCommandToken: uuid.NewString(),
 		planCache:         make(map[string]cachedPlans),
+		playlistCache:     make(map[string]cachedPlaylist),
 	}
 	if listener != nil {
 		manager.eventSignal = make(chan struct{}, 1)
@@ -3408,6 +3419,30 @@ func isKnownQuality(quality Quality) bool {
 	return false
 }
 
+// PlaylistSummary is a lightweight flat-playlist preview. Child formats are
+// deliberately not extracted until their individual queue jobs run.
+type PlaylistSummary struct {
+	ID          string                 `json:"id"`
+	URL         string                 `json:"url"`
+	Title       string                 `json:"title"`
+	Channel     string                 `json:"channel"`
+	Thumbnail   string                 `json:"thumbnail"`
+	EntryCount  int                    `json:"entryCount"`
+	Available   int                    `json:"available"`
+	Unavailable int                    `json:"unavailable"`
+	Entries     []PlaylistEntrySummary `json:"entries"`
+}
+
+type PlaylistEntrySummary struct {
+	Index     int    `json:"index"`
+	VideoID   string `json:"videoId"`
+	URL       string `json:"url"`
+	Title     string `json:"title"`
+	Duration  string `json:"duration,omitempty"`
+	Thumbnail string `json:"thumbnail,omitempty"`
+	Available bool   `json:"available"`
+}
+
 // InfoSummary is the metadata displayed on the Home page after analyse.
 type InfoSummary struct {
 	Title           string            `json:"title"`
@@ -3429,6 +3464,155 @@ type InfoSummary struct {
 type AccessSummary struct {
 	Code  string `json:"code"`
 	Label string `json:"label"`
+}
+
+// AnalyzePlaylist obtains bounded URL-result metadata without extracting each
+// child. The cached summary prevents the renderer from later submitting
+// invented entry identities.
+func (m *Manager) AnalyzePlaylist(ctx context.Context, rawURL string) (PlaylistSummary, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return PlaylistSummary{}, errors.New("analyze playlist: empty url")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.mu.Lock()
+	if m.closing || m.closed {
+		m.mu.Unlock()
+		return PlaylistSummary{}, ErrClosed
+	}
+	ffmpegLocation, lifecycleCtx, runner := m.ffmpegLocation, m.lifecycleCtx, m.runAnalyze
+	m.analysisWG.Add(1)
+	m.mu.Unlock()
+	analysisCtx, cancel := context.WithCancel(ctx)
+	stopLifecycle := context.AfterFunc(lifecycleCtx, cancel)
+	defer func() { stopLifecycle(); cancel(); m.analysisWG.Done() }()
+	result, err := runner(analysisCtx, engine.Request{
+		URL: rawURL, Simulate: true,
+		Playlist:   engine.PlaylistOptions{Flat: true, End: MaxPlaylistEntries},
+		Filesystem: engine.FilesystemOptions{FfmpegLocation: ffmpegLocation},
+	})
+	if err != nil {
+		return PlaylistSummary{}, err
+	}
+	summary, err := summarizePlaylist(result, rawURL)
+	if err != nil {
+		return PlaylistSummary{}, err
+	}
+	expectedID := playlistIDFromURL(rawURL)
+	if expectedID == "" || summary.ID != expectedID {
+		return PlaylistSummary{}, errors.New("analyze playlist: playlist identity mismatch")
+	}
+	if len(summary.Entries) == 0 {
+		return PlaylistSummary{}, errors.New("analyze playlist: no downloadable videos found")
+	}
+	m.mu.Lock()
+	if !m.closing && !m.closed {
+		now := time.Now()
+		for id, cached := range m.playlistCache {
+			if !now.Before(cached.expiresAt) {
+				delete(m.playlistCache, id)
+			}
+		}
+		if len(m.playlistCache) >= maxCachedPlaylistPreviews {
+			oldestID, oldestExpiry := "", time.Time{}
+			for id, cached := range m.playlistCache {
+				if oldestID == "" || cached.expiresAt.Before(oldestExpiry) {
+					oldestID, oldestExpiry = id, cached.expiresAt
+				}
+			}
+			delete(m.playlistCache, oldestID)
+		}
+		m.playlistCache[summary.ID] = cachedPlaylist{summary: summary, expiresAt: now.Add(30 * time.Minute)}
+	}
+	m.mu.Unlock()
+	return summary, nil
+}
+
+func summarizePlaylist(result engine.Result, rawURL string) (PlaylistSummary, error) {
+	var parent map[string]any
+	if len(result.InfoJSON) > 0 && json.Unmarshal(result.InfoJSON, &parent) != nil {
+		return PlaylistSummary{}, errors.New("analyze playlist: invalid metadata")
+	}
+	summary := PlaylistSummary{URL: rawURL, ID: metadataText(parent, "id"), Title: metadataText(parent, "title"), Channel: metadataText(parent, "channel"), Thumbnail: metadataText(parent, "thumbnail")}
+	if summary.Channel == "" {
+		summary.Channel = metadataText(parent, "uploader")
+	}
+	entries := result.Entries
+	if len(entries) > MaxPlaylistEntries {
+		entries = entries[:MaxPlaylistEntries]
+	}
+	for position, child := range entries {
+		var info map[string]any
+		if json.Unmarshal(child.InfoJSON, &info) != nil {
+			continue
+		}
+		index := int(metadataInteger(info["playlist_index"]))
+		if index <= 0 {
+			index = position + 1
+		}
+		id, title, reportedURL := metadataText(info, "id"), metadataText(info, "title"), metadataText(info, "url")
+		childURL, available := canonicalPlaylistChildURL(id, reportedURL)
+		thumbnail := metadataText(info, "thumbnail")
+		if thumbnail == "" && videoIDPattern.MatchString(id) {
+			thumbnail = "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg"
+		}
+		entry := PlaylistEntrySummary{Index: index, VideoID: id, URL: childURL, Title: title, Thumbnail: thumbnail, Available: available}
+		if summary.Thumbnail == "" && available {
+			summary.Thumbnail = thumbnail
+		}
+		if duration := metadataInteger(info["duration"]); duration > 0 {
+			entry.Duration = formatDuration(duration)
+		}
+		if entry.Title == "" {
+			if available {
+				entry.Title = "Untitled video"
+			} else {
+				entry.Title = "Unavailable video"
+			}
+		}
+		summary.Entries = append(summary.Entries, entry)
+		if available {
+			summary.Available++
+		} else {
+			summary.Unavailable++
+		}
+	}
+	summary.EntryCount = len(summary.Entries)
+	if summary.ID == "" {
+		return PlaylistSummary{}, errors.New("analyze playlist: missing playlist identity")
+	}
+	if summary.Title == "" {
+		summary.Title = "Untitled playlist"
+	}
+	return summary, nil
+}
+
+var videoIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
+
+func playlistIDFromURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Query().Get("list")
+}
+
+func canonicalPlaylistChildURL(videoID, reportedURL string) (string, bool) {
+	if !videoIDPattern.MatchString(videoID) {
+		return "", false
+	}
+	parsed, err := url.Parse(reportedURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Path != "/watch" || parsed.Query().Get("v") != videoID {
+		return "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	host = strings.TrimPrefix(host, "www.")
+	host = strings.TrimPrefix(host, "m.")
+	if host != "youtube.com" {
+		return "", false
+	}
+	return "https://www.youtube.com/watch?v=" + url.QueryEscape(videoID), true
 }
 
 // Analyze calls engine.Run with Simulate=true to extract metadata for

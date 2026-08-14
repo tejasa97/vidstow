@@ -373,8 +373,7 @@ func (a *App) ValidateURL(raw string) (urlcheck.Result, error) {
 	return urlcheck.Validate(raw)
 }
 
-// AnalyzeURL fetches metadata for one single YouTube video. It refuses
-// to call the core engine for non-video URLs.
+// AnalyzeURL fetches metadata for one single YouTube video.
 func (a *App) AnalyzeURL(raw string) (jobs.InfoSummary, error) {
 	if err := a.requireReady(); err != nil {
 		return jobs.InfoSummary{}, err
@@ -382,6 +381,9 @@ func (a *App) AnalyzeURL(raw string) (jobs.InfoSummary, error) {
 	res, err := urlcheck.Validate(raw)
 	if err != nil {
 		return jobs.InfoSummary{}, err
+	}
+	if res.Kind != urlcheck.KindSingleVideo {
+		return jobs.InfoSummary{}, errors.New("choose whether to analyze the video or playlist")
 	}
 	// EJS preprocessing has a 55-second execution budget. Leave additional
 	// room for the watch page and player-script requests around that phase.
@@ -397,6 +399,30 @@ func (a *App) AnalyzeURL(raw string) (jobs.InfoSummary, error) {
 	}
 	summary.URL = res.URL
 	summary.VideoID = res.VideoID
+	return summary, nil
+}
+
+// AnalyzePlaylist fetches a bounded flat preview without resolving every
+// child's formats. Playlist format selection happens per child at admission.
+func (a *App) AnalyzePlaylist(raw string) (jobs.PlaylistSummary, error) {
+	if err := a.requireReady(); err != nil {
+		return jobs.PlaylistSummary{}, err
+	}
+	res, err := urlcheck.Validate(raw)
+	if err != nil {
+		return jobs.PlaylistSummary{}, err
+	}
+	if res.Kind != urlcheck.KindPlaylist {
+		return jobs.PlaylistSummary{}, errors.New("choose the playlist from this link first")
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 75*time.Second)
+	defer cancel()
+	summary, err := a.jobs.AnalyzePlaylist(ctx, res.PlaylistURL)
+	if err != nil {
+		wailsruntime.LogErrorf(a.ctx, "desktop: analyze playlist: %v", err)
+		return jobs.PlaylistSummary{}, errors.New(friendlyAnalyzeError(err))
+	}
+	summary.URL = res.PlaylistURL
 	return summary, nil
 }
 
@@ -416,7 +442,10 @@ func (a *App) StartDownload(req jobs.Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.URL = res.URL
+	if res.Kind != urlcheck.KindSingleVideo {
+		return "", errors.New("select video-only before starting this download")
+	}
+	req.URL = res.VideoURL
 	if req.VideoID == "" {
 		req.VideoID = res.VideoID
 	}

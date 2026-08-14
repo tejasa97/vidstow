@@ -102,6 +102,97 @@ func (p *memoryPersistence) SaveJobs(jobs []PersistedJob) error {
 	return nil
 }
 
+func TestSummarizePlaylistBuildsBoundedSelectableEntries(t *testing.T) {
+	result := engine.Result{InfoJSON: json.RawMessage(`{"id":"PLfixture","title":"Course","uploader":"Teacher"}`), Entries: []engine.Result{
+		{InfoJSON: json.RawMessage(`{"id":"aaaaaaaaaaa","title":"One","url":"https://www.youtube.com/watch?v=aaaaaaaaaaa","playlist_index":1}`)},
+		{InfoJSON: json.RawMessage(`{"id":"","title":"Private video","url":"","playlist_index":2}`)},
+	}}
+	summary, err := summarizePlaylist(result, "https://www.youtube.com/playlist?list=PLfixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ID != "PLfixture" || summary.Available != 1 || summary.Unavailable != 1 || len(summary.Entries) != 2 {
+		t.Fatalf("summary=%#v", summary)
+	}
+	if !summary.Entries[0].Available || summary.Entries[1].Available {
+		t.Fatalf("availability=%#v", summary.Entries)
+	}
+	wantThumbnail := "https://i.ytimg.com/vi/aaaaaaaaaaa/hqdefault.jpg"
+	if summary.Thumbnail != wantThumbnail || summary.Entries[0].Thumbnail != wantThumbnail {
+		t.Fatalf("thumbnail fallback: summary=%q entry=%q", summary.Thumbnail, summary.Entries[0].Thumbnail)
+	}
+}
+
+func TestSummarizePlaylistEnforcesBoundAndCanonicalChildIdentity(t *testing.T) {
+	entries := make([]engine.Result, MaxPlaylistEntries+1)
+	for index := range entries {
+		id := fmt.Sprintf("%011d", index)
+		childURL := "https://www.youtube.com/watch?v=" + id + "&index=7"
+		if index == 1 {
+			childURL = "https://www.youtube.com/watch?v=99999999999"
+		}
+		entries[index] = engine.Result{InfoJSON: json.RawMessage(fmt.Sprintf(`{"id":%q,"title":%q,"url":%q,"playlist_index":%d}`, id, "Entry", childURL, index+1))}
+	}
+	summary, err := summarizePlaylist(engine.Result{
+		InfoJSON: json.RawMessage(`{"id":"PLfixture","title":"Course"}`),
+		Entries:  entries,
+	}, "https://www.youtube.com/playlist?list=PLfixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Entries) != MaxPlaylistEntries || summary.EntryCount != MaxPlaylistEntries {
+		t.Fatalf("entry count = %d/%d, want %d", len(summary.Entries), summary.EntryCount, MaxPlaylistEntries)
+	}
+	if got := summary.Entries[0].URL; got != "https://www.youtube.com/watch?v=00000000000" {
+		t.Fatalf("canonical child URL = %q", got)
+	}
+	if summary.Entries[1].Available || summary.Entries[1].URL != "" {
+		t.Fatalf("mismatched video identity crossed the preview boundary: %#v", summary.Entries[1])
+	}
+}
+
+func TestAnalyzePlaylistRejectsMetadataIdentityMismatch(t *testing.T) {
+	manager := New(nil, nil)
+	manager.runAnalyze = func(context.Context, engine.Request) (engine.Result, error) {
+		return engine.Result{
+			InfoJSON: json.RawMessage(`{"id":"PLdifferent","title":"Course"}`),
+			Entries:  []engine.Result{{InfoJSON: json.RawMessage(`{"id":"aaaaaaaaaaa","title":"One","url":"https://www.youtube.com/watch?v=aaaaaaaaaaa"}`)}},
+		}, nil
+	}
+	_, err := manager.AnalyzePlaylist(context.Background(), "https://www.youtube.com/playlist?list=PLexpected")
+	if err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+		t.Fatalf("AnalyzePlaylist() error = %v, want identity mismatch", err)
+	}
+}
+
+func TestAnalyzePlaylistPrunesAndCapsPreviewCache(t *testing.T) {
+	manager := New(nil, nil)
+	now := time.Now()
+	manager.playlistCache["expired"] = cachedPlaylist{expiresAt: now.Add(-time.Minute)}
+	for index := 0; index < maxCachedPlaylistPreviews; index++ {
+		id := fmt.Sprintf("cached-%02d", index)
+		manager.playlistCache[id] = cachedPlaylist{expiresAt: now.Add(time.Duration(index+1) * time.Minute)}
+	}
+	manager.runAnalyze = func(context.Context, engine.Request) (engine.Result, error) {
+		return engine.Result{
+			InfoJSON: json.RawMessage(`{"id":"PLexpected","title":"Course"}`),
+			Entries:  []engine.Result{{InfoJSON: json.RawMessage(`{"id":"aaaaaaaaaaa","title":"One","url":"https://www.youtube.com/watch?v=aaaaaaaaaaa"}`)}},
+		}, nil
+	}
+	if _, err := manager.AnalyzePlaylist(context.Background(), "https://www.youtube.com/playlist?list=PLexpected"); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := manager.playlistCache["expired"]; exists {
+		t.Fatal("expired preview was not pruned")
+	}
+	if _, exists := manager.playlistCache["PLexpected"]; !exists {
+		t.Fatal("new preview was not cached")
+	}
+	if len(manager.playlistCache) != maxCachedPlaylistPreviews {
+		t.Fatalf("cache size = %d, want %d", len(manager.playlistCache), maxCachedPlaylistPreviews)
+	}
+}
+
 func TestSummarizeAnalysisBuildsPublicCuratedPlans(t *testing.T) {
 	raw := json.RawMessage(`{
 		"id":"abc123","title":"Demo","uploader":"Creator","duration":90,

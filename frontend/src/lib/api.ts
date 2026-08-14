@@ -12,6 +12,7 @@ import type {
   InfoSummary,
   JobSnapshot,
   PersistenceStatus,
+  PlaylistSummary,
   QuitSummary,
   QueueEvent,
   Settings,
@@ -88,6 +89,7 @@ export const api = {
   },
   analyse: {
     url: (raw: string) => call<InfoSummary>('AnalyzeURL', raw),
+    playlist: (raw: string) => call<PlaylistSummary>('AnalyzePlaylist', raw),
   },
   jobs: {
     start: (req: StartRequest) => call<string>('StartDownload', req),
