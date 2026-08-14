@@ -29,6 +29,10 @@ type StartPlaylistRequest struct {
 	SelectedItems []int        `json:"selectedItems"`
 }
 
+type playlistChildAnalyzer interface {
+	AnalyzeForAdmission(context.Context, string) (jobs.InfoSummary, []outputplan.Plan, error)
+}
+
 type analyzedPlaylistChild struct {
 	entry   jobs.PlaylistEntrySummary
 	summary jobs.InfoSummary
@@ -71,7 +75,7 @@ func (a *App) StartPlaylistDownload(req StartPlaylistRequest) (string, error) {
 
 	ctx, cancel := context.WithCancel(a.ctx)
 	defer cancel()
-	children, err := a.analyzePlaylistChildren(ctx, entries, req.Quality, req.AudioBitrate)
+	children, err := analyzePlaylistChildren(ctx, a.jobs, entries, req.Quality, req.AudioBitrate)
 	if err != nil {
 		logAppErrorf(a.ctx, "desktop: analyze playlist children: %v", err)
 		return "", errors.New(friendlyAnalyzeError(err))
@@ -121,7 +125,7 @@ func (a *App) StartPlaylistDownload(req StartPlaylistRequest) (string, error) {
 	return result.Collection.ID, nil
 }
 
-func (a *App) analyzePlaylistChildren(ctx context.Context, entries []jobs.PlaylistEntrySummary, quality jobs.Quality, bitrate int) ([]analyzedPlaylistChild, error) {
+func analyzePlaylistChildren(ctx context.Context, analyzer playlistChildAnalyzer, entries []jobs.PlaylistEntrySummary, quality jobs.Quality, bitrate int) ([]analyzedPlaylistChild, error) {
 	results := make([]analyzedPlaylistChild, len(entries))
 	work := make(chan int)
 	workerCount := playlistAnalysisConcurrency
@@ -143,7 +147,7 @@ func (a *App) analyzePlaylistChildren(ctx context.Context, entries []jobs.Playli
 			for index := range work {
 				entry := entries[index]
 				childCtx, childCancel := context.WithTimeout(analysisCtx, 75*time.Second)
-				summary, privatePlans, err := a.jobs.AnalyzeForAdmission(childCtx, entry.URL)
+				summary, privatePlans, err := analyzer.AnalyzeForAdmission(childCtx, entry.URL)
 				childCancel()
 				if err != nil {
 					fail(fmt.Errorf("analyze playlist item %d: %w", entry.Index, err))

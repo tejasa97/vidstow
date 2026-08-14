@@ -1,13 +1,62 @@
 package main
 
 import (
+	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tejasa97/vidstow/internal/jobs"
 	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/vidstow/internal/reservation"
 )
+
+type boundedPlaylistAnalyzer struct {
+	active atomic.Int32
+	max    atomic.Int32
+}
+
+func (a *boundedPlaylistAnalyzer) AnalyzeForAdmission(ctx context.Context, rawURL string) (jobs.InfoSummary, []outputplan.Plan, error) {
+	active := a.active.Add(1)
+	defer a.active.Add(-1)
+	for {
+		maximum := a.max.Load()
+		if active <= maximum || a.max.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	select {
+	case <-time.After(10 * time.Millisecond):
+	case <-ctx.Done():
+		return jobs.InfoSummary{}, nil, ctx.Err()
+	}
+	videoID := rawURL[len(rawURL)-11:]
+	return jobs.InfoSummary{URL: rawURL, VideoID: videoID, Title: "Title " + videoID}, []outputplan.Plan{{
+		ID: "video", Kind: outputplan.KindVideo, Height: 1080, Container: "MP4", Label: "1080p", Available: true, Selector: "v+a",
+	}}, nil
+}
+
+func TestAnalyzePlaylistChildrenIsBoundedOrderedAndCarriesPrivatePlans(t *testing.T) {
+	analyzer := &boundedPlaylistAnalyzer{}
+	entries := make([]jobs.PlaylistEntrySummary, 8)
+	for index := range entries {
+		videoID := "fixture" + string(rune('0'+index)) + "001"
+		entries[index] = jobs.PlaylistEntrySummary{Index: index + 1, VideoID: videoID, URL: "https://www.youtube.com/watch?v=" + videoID, Available: true}
+	}
+	children, err := analyzePlaylistChildren(context.Background(), analyzer, entries, jobs.Quality1080p, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analyzer.max.Load() > playlistAnalysisConcurrency || analyzer.max.Load() < 2 || len(children) != len(entries) {
+		t.Fatalf("max concurrency=%d children=%d", analyzer.max.Load(), len(children))
+	}
+	for index, child := range children {
+		if child.entry.Index != index+1 || child.summary.VideoID != entries[index].VideoID || child.plan.Selector != "v+a" {
+			t.Fatalf("child[%d] = %#v", index, child)
+		}
+	}
+}
 
 func TestValidatePlaylistPolicy(t *testing.T) {
 	for _, test := range []struct {
