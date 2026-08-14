@@ -83,7 +83,7 @@
     <div class="setting">
       <div class="copy">
         <strong>Default download folder</strong>
-        <span>New videos and playlists are saved here.</span>
+        <span>New downloads are saved here.</span>
       </div>
       <div class="path">
         <code class="chip" title={folder}>{folder || 'Not set'}</code>
