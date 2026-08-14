@@ -115,8 +115,33 @@ export interface Settings {
 
 export interface UrlCheckResult {
   url: string;
+  videoId?: string;
+  playlistId?: string;
+  kind: 'single_video' | 'playlist' | 'video_playlist';
+  videoUrl?: string;
+  playlistUrl?: string;
+}
+
+export interface PlaylistEntrySummary {
+  index: number;
   videoId: string;
-  kind: string;
+  url: string;
+  title: string;
+  duration?: string;
+  thumbnail?: string;
+  available: boolean;
+}
+
+export interface PlaylistSummary {
+  id: string;
+  url: string;
+  title: string;
+  channel: string;
+  thumbnail: string;
+  entryCount: number;
+  available: number;
+  unavailable: number;
+  entries: PlaylistEntrySummary[];
 }
 
 export interface InfoSummary {

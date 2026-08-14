@@ -102,6 +102,27 @@ func (p *memoryPersistence) SaveJobs(jobs []PersistedJob) error {
 	return nil
 }
 
+func TestSummarizePlaylistBuildsBoundedSelectableEntries(t *testing.T) {
+	result := engine.Result{InfoJSON: json.RawMessage(`{"id":"PLfixture","title":"Course","uploader":"Teacher"}`), Entries: []engine.Result{
+		{InfoJSON: json.RawMessage(`{"id":"aaaaaaaaaaa","title":"One","url":"https://www.youtube.com/watch?v=aaaaaaaaaaa","playlist_index":1}`)},
+		{InfoJSON: json.RawMessage(`{"id":"","title":"Private video","url":"","playlist_index":2}`)},
+	}}
+	summary, err := summarizePlaylist(result, "https://www.youtube.com/playlist?list=PLfixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ID != "PLfixture" || summary.Available != 1 || summary.Unavailable != 1 || len(summary.Entries) != 2 {
+		t.Fatalf("summary=%#v", summary)
+	}
+	if !summary.Entries[0].Available || summary.Entries[1].Available {
+		t.Fatalf("availability=%#v", summary.Entries)
+	}
+	wantThumbnail := "https://i.ytimg.com/vi/aaaaaaaaaaa/hqdefault.jpg"
+	if summary.Thumbnail != wantThumbnail || summary.Entries[0].Thumbnail != wantThumbnail {
+		t.Fatalf("thumbnail fallback: summary=%q entry=%q", summary.Thumbnail, summary.Entries[0].Thumbnail)
+	}
+}
+
 func TestSummarizeAnalysisBuildsPublicCuratedPlans(t *testing.T) {
 	raw := json.RawMessage(`{
 		"id":"abc123","title":"Demo","uploader":"Creator","duration":90,
