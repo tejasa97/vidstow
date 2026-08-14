@@ -2664,6 +2664,8 @@ type retryResumeDecision uint8
 const (
 	retryResumeReuse retryResumeDecision = iota + 1
 	retryResumeActionRequired
+
+	retryCodeYouTubeChallengePreTransfer = "youtube-challenge-pre-transfer"
 )
 
 // classifyRetryResume authorizes reuse only for an available, validated
@@ -2718,6 +2720,16 @@ func classifyRetryResume(summary engine.ResumeSummary) (retryResumeDecision, str
 		return retryResumeReuse, ""
 	}
 	return retryResumeActionRequired, "session-reconciliation-required"
+}
+
+func canRestartPreTransferFailure(state *jobState, summary engine.ResumeSummary) bool {
+	if state == nil || state.durable.LastErrorCode != retryCodeYouTubeChallengePreTransfer || state.snap.Bytes != 0 {
+		return false
+	}
+	if summary.HasManifest || summary.LeaseContended || summary.Classification != "" || len(summary.Classifications) != 0 {
+		return false
+	}
+	return string(summary.Publication) == "" && string(summary.Cleanup) == "" && string(summary.Status) == ""
 }
 
 func (m *Manager) requireRetryAction(state *jobState, code string) error {
@@ -2808,11 +2820,22 @@ func (m *Manager) Retry(id string) error {
 		} else {
 			summary, inspectErr := m.inspectResume(context.Background(), engineRootRef(state.durable.OutputRoot), sessionID)
 			if inspectErr != nil {
-				return m.requireRetryAction(state, "recovery-session-unavailable")
-			}
-			decision, actionCode := classifyRetryResume(summary)
-			if decision != retryResumeReuse {
-				return m.requireRetryAction(state, actionCode)
+				if canRestartPreTransferFailure(state, engine.ResumeSummary{}) {
+					sessionID = newSessionID()
+					retryMode = jobmodel.RetryModeRestartNewSession
+				} else {
+					return m.requireRetryAction(state, "recovery-session-unavailable")
+				}
+			} else {
+				decision, actionCode := classifyRetryResume(summary)
+				if decision != retryResumeReuse {
+					if canRestartPreTransferFailure(state, summary) {
+						sessionID = newSessionID()
+						retryMode = jobmodel.RetryModeRestartNewSession
+					} else {
+						return m.requireRetryAction(state, actionCode)
+					}
+				}
 			}
 		}
 		if err := m.commitDurable(state, func(job *jobmodel.DurableJob, document *jobmodel.State) error {
@@ -3655,6 +3678,9 @@ func humanMessage(s string) string {
 }
 
 func errorReason(err error) string {
+	if isYouTubeChallengeTimeout(err) {
+		return retryCodeYouTubeChallengePreTransfer
+	}
 	var typed *engine.Error
 	if errors.As(err, &typed) {
 		return string(typed.Category)

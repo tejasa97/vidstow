@@ -505,6 +505,76 @@ func TestV2RetryReusesOnlyAvailableManifest(t *testing.T) {
 	}
 }
 
+func TestPreTransferRestartRequiresChallengeMarkerAndNoEvidence(t *testing.T) {
+	base := &jobState{
+		snap:    JobSnapshot{},
+		durable: jobmodel.DurableJob{LastErrorCode: retryCodeYouTubeChallengePreTransfer},
+	}
+	if !canRestartPreTransferFailure(base, engine.ResumeSummary{}) {
+		t.Fatal("empty challenge-timeout session was not restartable")
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*jobState)
+		summary engine.ResumeSummary
+	}{
+		{name: "media bytes observed", mutate: func(state *jobState) { state.snap.Bytes = 1 }},
+		{name: "different failure", mutate: func(state *jobState) { state.durable.LastErrorCode = "network" }},
+		{name: "manifest exists", summary: engine.ResumeSummary{HasManifest: true, Classification: "available"}},
+		{name: "unavailable root", summary: engine.ResumeSummary{Classification: "unavailable_root"}},
+		{name: "lease contention", summary: engine.ResumeSummary{LeaseContended: true}},
+		{name: "publication uncertainty", summary: engine.ResumeSummary{Publication: "indeterminate"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := &jobState{snap: base.snap, durable: base.durable}
+			if test.mutate != nil {
+				test.mutate(state)
+			}
+			if canRestartPreTransferFailure(state, test.summary) {
+				t.Fatal("unsafe evidence was authorized for a fresh retry")
+			}
+		})
+	}
+}
+
+func TestV2RetryStartsFreshSessionAfterChallengeFailedBeforeTransfer(t *testing.T) {
+	store, root, _ := newV2TestStore(t, "job-challenge")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleFailed
+	store.state.Jobs[0].Desired = jobmodel.DesiredRunning
+	store.state.Jobs[0].LastErrorCode = retryCodeYouTubeChallengePreTransfer
+	original := store.state.Jobs[0]
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{}, errors.New("workspace unavailable")
+	}
+	requests := make(chan engine.Request, 1)
+	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		requests <- request
+		return engine.Result{Filename: filepath.Join(root, "Demo [abc123] [1080p].mp4")}, nil
+	}
+
+	if err := manager.Retry("job-challenge"); err != nil {
+		t.Fatal(err)
+	}
+	request := <-requests
+	if request.Filesystem.Resume.SessionID == original.SessionID || request.Filesystem.Resume.SessionID == "" {
+		t.Fatalf("retry session = %q; want fresh identity distinct from %q", request.Filesystem.Resume.SessionID, original.SessionID)
+	}
+	completed := waitForV2Job(t, store, "job-challenge", jobmodel.LifecycleCompleted)
+	if completed.AttemptID == original.AttemptID || completed.RetryMode != jobmodel.RetryModeRestartNewSession {
+		t.Fatalf("challenge retry identity/mode = %#v; want new attempt and restart-new-session", completed)
+	}
+}
+
 func TestV2RetryPreservesUncertainSessionAsActionRequired(t *testing.T) {
 	tests := []struct {
 		name    string

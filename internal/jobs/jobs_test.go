@@ -300,6 +300,9 @@ func TestHumanErrorYouTubeChallengeTimeout(t *testing.T) {
 	if got := humanError(err); got != "YouTube challenge timed out — retry" {
 		t.Fatalf("humanError() = %q; want challenge-timeout message", got)
 	}
+	if got := errorReason(err); got != retryCodeYouTubeChallengePreTransfer {
+		t.Fatalf("errorReason() = %q; want pre-transfer marker", got)
+	}
 }
 
 func TestHumanErrorOtherUnsupportedIsUnchanged(t *testing.T) {
