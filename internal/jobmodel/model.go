@@ -69,13 +69,14 @@ type Settings struct {
 }
 
 type State struct {
-	Version          int                `json:"version"`
-	StoreRevision    uint64             `json:"storeRevision"`
-	NextQueueOrdinal uint64             `json:"nextQueueOrdinal"`
-	Settings         Settings           `json:"settings"`
-	Jobs             []DurableJob       `json:"jobs"`
-	History          []HistoryEntry     `json:"history"`
-	Cleanup          []CleanupTombstone `json:"cleanup"`
+	Version          int                 `json:"version"`
+	StoreRevision    uint64              `json:"storeRevision"`
+	NextQueueOrdinal uint64              `json:"nextQueueOrdinal"`
+	Settings         Settings            `json:"settings"`
+	Jobs             []DurableJob        `json:"jobs"`
+	Collections      []DurableCollection `json:"collections,omitempty"`
+	History          []HistoryEntry      `json:"history"`
+	Cleanup          []CleanupTombstone  `json:"cleanup"`
 }
 
 // JobPrecondition identifies the exact durable row a lifecycle operation
@@ -95,8 +96,24 @@ type JobPrecondition struct {
 	OutputRoot OutputRootRef
 }
 
+type DurableCollection struct {
+	ID          string    `json:"id"`
+	Revision    uint64    `json:"revision"`
+	PlaylistID  string    `json:"playlistId"`
+	SourceURL   string    `json:"sourceUrl"`
+	Title       string    `json:"title"`
+	Channel     string    `json:"channel,omitempty"`
+	Thumbnail   string    `json:"thumbnail,omitempty"`
+	Policy      string    `json:"policy"`
+	ChildJobIDs []string  `json:"childJobIds"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
 type DurableJob struct {
 	ID                 string           `json:"id"`
+	CollectionID       string           `json:"collectionId,omitempty"`
+	CollectionIndex    int              `json:"collectionIndex,omitempty"`
 	Revision           uint64           `json:"revision"`
 	AttemptID          string           `json:"attemptId"`
 	SessionID          string           `json:"sessionId"`
@@ -192,6 +209,10 @@ type HistoryEntry struct {
 func CloneState(in State) State {
 	out := in
 	out.Jobs = append([]DurableJob(nil), in.Jobs...)
+	out.Collections = append([]DurableCollection(nil), in.Collections...)
+	for i := range out.Collections {
+		out.Collections[i].ChildJobIDs = append([]string(nil), in.Collections[i].ChildJobIDs...)
+	}
 	for i := range out.Jobs {
 		out.Jobs[i].Reservation.Artifacts = append([]ReservedArtifact(nil), in.Jobs[i].Reservation.Artifacts...)
 	}

@@ -715,12 +715,49 @@ func (m *Manager) removeDurable(state *jobState) error {
 	}}, func(document *jobmodel.State) error {
 		for index, job := range document.Jobs {
 			if job.ID == expected.ID {
+				if err := removeCollectionChild(document, job, time.Now().UTC()); err != nil {
+					return err
+				}
 				document.Jobs = append(document.Jobs[:index], document.Jobs[index+1:]...)
 				return nil
 			}
 		}
 		return errors.New("jobs: durable job disappeared")
 	})
+}
+
+func removeCollectionChild(document *jobmodel.State, job jobmodel.DurableJob, now time.Time) error {
+	if job.CollectionID == "" {
+		return nil
+	}
+	for collectionIndex := range document.Collections {
+		collection := &document.Collections[collectionIndex]
+		if collection.ID != job.CollectionID {
+			continue
+		}
+		childIndex := -1
+		for index, childID := range collection.ChildJobIDs {
+			if childID == job.ID {
+				childIndex = index
+				break
+			}
+		}
+		if childIndex < 0 {
+			return errors.New("jobs: durable collection does not contain child")
+		}
+		collection.ChildJobIDs = append(collection.ChildJobIDs[:childIndex], collection.ChildJobIDs[childIndex+1:]...)
+		if len(collection.ChildJobIDs) == 0 {
+			document.Collections = append(document.Collections[:collectionIndex], document.Collections[collectionIndex+1:]...)
+			return nil
+		}
+		if collection.Revision == ^uint64(0) {
+			return errors.New("jobs: durable collection revision exhausted")
+		}
+		collection.Revision++
+		collection.UpdatedAt = now
+		return nil
+	}
+	return errors.New("jobs: durable collection disappeared")
 }
 
 func (m *Manager) transitionDurable(state *jobState, lifecycle jobmodel.Lifecycle, desired jobmodel.DesiredState, phase jobmodel.Phase) error {
