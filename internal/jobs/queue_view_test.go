@@ -77,6 +77,56 @@ func TestQueueViewLifecycleCapabilitiesAndAggregates(t *testing.T) {
 	}
 }
 
+func TestQueueViewAuthorsCollectionCapabilitiesAndConsumesParentToken(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "one", "two")
+	state := store.Snapshot()
+	now := state.Jobs[0].CreatedAt
+	state.Collections = []jobmodel.DurableCollection{{
+		ID: "collection", Revision: 1, PlaylistID: "PLfixture", SourceURL: "https://www.youtube.com/playlist?list=PLfixture",
+		Title: "Fixture playlist", Channel: "Creator", Policy: "video:1080p", ChildJobIDs: []string{"one", "two"}, CreatedAt: now, UpdatedAt: now,
+	}}
+	for index := range state.Jobs {
+		state.Jobs[index].CollectionID = "collection"
+		state.Jobs[index].CollectionIndex = index + 1
+	}
+	store.state = state
+	m := New(nil, nil)
+	defer m.Close()
+	if err := m.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	for _, durable := range store.Snapshot().Jobs {
+		job := &jobState{snap: JobSnapshot{ID: durable.ID, Status: StatusPending, Lifecycle: jobmodel.LifecyclePending, Desired: jobmodel.DesiredRunning}, durable: durable, fromStateV2: true, done: make(chan struct{}), commandToken: durable.ID + "-token"}
+		m.all[durable.ID] = job
+		m.order = append(m.order, durable.ID)
+	}
+	m.emitQueueLocked()
+	m.mu.Unlock()
+
+	view := m.QueueView()
+	if len(view.Collections) != 1 || len(view.Collections[0].ChildJobIDs) != 2 || !view.Collections[0].Capabilities.Pause || !view.Collections[0].Capabilities.Cancel || view.Collections[0].CommandToken == "" {
+		t.Fatalf("collection view = %#v", view.Collections)
+	}
+	for index, row := range view.Rows {
+		if row.CollectionID != "collection" || row.CollectionIndex != index+1 {
+			t.Fatalf("child row[%d] = %#v", index, row)
+		}
+	}
+	count, err := m.QueuePauseCollection("collection", view.Collections[0].CommandToken)
+	if err != nil || count != 2 {
+		t.Fatalf("Pause collection = %d, %v", count, err)
+	}
+	if _, err := m.QueuePauseCollection("collection", view.Collections[0].CommandToken); err == nil {
+		t.Fatal("consumed collection token was reused")
+	}
+	for _, durable := range store.Snapshot().Jobs {
+		if durable.Lifecycle != jobmodel.LifecyclePaused {
+			t.Fatalf("child %s lifecycle = %s", durable.ID, durable.Lifecycle)
+		}
+	}
+}
+
 func TestQueueTelemetryLabelsAreSafeAndHumanReadable(t *testing.T) {
 	for _, test := range []struct {
 		name string
