@@ -44,10 +44,10 @@
     border-radius: var(--r-md);
     background: var(--surface-base);
     border: 1px solid var(--border-subtle);
-    color: var(--text-muted);
+    color: var(--text-secondary);
     margin-bottom: var(--sp-2);
   }
   .title { margin: 0; font-size: var(--fs-md); font-weight: 600; }
-  .message { margin: 0; color: var(--text-muted); font-size: var(--fs-sm); max-width: 34ch; }
+  .message { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); max-width: 34ch; }
   .action { margin-top: var(--sp-3); }
 </style>

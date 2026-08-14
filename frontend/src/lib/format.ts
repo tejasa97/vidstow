@@ -79,6 +79,12 @@ export function formatRelative(iso: string): string {
   }
 }
 
+export function shortTitle(title: string, max = 42): string {
+  const trimmed = (title || '').trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
+}
+
 export function progressOf(job: JobSnapshot): number {
   if (job.total > 0 && job.bytes > 0) {
     return Math.max(0, Math.min(1, job.bytes / job.total));

@@ -48,7 +48,8 @@
     color: var(--accent-400);
     border-color: rgba(59, 130, 246, 0.32);
   }
-  .paused { background:#fff7ed;color:#c2410c;border-color:#fed7aa; }
+  .paused, .pausing { background: var(--status-warning-soft); color: var(--status-warning); border-color: rgba(154, 100, 8, 0.28); }
+  .canceling, .action-required { background: var(--status-danger-soft); color: var(--status-danger); border-color: rgba(196, 59, 52, 0.28); }
   .complete {
     background: var(--status-success-soft);
     color: var(--status-success);

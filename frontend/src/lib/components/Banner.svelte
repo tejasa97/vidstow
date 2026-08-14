@@ -36,7 +36,7 @@
   .warning .dot { background: var(--status-warning); }
   .danger .dot  { background: var(--status-danger); }
 
-  .success { border-color: rgba(52, 211, 153, 0.32); }
-  .warning { border-color: rgba(251, 191, 36, 0.32); }
-  .danger  { border-color: rgba(248, 113, 113, 0.32); }
+  .success { border-color: var(--status-success); }
+  .warning { border-color: var(--status-warning); }
+  .danger  { border-color: var(--status-danger); }
 </style>
