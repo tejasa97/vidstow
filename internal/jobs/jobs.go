@@ -745,13 +745,13 @@ func removeCollectionChild(document *jobmodel.State, job jobmodel.DurableJob, no
 		if childIndex < 0 {
 			return errors.New("jobs: durable collection does not contain child")
 		}
+		if len(collection.ChildJobIDs) > 1 && collection.Revision == ^uint64(0) {
+			return errors.New("jobs: durable collection revision exhausted")
+		}
 		collection.ChildJobIDs = append(collection.ChildJobIDs[:childIndex], collection.ChildJobIDs[childIndex+1:]...)
 		if len(collection.ChildJobIDs) == 0 {
 			document.Collections = append(document.Collections[:collectionIndex], document.Collections[collectionIndex+1:]...)
 			return nil
-		}
-		if collection.Revision == ^uint64(0) {
-			return errors.New("jobs: durable collection revision exhausted")
 		}
 		collection.Revision++
 		collection.UpdatedAt = now

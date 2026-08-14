@@ -790,6 +790,9 @@ func validateState(state jobmodel.State) error {
 		if _, duplicate := seenCollections[collection.ID]; duplicate {
 			return errors.New("store: duplicate collection id")
 		}
+		if _, conflictsWithJob := seen[collection.ID]; conflictsWithJob {
+			return errors.New("store: collection id conflicts with job id")
+		}
 		seenCollections[collection.ID] = struct{}{}
 		members := collectionJobs[collection.ID]
 		lastIndex := 0
