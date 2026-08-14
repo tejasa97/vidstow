@@ -113,6 +113,15 @@ func TestQueueViewAuthorsCollectionCapabilitiesAndConsumesParentToken(t *testing
 			t.Fatalf("child row[%d] = %#v", index, row)
 		}
 	}
+	m.mu.Lock()
+	m.collectionCommanding["collection"] = true
+	settling := m.queueViewLocked()
+	delete(m.collectionCommanding, "collection")
+	m.mu.Unlock()
+	if settling.Collections[0].Capabilities != (QueueCollectionCapabilities{}) || settling.Collections[0].CommandToken != "" {
+		t.Fatalf("settling collection exposed authority = %#v", settling.Collections[0])
+	}
+	view = m.QueueView()
 	count, err := m.QueuePauseCollection("collection", view.Collections[0].CommandToken)
 	if err != nil || count != 2 {
 		t.Fatalf("Pause collection = %d, %v", count, err)

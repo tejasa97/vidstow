@@ -375,47 +375,48 @@ type DurablePersistence interface {
 // Manager owns the queue and the client used for metadata analysis. Downloads
 // use short-lived clients so each job can attach its own event handler.
 type Manager struct {
-	client              *engine.Client
-	listener            Listener
-	eventSignal         chan struct{}
-	eventMu             sync.Mutex
-	pendingEvents       []Event
-	eventStop           chan struct{}
-	eventDone           chan struct{}
-	eventClosed         bool
-	closeOnce           sync.Once
-	closeDone           chan struct{}
-	closeErr            error
-	closing             bool
-	closed              bool
-	lifecycleCtx        context.Context
-	lifecycleCancel     context.CancelCauseFunc
-	analysisWG          sync.WaitGroup
-	detachedWG          sync.WaitGroup
-	runDownload         downloadRunner
-	runAnalyze          analyzeRunner
-	inspectResume       resumeInspector
-	ffmpegLocation      string
-	mu                  sync.Mutex
-	all                 map[string]*jobState
-	order               []string
-	active              map[string]*worker
-	concurrency         int
-	processing          chan struct{}
-	queueRevision       uint64
-	queueCommandToken   string
-	queueAuthoritySig   string
-	stateStore          StateStore
-	planCache           map[string]cachedPlans
-	playlistCache       map[string]cachedPlaylist
-	collectionAuthority map[string]collectionAuthority
-	persistence         Persistence
-	persistenceDurable  bool
-	persistMu           sync.Mutex
-	persistStatus       PersistenceStatus
-	persistSignal       chan struct{}
-	persistStop         chan struct{}
-	persistDone         chan struct{}
+	client               *engine.Client
+	listener             Listener
+	eventSignal          chan struct{}
+	eventMu              sync.Mutex
+	pendingEvents        []Event
+	eventStop            chan struct{}
+	eventDone            chan struct{}
+	eventClosed          bool
+	closeOnce            sync.Once
+	closeDone            chan struct{}
+	closeErr             error
+	closing              bool
+	closed               bool
+	lifecycleCtx         context.Context
+	lifecycleCancel      context.CancelCauseFunc
+	analysisWG           sync.WaitGroup
+	detachedWG           sync.WaitGroup
+	runDownload          downloadRunner
+	runAnalyze           analyzeRunner
+	inspectResume        resumeInspector
+	ffmpegLocation       string
+	mu                   sync.Mutex
+	all                  map[string]*jobState
+	order                []string
+	active               map[string]*worker
+	concurrency          int
+	processing           chan struct{}
+	queueRevision        uint64
+	queueCommandToken    string
+	queueAuthoritySig    string
+	stateStore           StateStore
+	planCache            map[string]cachedPlans
+	playlistCache        map[string]cachedPlaylist
+	collectionAuthority  map[string]collectionAuthority
+	collectionCommanding map[string]bool
+	persistence          Persistence
+	persistenceDurable   bool
+	persistMu            sync.Mutex
+	persistStatus        PersistenceStatus
+	persistSignal        chan struct{}
+	persistStop          chan struct{}
+	persistDone          chan struct{}
 }
 
 type cachedPlans struct {
@@ -478,23 +479,24 @@ func New(client *engine.Client, listener Listener) *Manager {
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancelCause(context.Background())
 	manager := &Manager{
-		client:              client,
-		listener:            listener,
-		closeDone:           make(chan struct{}),
-		eventDone:           make(chan struct{}),
-		lifecycleCtx:        lifecycleCtx,
-		lifecycleCancel:     lifecycleCancel,
-		runDownload:         defaultDownloadRunner,
-		runAnalyze:          client.Run,
-		inspectResume:       engine.InspectResumeState,
-		all:                 make(map[string]*jobState),
-		active:              make(map[string]*worker),
-		concurrency:         DefaultDownloadConcurrency,
-		processing:          make(chan struct{}, MaxProcessingConcurrency),
-		queueCommandToken:   uuid.NewString(),
-		planCache:           make(map[string]cachedPlans),
-		playlistCache:       make(map[string]cachedPlaylist),
-		collectionAuthority: make(map[string]collectionAuthority),
+		client:               client,
+		listener:             listener,
+		closeDone:            make(chan struct{}),
+		eventDone:            make(chan struct{}),
+		lifecycleCtx:         lifecycleCtx,
+		lifecycleCancel:      lifecycleCancel,
+		runDownload:          defaultDownloadRunner,
+		runAnalyze:           client.Run,
+		inspectResume:        engine.InspectResumeState,
+		all:                  make(map[string]*jobState),
+		active:               make(map[string]*worker),
+		concurrency:          DefaultDownloadConcurrency,
+		processing:           make(chan struct{}, MaxProcessingConcurrency),
+		queueCommandToken:    uuid.NewString(),
+		planCache:            make(map[string]cachedPlans),
+		playlistCache:        make(map[string]cachedPlaylist),
+		collectionAuthority:  make(map[string]collectionAuthority),
+		collectionCommanding: make(map[string]bool),
 	}
 	if listener != nil {
 		manager.eventSignal = make(chan struct{}, 1)
@@ -1703,6 +1705,9 @@ func (m *Manager) queueCollectionsLocked(rows []QueueRow) []QueueCollection {
 			signatureParts = append(signatureParts, childID+"="+state.commandToken)
 		}
 		collection.Capabilities.Remove = removeAll
+		if m.collectionCommanding[parent.ID] {
+			collection.Capabilities = QueueCollectionCapabilities{}
+		}
 		if collection.Total > 0 {
 			collection.Progress = progress / float64(collection.Total)
 			collection.ProgressLabel = fmt.Sprintf("%d of %d complete", collection.Completed, collection.Total)
@@ -1722,6 +1727,7 @@ func (m *Manager) queueCollectionsLocked(rows []QueueRow) []QueueCollection {
 	for id := range m.collectionAuthority {
 		if _, exists := liveAuthority[id]; !exists {
 			delete(m.collectionAuthority, id)
+			delete(m.collectionCommanding, id)
 		}
 	}
 	return collections
@@ -1934,7 +1940,7 @@ func (m *Manager) authorizeCollectionCommand(id, token string, allowed func(Queu
 			break
 		}
 	}
-	if collection == nil || token == "" || token != collection.CommandToken || !allowed(collection.Capabilities) {
+	if collection == nil || m.collectionCommanding[id] || token == "" || token != collection.CommandToken || !allowed(collection.Capabilities) {
 		return nil, errors.New("jobs: collection action is no longer available")
 	}
 	children := make([]string, 0, len(collection.ChildJobIDs))
@@ -1951,7 +1957,17 @@ func (m *Manager) authorizeCollectionCommand(id, token string, allowed func(Queu
 	authority := m.collectionAuthority[id]
 	authority.token = uuid.NewString()
 	m.collectionAuthority[id] = authority
+	m.collectionCommanding[id] = true
 	return children, nil
+}
+
+func (m *Manager) finishCollectionCommand(id string) {
+	m.mu.Lock()
+	if m.collectionCommanding[id] {
+		delete(m.collectionCommanding, id)
+		m.emitQueueLocked()
+	}
+	m.mu.Unlock()
 }
 
 func runCollectionCommand(children []string, action func(string) error) (int, error) {
@@ -1970,6 +1986,7 @@ func (m *Manager) QueuePauseCollection(id, token string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer m.finishCollectionCommand(id)
 	return runCollectionCommand(children, m.Pause)
 }
 
@@ -1978,6 +1995,7 @@ func (m *Manager) QueueCancelCollection(id, token string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer m.finishCollectionCommand(id)
 	return runCollectionCommand(children, m.Cancel)
 }
 
@@ -1986,6 +2004,7 @@ func (m *Manager) QueueResumeCollection(id, token string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer m.finishCollectionCommand(id)
 	return runCollectionCommand(children, m.Resume)
 }
 
@@ -1994,6 +2013,7 @@ func (m *Manager) QueueRetryCollection(id, token string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer m.finishCollectionCommand(id)
 	return runCollectionCommand(children, m.Retry)
 }
 
@@ -2002,6 +2022,7 @@ func (m *Manager) QueueRemoveCollection(id, token string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer m.finishCollectionCommand(id)
 	return runCollectionCommand(children, m.Remove)
 }
 
