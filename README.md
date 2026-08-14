@@ -22,9 +22,9 @@ A local desktop application built with Go, Wails, and Svelte.
 ![VidStow analyzing Big Buck Bunny and showing video output choices](docs/assets/screenshots/video-options.png)
 
 > [!IMPORTANT]
-> VidStow is beta software for public, on-demand, single-video YouTube URLs.
-> Playlists, channels, search, Shorts, live streams, authenticated downloads,
-> and other sites are outside the supported application scope.
+> VidStow is beta software for public, on-demand YouTube video and playlist URLs.
+> Channels, search, Shorts, live streams, authenticated downloads, and other
+> sites are outside the supported application scope.
 
 ## Download
 
@@ -48,6 +48,8 @@ verification details.
   channel, and available output choices.
 - **Focused output choices** — choose best available video, capped resolutions,
   original audio, or MP3 when the analyzed media supports those choices.
+- **Playlist review** — select up to 500 available entries, apply a bounded
+  range, and admit the collection as one expandable parent with individual jobs.
 - **FIFO queue** — configure 1–10 concurrent downloads; the default is 2.
 - **Explicit lifecycle controls** — each queue row presents only the Pause,
   Resume, Cancel, Retry, Open, or removal actions authorized by the application;
@@ -109,7 +111,7 @@ application and engine versions and by artifact-specific validation.
 
 | Area | Supported boundary |
 | --- | --- |
-| Product | Beta; focused public single-video YouTube workflow |
+| Product | Beta; focused public YouTube video and playlist workflow |
 | Package | `v0.1.0-beta.1` will provide a macOS Apple Silicon preview when published |
 | Source | Apache-2.0 source and self-build instructions |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
