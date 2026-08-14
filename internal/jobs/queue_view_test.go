@@ -125,6 +125,10 @@ func TestQueueViewAuthorsCollectionCapabilitiesAndConsumesParentToken(t *testing
 			t.Fatalf("child %s lifecycle = %s", durable.ID, durable.Lifecycle)
 		}
 	}
+	pausedView := m.QueueView()
+	if len(pausedView.Collections) != 1 || !pausedView.Collections[0].Capabilities.Resume || pausedView.Collections[0].Capabilities.Pause {
+		t.Fatalf("paused collection capabilities = %#v", pausedView.Collections)
+	}
 }
 
 func TestQueueTelemetryLabelsAreSafeAndHumanReadable(t *testing.T) {

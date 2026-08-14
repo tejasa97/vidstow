@@ -255,6 +255,7 @@ type QueueRow struct {
 type QueueCollectionCapabilities struct {
 	Pause  bool `json:"pause"`
 	Cancel bool `json:"cancel"`
+	Resume bool `json:"resume"`
 	Retry  bool `json:"retry"`
 	Remove bool `json:"remove"`
 }
@@ -1679,6 +1680,7 @@ func (m *Manager) queueCollectionsLocked(rows []QueueRow) []QueueCollection {
 			caps := row.Capabilities
 			collection.Capabilities.Pause = collection.Capabilities.Pause || caps.Pause
 			collection.Capabilities.Cancel = collection.Capabilities.Cancel || caps.Cancel
+			collection.Capabilities.Resume = collection.Capabilities.Resume || caps.Resume
 			collection.Capabilities.Retry = collection.Capabilities.Retry || caps.Retry
 			removeAll = removeAll && caps.Remove
 			switch row.Lifecycle {
@@ -1705,7 +1707,7 @@ func (m *Manager) queueCollectionsLocked(rows []QueueRow) []QueueCollection {
 			collection.Progress = progress / float64(collection.Total)
 			collection.ProgressLabel = fmt.Sprintf("%d of %d complete", collection.Completed, collection.Total)
 		}
-		signature := strings.Join(signatureParts, "|") + fmt.Sprintf("|%t%t%t%t", collection.Capabilities.Pause, collection.Capabilities.Cancel, collection.Capabilities.Retry, collection.Capabilities.Remove)
+		signature := strings.Join(signatureParts, "|") + fmt.Sprintf("|%t%t%t%t%t", collection.Capabilities.Pause, collection.Capabilities.Cancel, collection.Capabilities.Resume, collection.Capabilities.Retry, collection.Capabilities.Remove)
 		authority := m.collectionAuthority[parent.ID]
 		if authority.signature != signature {
 			authority = collectionAuthority{signature: signature, token: uuid.NewString()}
@@ -1977,6 +1979,14 @@ func (m *Manager) QueueCancelCollection(id, token string) (int, error) {
 		return 0, err
 	}
 	return runCollectionCommand(children, m.Cancel)
+}
+
+func (m *Manager) QueueResumeCollection(id, token string) (int, error) {
+	children, err := m.authorizeCollectionCommand(id, token, func(c QueueCollectionCapabilities) bool { return c.Resume }, func(c QueueJobCapabilities) bool { return c.Resume })
+	if err != nil {
+		return 0, err
+	}
+	return runCollectionCommand(children, m.Resume)
 }
 
 func (m *Manager) QueueRetryCollection(id, token string) (int, error) {

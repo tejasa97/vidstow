@@ -568,6 +568,13 @@ func (a *App) CancelQueueCollection(id, token string) (int, error) {
 	return a.jobs.QueueCancelCollection(id, token)
 }
 
+func (a *App) ResumeQueueCollection(id, token string) (int, error) {
+	if err := a.requireReady(); err != nil {
+		return 0, err
+	}
+	return a.jobs.QueueResumeCollection(id, token)
+}
+
 func (a *App) RetryQueueCollection(id, token string) (int, error) {
 	if err := a.requireReady(); err != nil {
 		return 0, err
