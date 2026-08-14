@@ -259,12 +259,8 @@
         await api.jobs.startPlaylist({
           url: playlist!.url,
           playlistId: playlist!.id,
-          title: playlist!.title,
-          channel: playlist!.channel,
-          thumbnail: playlist!.thumbnail,
           quality,
           audioBitrate,
-          outputDir: folder,
           selectedItems: [...selectedItems].sort((a, b) => a - b),
         });
         showBanner('success', `Added ${selectedItems.size} videos to queue`);

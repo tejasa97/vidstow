@@ -52,12 +52,8 @@ function call<T>(method: string, ...args: any[]): Promise<T> {
 export interface StartPlaylistRequest {
   url: string;
   playlistId: string;
-  title: string;
-  channel: string;
-  thumbnail: string;
   quality: JobSnapshot['quality'];
   audioBitrate?: number;
-  outputDir: string;
   selectedItems: number[];
 }
 
