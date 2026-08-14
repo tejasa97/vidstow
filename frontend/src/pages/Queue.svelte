@@ -1,8 +1,8 @@
 <script lang="ts">
   import { api } from '../lib/api.js';
-  import { queueView, showBanner, showError } from '../lib/stores.js';
+  import { modal, queueView, showBanner, showError } from '../lib/stores.js';
   import QueueOverview from '../lib/lifecycle-ui/QueueOverview.svelte';
-  import type { LifecycleJobEventDetail, QueueOverviewViewModel, QueueView } from '../lib/lifecycle-ui/types.js';
+  import type { LifecycleJobEventDetail, QueueCollectionActionEvent, QueueOverviewViewModel, QueueView } from '../lib/lifecycle-ui/types.js';
   import { newestQueueView } from '../lib/queue-view.js';
 
   function modelFrom(view: QueueView | null): QueueOverviewViewModel {
@@ -11,6 +11,7 @@
     return {
       summary: view?.summary ?? { totalJobs: 0, runningJobs: 0, occupiedSlots: 0, slotLimit: 2, processingOccupied: 0, processingLimit: 3, waitingJobs: 0, pausedJobs: 0 },
       jobs: writable ? (view?.rows ?? []) : (view?.rows ?? []).map((row) => ({ ...row, capabilities: {}, commandToken: undefined })),
+      collections: writable ? (view?.collections ?? []) : (view?.collections ?? []).map((collection) => ({ ...collection, capabilities: {}, commandToken: undefined })),
       canPauseAll: writable && view?.capabilities?.pauseAll === true,
       canClearCompleted: writable && view?.capabilities?.clearCompleted === true,
       commandToken: writable ? view?.capabilities?.commandToken : undefined,
@@ -39,6 +40,34 @@
     } catch (err) { showError(err, fallback); }
   }
 
+  async function collectionAction(detail: QueueCollectionActionEvent) {
+    const operations = {
+      pause: api.queue.pauseCollection,
+      cancel: api.queue.cancelCollection,
+      resume: api.queue.resumeCollection,
+      retry: api.queue.retryCollection,
+      remove: api.queue.removeCollection,
+    };
+    const execute = async () => {
+      try {
+        const count = await operations[detail.action](detail.collectionId, detail.commandToken);
+        await refresh();
+        showBanner('info', `${detail.action === 'remove' ? 'Removed' : 'Updated'} ${count} playlist item${count === 1 ? '' : 's'}.`);
+      } catch (err) { showError(err, `Could not ${detail.action} the playlist`); }
+    };
+    if (detail.action === 'cancel' || detail.action === 'remove') {
+      const collection = model.collections?.find((candidate) => candidate.id === detail.collectionId);
+      modal.set({
+        kind: 'confirm',
+        title: detail.action === 'cancel' ? 'Cancel this playlist?' : 'Remove this playlist from the queue?',
+        message: `${collection?.title ?? 'This playlist'} contains ${collection?.total ?? 0} queue item${collection?.total === 1 ? '' : 's'}.`,
+        actions: [{ label: detail.action === 'cancel' ? 'Cancel Playlist' : 'Remove Playlist', primary: true, action: execute }],
+      });
+      return;
+    }
+    await execute();
+  }
+
   async function pauseAll() {
     try {
       const count = await api.queue.pauseAll(model.commandToken ?? '');
@@ -57,6 +86,7 @@
   {model}
   onPauseAll={pauseAll}
   onClearCompleted={clearCompleted}
+  onCollectionAction={collectionAction}
   onAction={(event) => {
     if (event.action === 'pause') action(event, api.queue.pause, 'Could not pause the download');
     else if (event.action === 'cancel') action(event, api.queue.cancel, 'Could not cancel the download');

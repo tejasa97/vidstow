@@ -57,6 +57,8 @@ export interface LifecycleJobCapabilities {
  */
 export interface LifecycleJobViewModel {
   id: string;
+  collectionId?: string;
+  collectionIndex?: number;
   title: string;
   metadata?: string;
   thumbnailUrl?: string;
@@ -89,9 +91,38 @@ export interface QueueSummaryViewModel {
 
 export type QueueNoticeTone = 'info' | 'warning';
 
+export interface QueueCollectionCapabilities {
+  pause?: boolean;
+  cancel?: boolean;
+  resume?: boolean;
+  retry?: boolean;
+  remove?: boolean;
+}
+
+export interface QueueCollectionViewModel {
+  id: string;
+  title: string;
+  metadata?: string;
+  thumbnailUrl?: string;
+  policy: string;
+  childJobIds: string[];
+  total: number;
+  completed: number;
+  failed: number;
+  canceled: number;
+  active: number;
+  pending: number;
+  paused: number;
+  progress: number;
+  progressLabel: string;
+  capabilities?: QueueCollectionCapabilities;
+  commandToken?: string;
+}
+
 export interface QueueOverviewViewModel {
   summary: QueueSummaryViewModel;
   jobs: LifecycleJobViewModel[];
+  collections?: QueueCollectionViewModel[];
   canPauseAll: boolean;
   canClearCompleted: boolean;
   commandToken?: string;
@@ -132,6 +163,7 @@ export interface DestinationConflictViewModel {
 export interface QueueView {
   revision: number;
   rows: LifecycleJobViewModel[];
+  collections?: QueueCollectionViewModel[];
   summary: QueueSummaryViewModel;
   capabilities: { pauseAll?: boolean; clearCompleted?: boolean; commandToken?: string };
   persistence: { available: boolean; healthy: boolean; message?: string };
@@ -144,6 +176,17 @@ export interface DestinationConflictEventDetail {
 export interface LifecycleJobEventDetail {
   jobId: string;
   commandToken: string;
+}
+
+export interface QueueCollectionEventDetail {
+  collectionId: string;
+  commandToken: string;
+}
+
+export type QueueCollectionAction = 'pause' | 'cancel' | 'resume' | 'retry' | 'remove';
+
+export interface QueueCollectionActionEvent extends QueueCollectionEventDetail {
+  action: QueueCollectionAction;
 }
 
 export type LifecycleJobEventName =

@@ -68,6 +68,60 @@ describe('backend-authored capabilities', () => {
     expect(onClearCompleted).not.toHaveBeenCalled();
   });
 
+  test('playlist collections expand children and emit only backend-authorized parent actions', async () => {
+    const onCollectionAction = vi.fn();
+    const user = userEvent.setup();
+    render(QueueOverview, {
+      props: {
+        model: queueModel({
+          jobs: [{
+            id: 'child-1', collectionId: 'collection-1', collectionIndex: 1,
+            title: 'Child video', lifecycle: 'pending', desired: 'running', occupiesSlot: false,
+            capabilities: { pause: true }, commandToken: 'child-token',
+          }],
+          collections: [{
+            id: 'collection-1', title: 'Fixture playlist', metadata: 'Creator', policy: 'video:1080p',
+            childJobIds: ['child-1'], total: 1, completed: 0, failed: 0, canceled: 0,
+            active: 0, pending: 1, paused: 0, progress: 0, progressLabel: '0 of 1 complete',
+            capabilities: { pause: true }, commandToken: 'collection-token',
+          }],
+        }),
+        onCollectionAction,
+      },
+    });
+
+    expect(screen.getByText('Fixture playlist')).toBeInTheDocument();
+    expect(screen.getByText('Child video')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(onCollectionAction).toHaveBeenCalledWith({ collectionId: 'collection-1', commandToken: 'collection-token', action: 'pause' });
+
+    await user.click(screen.getByRole('button', { name: 'Collapse Fixture playlist' }));
+    expect(screen.queryByText('Child video')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Expand Fixture playlist' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  test('playlist collection actions fail closed without a valid token', async () => {
+    const onCollectionAction = vi.fn();
+    const user = userEvent.setup();
+    render(QueueOverview, {
+      props: {
+        model: queueModel({
+          jobs: [],
+          collections: [{
+            id: 'collection-1', title: 'Fixture playlist', policy: 'audio:original', childJobIds: [],
+            total: 0, completed: 0, failed: 0, canceled: 0, active: 0, pending: 0, paused: 0,
+            progress: 0, progressLabel: '0 of 0 complete', capabilities: { remove: true }, commandToken: '',
+          }],
+        }),
+        onCollectionAction,
+      },
+    });
+    const remove = screen.getByRole('button', { name: 'Remove' });
+    expect(remove).toBeDisabled();
+    await user.click(remove);
+    expect(onCollectionAction).not.toHaveBeenCalled();
+  });
+
   test('queue-wide actions emit only when explicitly enabled', async () => {
     const onPauseAll = vi.fn();
     const onClearCompleted = vi.fn();

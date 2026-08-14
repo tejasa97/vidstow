@@ -11,8 +11,8 @@ import type {
   HistoryEntry,
   InfoSummary,
   JobSnapshot,
-  PersistenceStatus,
   PlaylistSummary,
+  PersistenceStatus,
   QuitSummary,
   QueueEvent,
   Settings,
@@ -47,6 +47,14 @@ function call<T>(method: string, ...args: any[]): Promise<T> {
     return Promise.reject(new Error(`Go binding "${method}" is not available yet`));
   }
   return fn(...args);
+}
+
+export interface StartPlaylistRequest {
+  url: string;
+  playlistId: string;
+  quality: JobSnapshot['quality'];
+  audioBitrate?: number;
+  selectedItems: number[];
 }
 
 export interface StartRequest {
@@ -93,6 +101,7 @@ export const api = {
   },
   jobs: {
     start: (req: StartRequest) => call<string>('StartDownload', req),
+    startPlaylist: (req: StartPlaylistRequest) => call<string>('StartPlaylistDownload', req),
     list: () => call<JobSnapshot[]>('ListJobs'),
     cancel: (id: string) => call<void>('CancelJob', id),
     pause: (id: string) => call<void>('PauseJob', id),
@@ -110,6 +119,11 @@ export const api = {
     retry: (id: string, token: string) => call<void>('RetryQueueJob', id, token),
     open: (id: string, token: string) => call<void>('OpenQueueJob', id, token),
     remove: (id: string, token: string) => call<void>('RemoveQueueJob', id, token),
+    pauseCollection: (id: string, token: string) => call<number>('PauseQueueCollection', id, token),
+    cancelCollection: (id: string, token: string) => call<number>('CancelQueueCollection', id, token),
+    resumeCollection: (id: string, token: string) => call<number>('ResumeQueueCollection', id, token),
+    retryCollection: (id: string, token: string) => call<number>('RetryQueueCollection', id, token),
+    removeCollection: (id: string, token: string) => call<number>('RemoveQueueCollection', id, token),
     pauseAll: (token: string) => call<number>('PauseAllQueueJobs', token),
     clearCompleted: (token: string) => call<void>('ClearCompletedQueueJobs', token),
   },

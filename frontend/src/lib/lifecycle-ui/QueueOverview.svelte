@@ -1,9 +1,10 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import LifecycleJobRow, { type LifecycleJobActionEvent } from './LifecycleJobRow.svelte';
+  import PlaylistCollectionRow from './PlaylistCollectionRow.svelte';
   import QueueSummary from './QueueSummary.svelte';
   import { isValidCommandToken } from './types.js';
-  import type { LifecycleJobEventDetail, QueueOverviewViewModel } from './types.js';
+  import type { LifecycleJobEventDetail, LifecycleJobViewModel, QueueCollectionActionEvent, QueueOverviewViewModel } from './types.js';
 
   export interface QueueOverviewEvents {
     'pause-all': void;
@@ -16,6 +17,7 @@
     review: LifecycleJobEventDetail;
     open: LifecycleJobEventDetail;
     remove: LifecycleJobEventDetail;
+    'collection-action': QueueCollectionActionEvent;
   }
 
   interface Props {
@@ -24,15 +26,29 @@
     onPauseAll?: () => void;
     onClearCompleted?: () => void;
     onAction?: (event: LifecycleJobActionEvent) => void;
+    onCollectionAction?: (event: QueueCollectionActionEvent) => void;
   }
 
-  let { model, title = 'Queue', onPauseAll, onClearCompleted, onAction }: Props = $props();
+  let { model, title = 'Queue', onPauseAll, onClearCompleted, onAction, onCollectionAction }: Props = $props();
   const dispatch = createEventDispatcher<QueueOverviewEvents>();
   const hasQueueAuthority = $derived(isValidCommandToken(model.commandToken));
+  const collections = $derived(model.collections ?? []);
+  const collectionIds = $derived(new Set(collections.map((collection) => collection.id)));
+  const jobsById = $derived(new Map(model.jobs.map((job) => [job.id, job])));
+  const standaloneJobs = $derived(model.jobs.filter((job) => !job.collectionId || !collectionIds.has(job.collectionId)));
 
   function forward(event: LifecycleJobActionEvent): void {
     dispatch(event.action, { jobId: event.jobId, commandToken: event.commandToken });
     onAction?.(event);
+  }
+
+  function forwardCollection(event: QueueCollectionActionEvent): void {
+    dispatch('collection-action', event);
+    onCollectionAction?.(event);
+  }
+
+  function collectionChildren(childJobIds: string[]) {
+    return childJobIds.map((id) => jobsById.get(id)).filter((job): job is LifecycleJobViewModel => job !== undefined);
   }
 
   function pauseAll(): void {
@@ -83,9 +99,17 @@
       <span class="count" aria-label={`${model.jobs.length} jobs`}>{model.jobs.length}</span>
     </h2>
 
-    {#if model.jobs.length}
+    {#if model.jobs.length || collections.length}
       <div class="job-list">
-        {#each model.jobs as job, index (job.id)}
+        {#each collections as collection (collection.id)}
+          <PlaylistCollectionRow
+            {collection}
+            children={collectionChildren(collection.childJobIds)}
+            onAction={forward}
+            onCollectionAction={forwardCollection}
+          />
+        {/each}
+        {#each standaloneJobs as job, index (job.id)}
           <LifecycleJobRow
             {job}
             index={index + 1}

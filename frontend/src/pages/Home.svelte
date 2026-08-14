@@ -2,69 +2,227 @@
   import { createEventDispatcher } from 'svelte';
   import { api } from '../lib/api.js';
   import { errorMessage, ffmpeg, modal, settings, showBanner } from '../lib/stores.js';
-  import { formatBytes } from '../lib/format.js';
-  import type { InfoSummary, OutputPlan } from '../lib/types.js';
+  import { formatBytes, shortTitle } from '../lib/format.js';
+  import type { InfoSummary, OutputPlan, PlaylistSummary, Quality, UrlCheckResult } from '../lib/types.js';
 
   const dispatch = createEventDispatcher<{ goto: 'home' | 'queue' | 'downloads' | 'settings' | 'about' }>();
+
   let url = '';
+  let analysisGeneration = 0;
   let busy = false;
-  let preview: InfoSummary | null = null;
-  let selectedPlanId = '';
-  let tab: 'video' | 'audio' | 'info' = 'video';
   let folder = '';
+  let selectedPlanId = '';
+  let search = '';
+  let preview: InfoSummary | null = null;
+  let playlist: PlaylistSummary | null = null;
+  let selectedItems = new Set<number>();
+  let tab: 'video' | 'audio' | 'info' = 'video';
+  let playlistTab: 'video' | 'audio' = 'video';
+  let playlistQuality: Quality = '1080p';
+  let audioChoice = 'original';
+  let rangeStart = '';
+  let rangeEnd = '';
+  let selectAllBox: HTMLInputElement | undefined;
 
   $: folder = $settings.downloadFolder || folder;
   $: plans = preview?.plans ?? [];
   $: visiblePlans = tab === 'info' ? [] : plans.filter((plan) => plan.kind === tab);
   $: selectedPlan = plans.find((plan) => plan.id === selectedPlanId) ?? null;
+  $: query = search.trim().toLowerCase();
+  $: filteredEntries = playlist?.entries.filter((entry) => !query || entry.title.toLowerCase().includes(query)) ?? [];
+  $: availableCount = playlist?.available ?? 0;
+  $: playlistFirstIndex = playlist?.entries[0]?.index ?? 1;
+  $: playlistLastIndex = playlist?.entries.at(-1)?.index ?? playlist?.entryCount ?? 1;
+  $: allAvailableSelected = availableCount > 0 && selectedItems.size === availableCount;
+  $: if (selectAllBox && playlist) {
+    selectAllBox.indeterminate = selectedItems.size > 0 && selectedItems.size < availableCount;
+  }
 
-  async function analyze() {
-    if (!url.trim()) return;
-    busy = true;
+  const fallbackThumbnail = (videoId: string) => (videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '');
+  const hideBrokenImage = (event: Event) => {
+    (event.currentTarget as HTMLImageElement).style.display = 'none';
+  };
+
+  function clearAnalysis() {
     preview = null;
+    playlist = null;
+    selectedItems = new Set();
     selectedPlanId = '';
-    try {
-      const accepted = await api.validation.url(url.trim());
-      url = accepted.url;
-      preview = await api.analyse.url(accepted.url);
-      const recommended = preview.plans.find((plan) => plan.recommended) ?? preview.plans[0];
+    search = '';
+  }
+
+  function updateURL(event: Event) {
+    const nextURL = (event.currentTarget as HTMLInputElement).value;
+    if (nextURL === url) return;
+    url = nextURL;
+    analysisGeneration += 1;
+    busy = false;
+    if (preview || playlist) clearAnalysis();
+  }
+
+  async function analyzeTarget(target: UrlCheckResult, requestGeneration: number) {
+    if (requestGeneration !== analysisGeneration) return;
+    clearAnalysis();
+    if (target.kind === 'playlist') {
+      const canonicalURL = target.playlistUrl!;
+      const summary = await api.analyse.playlist(canonicalURL);
+      if (requestGeneration !== analysisGeneration) return;
+      url = canonicalURL;
+      playlist = summary;
+      selectedItems = new Set(summary.entries.filter((entry) => entry.available).map((entry) => entry.index));
+      rangeStart = summary.entries[0]?.index ? String(summary.entries[0].index) : '1';
+      rangeEnd = summary.entries.at(-1)?.index ? String(summary.entries.at(-1)!.index) : String(summary.entryCount);
+    } else {
+      const canonicalURL = target.videoUrl!;
+      const summary = await api.analyse.url(canonicalURL);
+      if (requestGeneration !== analysisGeneration) return;
+      url = canonicalURL;
+      preview = summary;
+      const recommended = summary.plans.find((plan) => plan.recommended) ?? summary.plans[0];
       selectedPlanId = recommended?.id ?? '';
       tab = recommended?.kind ?? 'video';
+    }
+  }
+
+  async function analyze() {
+    const submittedURL = url.trim();
+    if (!submittedURL) return;
+    const requestGeneration = ++analysisGeneration;
+    busy = true;
+    try {
+      const accepted = await api.validation.url(submittedURL);
+      if (requestGeneration !== analysisGeneration) return;
+      if (accepted.kind === 'video_playlist') {
+        modal.set({
+          kind: 'confirm',
+          title: 'This link includes a playlist',
+          message: 'Choose what you want to review.',
+          actions: [
+            { label: 'This video only', action: () => withBusy(() => analyzeTarget({ ...accepted, kind: 'single_video', url: accepted.videoUrl! }, requestGeneration), requestGeneration) },
+            { label: 'Full playlist', primary: true, action: () => withBusy(() => analyzeTarget({ ...accepted, kind: 'playlist', url: accepted.playlistUrl! }, requestGeneration), requestGeneration) },
+          ],
+        });
+      } else {
+        await analyzeTarget(accepted, requestGeneration);
+      }
     } catch (err) {
+      if (requestGeneration !== analysisGeneration) return;
       modal.set({
         kind: 'error',
         title: 'Unsupported URL',
-        message: errorMessage(err, 'VidStow could not extract information from this URL. Make sure it is a valid, publicly accessible YouTube video.'),
+        message: errorMessage(err, 'VidStow could not extract information from this URL. Make sure it is a valid, publicly accessible YouTube video or playlist.'),
       });
     } finally {
-      busy = false;
+      if (requestGeneration === analysisGeneration) busy = false;
+    }
+  }
+
+  async function withBusy(action: () => Promise<void>, requestGeneration: number) {
+    if (requestGeneration !== analysisGeneration) return;
+    busy = true;
+    try {
+      await action();
+    } catch (err) {
+      if (requestGeneration !== analysisGeneration) return;
+      modal.set({
+        kind: 'error',
+        title: 'Could not analyze link',
+        message: errorMessage(err, 'Could not analyze this link.'),
+      });
+    } finally {
+      if (requestGeneration === analysisGeneration) busy = false;
     }
   }
 
   async function pickFolder() {
-    const path = await api.folder.pick();
-    if (!path) return;
-    const updated = await api.settings.update({ ...$settings, downloadFolder: path });
-    settings.set(updated);
-    folder = path;
+    try {
+      const path = await api.folder.pick();
+      if (!path) return;
+      const updated = await api.settings.update({ ...$settings, downloadFolder: path });
+      settings.set(updated);
+      folder = path;
+    } catch (err) {
+      modal.set({ kind: 'error', title: 'Folder could not be changed', message: errorMessage(err, 'Could not update the download folder.') });
+    }
   }
 
-  async function enqueue() {
+  function choose(plan: OutputPlan) {
+    selectedPlanId = plan.id;
+  }
+
+  function setTab(kind: 'video' | 'audio') {
+    tab = kind;
+    const compatible = plans.find((plan) => plan.kind === kind && plan.recommended) ?? plans.find((plan) => plan.kind === kind);
+    selectedPlanId = compatible?.id ?? '';
+  }
+
+  function planDetail(plan: OutputPlan) {
+    return [plan.container, plan.kind === 'video' ? plan.videoCodec : '', plan.audioCodec].filter(Boolean).join(' · ');
+  }
+
+  function toggle(index: number) {
+    const next = new Set(selectedItems);
+    if (next.has(index)) next.delete(index);
+    else next.add(index);
+    selectedItems = next;
+  }
+
+  function selectAll() {
+    selectedItems = new Set(playlist?.entries.filter((entry) => entry.available).map((entry) => entry.index) ?? []);
+  }
+
+  function clearSelection() {
+    selectedItems = new Set();
+  }
+
+  function toggleSelectAll() {
+    if (allAvailableSelected) clearSelection();
+    else selectAll();
+  }
+
+  function applyRange() {
+    if (!playlist) return;
+    const start = Number(rangeStart);
+    const end = Number(rangeEnd);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < playlistFirstIndex || end < playlistFirstIndex || start > playlistLastIndex || end > playlistLastIndex) {
+      showBanner('warning', `Enter whole-number positions from ${playlistFirstIndex} to ${playlistLastIndex}.`);
+      return;
+    }
+    const low = Math.min(start, end);
+    const high = Math.max(start, end);
+    selectedItems = new Set(
+      playlist.entries
+        .filter((entry) => entry.available && entry.index >= low && entry.index <= high)
+        .map((entry) => entry.index),
+    );
+  }
+
+  function requireFFmpeg(message: string) {
+    modal.set({
+      kind: 'ffmpeg-missing',
+      title: 'FFmpeg Required',
+      message,
+      actions: [{ label: 'Open Settings', primary: true, action: () => dispatch('goto', 'settings') }],
+    });
+  }
+
+  async function enqueueVideo() {
     if (!preview || !selectedPlan || !folder) return;
     if (selectedPlan.requiresFfmpeg && !$ffmpeg.available) {
-      modal.set({
-        kind: 'ffmpeg-missing', title: 'FFmpeg Required',
-        message: 'This output needs FFmpeg for merging or conversion. Install FFmpeg, set its path in Settings, or choose an original audio option.',
-        actions: [{ label: 'Open Settings', primary: true, action: () => dispatch('goto', 'settings') }],
-      });
+      requireFFmpeg('This output needs FFmpeg for merging or conversion. Install FFmpeg, set its path in Settings, or choose an original audio option.');
       return;
     }
     const start = async () => {
       try {
         await api.jobs.start({
-          url: preview!.url, videoId: preview!.videoId, title: preview!.title,
-          channel: preview!.channel, planId: selectedPlan!.id, outputDir: folder,
-          duration: preview!.duration, thumbnail: preview!.thumbnail,
+          url: preview!.url,
+          videoId: preview!.videoId,
+          title: preview!.title,
+          channel: preview!.channel,
+          planId: selectedPlan!.id,
+          outputDir: folder,
+          duration: preview!.duration,
+          thumbnail: preview!.thumbnail,
         });
         showBanner('success', 'Added to queue');
         dispatch('goto', 'queue');
@@ -74,7 +232,8 @@
     };
     if ($settings.confirmBeforeDownload) {
       modal.set({
-        kind: 'error', title: 'Add this download?',
+        kind: 'confirm',
+        title: 'Add this download?',
         message: `${selectedPlan.label} · ${selectedPlan.container}${selectedPlan.approxBytes ? ` · about ${formatBytes(selectedPlan.approxBytes)}` : ''}`,
         actions: [{ label: 'Add to Queue', primary: true, action: start }],
       });
@@ -83,100 +242,568 @@
     await start();
   }
 
-  function choose(plan: OutputPlan) {
-    selectedPlanId = plan.id;
+  async function enqueuePlaylist() {
+    if (!playlist || !selectedItems.size) return;
+    if (!folder) {
+      showBanner('warning', 'Choose a download folder before adding this playlist.');
+      return;
+    }
+    const quality: Quality = playlistTab === 'audio' ? 'audio' : playlistQuality;
+    const audioBitrate = playlistTab === 'audio' && audioChoice !== 'original' ? Number(audioChoice) : 0;
+    if (audioBitrate && !$ffmpeg.available) {
+      requireFFmpeg('MP3 conversion needs FFmpeg. Choose original audio or configure FFmpeg.');
+      return;
+    }
+    const start = async () => {
+      try {
+        await api.jobs.startPlaylist({
+          url: playlist!.url,
+          playlistId: playlist!.id,
+          quality,
+          audioBitrate,
+          selectedItems: [...selectedItems].sort((a, b) => a - b),
+        });
+        showBanner('success', `Added ${selectedItems.size} videos to queue`);
+        dispatch('goto', 'queue');
+      } catch (err) {
+        modal.set({ kind: 'error', title: 'Playlist could not start', message: errorMessage(err, 'Could not add this playlist to the queue.') });
+      }
+    };
+    if (selectedItems.size > 100 || $settings.confirmBeforeDownload) {
+      modal.set({
+        kind: 'confirm',
+        title: 'Add this playlist?',
+        message: `${selectedItems.size} videos will be added to the queue.`,
+        actions: [{ label: 'Add to Queue', primary: true, action: start }],
+      });
+      return;
+    }
+    await start();
   }
 </script>
 
-<section class="page" aria-labelledby="home-title">
+<section class="page" class:fill={!!playlist || !!preview} aria-labelledby="home-title">
   <header class="page-header">
     <h1 id="home-title">Download from YouTube</h1>
-    <p>Paste a public video URL to analyze it and choose your download.</p>
+    {#if !playlist && !preview}
+      <p>Paste a public YouTube video or playlist URL to analyze it and choose your download.</p>
+    {/if}
   </header>
 
   <form class="analyze-bar" on:submit|preventDefault={analyze}>
-    <label class="visually-hidden" for="video-url">YouTube video URL</label>
-    <input id="video-url" type="url" bind:value={url} placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" />
+    <label class="visually-hidden" for="video-url">YouTube video or playlist URL</label>
+    <input id="video-url" type="url" value={url} on:input={updateURL} placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" />
     <button class="primary" type="submit" disabled={busy || !url.trim()}>{busy ? 'Analyzing…' : 'Analyze'}</button>
   </form>
 
-  {#if preview}
-    <section class="video-info" aria-labelledby="video-info-title">
-      <h2 id="video-info-title">Video Info</h2>
-      <div class="video-card">
-        <div class="thumbnail">
+  {#if playlist}
+    <section class="workspace" aria-label="Playlist">
+      <header class="identity">
+        <div class="thumb">
+          {#if playlist.thumbnail}<img src={playlist.thumbnail} alt="" referrerpolicy="no-referrer" on:error={hideBrokenImage} />{/if}
+        </div>
+        <div class="identity-copy">
+          <strong title={playlist.title}>{playlist.title}</strong>
+          <span>
+            <em>Playlist</em>
+            {#if playlist.channel} · {playlist.channel}{/if}
+            · {playlist.entryCount} videos
+            {#if playlist.unavailable} · {playlist.unavailable} unavailable{/if}
+          </span>
+          <small aria-live="polite">{selectedItems.size} of {availableCount} selected</small>
+        </div>
+        <div class="policy">
+          <h2>Format</h2>
+          <div class="segment" aria-label="Output type">
+            <button type="button" aria-pressed={playlistTab === 'video'} class:active={playlistTab === 'video'} on:click={() => playlistTab = 'video'}>Video</button>
+            <button type="button" aria-pressed={playlistTab === 'audio'} class:active={playlistTab === 'audio'} on:click={() => playlistTab = 'audio'}>Audio</button>
+          </div>
+          {#if playlistTab === 'video'}
+            <label class="visually-hidden" for="playlist-quality">Video quality</label>
+            <select id="playlist-quality" bind:value={playlistQuality}>
+              <option value="best">Best available</option>
+              <option value="4k">Up to 4K</option>
+              <option value="1440p">Up to 1440p</option>
+              <option value="1080p">Up to 1080p</option>
+              <option value="720p">Up to 720p</option>
+            </select>
+          {:else}
+            <label class="visually-hidden" for="playlist-audio">Audio format</label>
+            <select id="playlist-audio" bind:value={audioChoice}>
+              <option value="original">Original audio</option>
+              <option value="128">MP3 · 128 kbps</option>
+              <option value="192">MP3 · 192 kbps</option>
+              <option value="256">MP3 · 256 kbps</option>
+            </select>
+          {/if}
+        </div>
+      </header>
+
+      <div class="toolbar">
+        <label class="check">
+          <input type="checkbox" bind:this={selectAllBox} checked={allAvailableSelected} on:change={toggleSelectAll} />
+          All available
+        </label>
+        <button type="button" class="ghost" on:click={clearSelection} disabled={!selectedItems.size}>Clear</button>
+        <form class="range" on:submit|preventDefault={applyRange}>
+          <span>Range</span>
+          <input type="number" min={playlistFirstIndex} max={playlistLastIndex} step="1" inputmode="numeric" bind:value={rangeStart} aria-label="Range start" />
+          <span class="dash">–</span>
+          <input type="number" min={playlistFirstIndex} max={playlistLastIndex} step="1" inputmode="numeric" bind:value={rangeEnd} aria-label="Range end" />
+          <button type="submit" class="ghost">Apply</button>
+        </form>
+        <input type="search" bind:value={search} placeholder="Search playlist…" aria-label="Search playlist" />
+      </div>
+
+      <div class="entry-list" role="list">
+        {#each filteredEntries as entry (entry.index)}
+          <label class="entry" class:unavailable={!entry.available} class:selected={selectedItems.has(entry.index)} role="listitem">
+            <input type="checkbox" checked={selectedItems.has(entry.index)} disabled={!entry.available} on:change={() => toggle(entry.index)} />
+            <span class="number">{entry.index}</span>
+            <span class="mini">
+              {#if entry.thumbnail || entry.videoId}
+                <img src={entry.thumbnail || fallbackThumbnail(entry.videoId)} alt="" referrerpolicy="no-referrer" on:error={hideBrokenImage} />
+              {/if}
+            </span>
+            <strong title={entry.title}>{entry.title}</strong>
+            {#if !entry.available}
+              <span class="meta">Unavailable</span>
+            {:else if entry.duration}
+              <span class="meta">{entry.duration}</span>
+            {/if}
+          </label>
+        {:else}
+          <div class="empty-list">{query ? 'No videos match that search.' : 'No videos in this playlist.'}</div>
+        {/each}
+      </div>
+
+      <footer class="save-bar">
+        <div class="destination">
+          <span>Save to</span>
+          <strong title={folder}>{folder}</strong>
+          <small title={`${playlist.title} [${playlist.id}]`}>Playlist folder · {shortTitle(playlist.title, 48)}</small>
+        </div>
+        <button type="button" class="secondary" on:click={pickFolder}>Change…</button>
+        <button type="button" class="primary queue" on:click={enqueuePlaylist} disabled={!selectedItems.size || !folder}>
+          Add {selectedItems.size} {selectedItems.size === 1 ? 'Video' : 'Videos'} to Queue
+        </button>
+      </footer>
+    </section>
+  {:else if preview}
+    <section class="workspace video" aria-label="Video">
+      <header class="identity">
+        <div class="thumb thumbnail">
           {#if preview.thumbnail}<img src={preview.thumbnail} alt="" referrerpolicy="no-referrer" />{/if}
           {#if preview.duration}<span>{preview.duration}</span>{/if}
         </div>
-        <div class="video-copy">
+        <div class="identity-copy">
           <strong title={preview.title}>{preview.title}</strong>
           <span>{preview.channel || 'YouTube'}</span>
           <small>{preview.duration || 'Duration unavailable'}{preview.viewCount ? ` · ${preview.viewCount.toLocaleString()} views` : ''}</small>
         </div>
-      </div>
-    </section>
-
-    <section class="download-options" aria-labelledby="options-title">
-      <h2 id="options-title">Choose Download</h2>
-      <p>Select a complete output file. VidStow has already paired compatible video and audio streams.</p>
-      <div class="tabs" role="tablist" aria-label="Output type">
-        <button type="button" class:active={tab === 'video'} on:click={() => tab = 'video'}>Video</button>
-        <button type="button" class:active={tab === 'audio'} on:click={() => tab = 'audio'}>Audio</button>
-        <button type="button" class:active={tab === 'info'} on:click={() => tab = 'info'}>Info</button>
-      </div>
-
-      {#if tab === 'info'}
-        <div class="info-grid">
-          <div><span>Video ID</span><strong>{preview.videoId}</strong></div>
-          <div><span>Uploaded</span><strong>{preview.uploadDate || 'Unavailable'}</strong></div>
-          <div><span>Channel</span><strong>{preview.channel || 'Unavailable'}</strong></div>
-          <div><span>Duration</span><strong>{preview.duration || 'Unavailable'}</strong></div>
-          <div><span>Access</span><strong>{preview.access?.label || 'Access status not reported'}</strong></div>
+        <div class="policy">
+          <h2>Choose Download</h2>
+          <div class="segment" aria-label="Output type">
+            <button type="button" aria-pressed={tab === 'video'} class:active={tab === 'video'} on:click={() => setTab('video')}>Video</button>
+            <button type="button" aria-pressed={tab === 'audio'} class:active={tab === 'audio'} on:click={() => setTab('audio')}>Audio</button>
+          </div>
         </div>
-      {:else if visiblePlans.length}
-        <div class="plan-table" role="radiogroup" aria-label={`${tab} output options`}>
-          <div class="plan-head"><span></span><span>Quality</span><span>Format</span><span>Video</span><span>Audio</span><span>Size</span></div>
+      </header>
+
+      {#if visiblePlans.length}
+        <div class="plan-list pane" role="radiogroup" aria-label={`${tab} output options`}>
           {#each visiblePlans as plan (plan.id)}
             <button type="button" class="plan-row" class:selected={selectedPlanId === plan.id} role="radio" aria-checked={selectedPlanId === plan.id} on:click={() => choose(plan)}>
               <span class="radio"></span>
-              <span><strong>{plan.label}</strong>{#if plan.recommended}<small>Recommended</small>{/if}</span>
-              <span>{plan.container}</span>
-              <span>{plan.videoCodec || '—'}</span>
-              <span>{plan.audioCodec || '—'}</span>
-              <span>{plan.approxBytes ? `${plan.sizeIsApproximate ? '~' : ''}${formatBytes(plan.approxBytes)}` : '—'}</span>
+              <span class="plan-copy">
+                <strong>
+                  {plan.label}
+                  {#if plan.recommended}<em>Recommended</em>{/if}
+                </strong>
+                <small>{planDetail(plan) || plan.container}</small>
+              </span>
+              <span class="plan-size">{plan.approxBytes ? `${plan.sizeIsApproximate ? '~' : ''}${formatBytes(plan.approxBytes)}` : '—'}</span>
             </button>
           {/each}
         </div>
       {:else}
-        <div class="empty">No {tab} outputs were reported for this video.</div>
+        <div class="empty pane">No {tab} outputs were reported for this video.</div>
       {/if}
-    </section>
 
-    <footer class="save-bar">
-      <div class="destination"><span>Save to:</span><strong title={folder}>{folder}</strong></div>
-      <button type="button" class="secondary" on:click={pickFolder}>Change…</button>
-      <button type="button" class="primary queue" on:click={enqueue} disabled={!selectedPlan}>Add to Queue</button>
-    </footer>
+      <footer class="save-bar">
+        <div class="destination">
+          <span>Save to</span>
+          <strong title={folder}>{folder}</strong>
+          {#if selectedPlan}
+            <small>{selectedPlan.label} · {selectedPlan.container}{selectedPlan.approxBytes ? ` · ${selectedPlan.sizeIsApproximate ? '~' : ''}${formatBytes(selectedPlan.approxBytes)}` : ''}</small>
+          {/if}
+        </div>
+        <button type="button" class="secondary" on:click={pickFolder}>Change…</button>
+        <button type="button" class="primary queue" on:click={enqueueVideo} disabled={!selectedPlan}>Add to Queue</button>
+      </footer>
+    </section>
   {:else}
     <section class="welcome">
-      <div class="download-mark" aria-hidden="true">↓</div>
-      <h2>Ready when you are</h2>
-      <p>Paste a supported YouTube link above. VidStow will show the exact video and audio files available before anything downloads.</p>
+      <div class="download-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 4v12m0 0l-4-4m4 4l4-4M5 20h14" />
+        </svg>
+      </div>
+      <h2>Add a YouTube link</h2>
+      <p>VidStow will show the available video and audio outputs before anything downloads.</p>
     </section>
   {/if}
 </section>
 
 <style>
-  .page{width:min(100%,960px);margin:0 auto;padding:34px 42px 48px;color:var(--text-primary)}
-  .page-header h1{margin:0;font-size:26px;letter-spacing:-.025em}.page-header p{margin:7px 0 20px;color:var(--text-secondary)}
-  .analyze-bar{display:grid;grid-template-columns:minmax(0,1fr) 112px;gap:10px}.analyze-bar input{height:42px}.primary,.secondary{min-height:38px;padding:0 16px;border-radius:7px;font-weight:600}.primary{color:#fff;background:var(--accent-600,#2563eb)}.primary:disabled{opacity:.45}.secondary{border:1px solid var(--border-default);background:var(--surface-raised);color:var(--text-primary)}
-  h2{margin:0 0 10px;font-size:14px}.video-info,.download-options{margin-top:24px}.video-card{display:grid;grid-template-columns:150px minmax(0,1fr);gap:16px;padding:12px;border:1px solid var(--border-default);border-radius:9px;background:var(--surface-raised)}
-  .thumbnail{position:relative;aspect-ratio:16/9;overflow:hidden;border-radius:6px;background:var(--surface-sunken)}.thumbnail img{width:100%;height:100%;object-fit:cover}.thumbnail span{position:absolute;right:5px;bottom:5px;padding:2px 5px;border-radius:3px;background:#111d;color:#fff;font-size:11px}
-  .video-copy{display:flex;min-width:0;flex-direction:column;justify-content:center;gap:6px}.video-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.video-copy span{font-size:13px;color:var(--text-secondary)}.video-copy small{color:var(--text-muted)}
-  .download-options>p{margin:-4px 0 12px;color:var(--text-muted);font-size:12px}.tabs{display:flex;border-bottom:1px solid var(--border-default)}.tabs button{min-width:92px;padding:10px 14px;color:var(--text-secondary);border-bottom:2px solid transparent}.tabs button.active{color:var(--accent-600);border-color:var(--accent-600)}
-  .plan-table{border:1px solid var(--border-default);border-top:0;border-radius:0 0 8px 8px;overflow:hidden}.plan-head,.plan-row{display:grid;grid-template-columns:28px 1.2fr .8fr .9fr .8fr .8fr;gap:10px;align-items:center;text-align:left}.plan-head{padding:9px 12px;color:var(--text-muted);background:var(--surface-subtle);font-size:11px}.plan-row{width:100%;min-height:48px;padding:7px 12px;border-top:1px solid var(--border-subtle);color:var(--text-secondary)}.plan-row:hover,.plan-row.selected{background:var(--accent-soft,rgba(37,99,235,.07))}.plan-row strong,.plan-row small{display:block}.plan-row strong{color:var(--text-primary)}.plan-row small{margin-top:2px;color:var(--accent-600);font-size:10px}.radio{width:14px;height:14px;border:1px solid var(--border-strong);border-radius:50%}.selected .radio{border:4px solid var(--accent-600)}
-  .info-grid{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--border-default);border-top:0}.info-grid div{padding:14px;border-top:1px solid var(--border-subtle)}.info-grid div:nth-child(even){border-left:1px solid var(--border-subtle)}.info-grid span,.info-grid strong{display:block}.info-grid span{color:var(--text-muted);font-size:11px}.info-grid strong{margin-top:4px}.empty{padding:36px;text-align:center;border:1px solid var(--border-default);border-top:0;color:var(--text-muted)}
-  .save-bar{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;margin-top:22px;padding-top:16px;border-top:1px solid var(--border-default)}.destination{display:flex;min-width:0;gap:8px}.destination span{color:var(--text-secondary)}.destination strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.queue{min-width:128px}
-  .welcome{min-height:360px;display:grid;place-content:center;text-align:center;color:var(--text-secondary)}.welcome h2{margin:18px 0 6px;font-size:20px;color:var(--text-primary)}.welcome p{max-width:500px;margin:0;line-height:1.6}.download-mark{width:58px;height:58px;display:grid;place-items:center;margin:auto;border-radius:15px;background:var(--accent-soft,rgba(37,99,235,.1));color:var(--accent-600);font-size:30px}
-  @media(max-width:720px){.page{padding:24px 18px}.video-card{grid-template-columns:120px 1fr}.plan-head,.plan-row{grid-template-columns:24px 1fr .7fr .8fr}.plan-head span:nth-child(4),.plan-head span:nth-child(5),.plan-row span:nth-child(4),.plan-row span:nth-child(5){display:none}.save-bar{grid-template-columns:1fr auto}.destination{grid-column:1/-1}}
+  .page.fill {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    padding-bottom: 20px;
+  }
+  .page.fill .page-header {
+    margin-bottom: 12px;
+  }
+  .analyze-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 118px;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .analyze-bar input { height: 42px; }
+  .primary, .secondary, .ghost {
+    min-height: 36px;
+    padding: 0 14px;
+    border-radius: var(--r-md);
+    font-weight: 600;
+    font-size: var(--fs-sm);
+  }
+  .primary {
+    color: #fff;
+    background: var(--accent-600);
+    border: 1px solid var(--accent-600);
+  }
+  .primary:hover:not(:disabled) { background: var(--accent-500); border-color: var(--accent-500); }
+  .primary:disabled { opacity: 0.45; }
+  .secondary, .ghost {
+    border: 1px solid var(--border-default);
+    background: var(--surface-raised);
+    color: var(--text-primary);
+  }
+  .ghost { min-height: 32px; padding: 0 10px; font-weight: 550; }
+  .secondary:hover:not(:disabled), .ghost:hover:not(:disabled) { background: var(--surface-hover); }
+
+  .workspace {
+    flex: 1;
+    min-height: 0;
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-lg);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+  }
+  .identity {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr) auto;
+    gap: 14px;
+    align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+  }
+  .thumb, .mini, .thumbnail {
+    overflow: hidden;
+    border-radius: var(--r-sm);
+    background: var(--surface-sunken);
+  }
+  .thumb {
+    width: 88px;
+    aspect-ratio: 16 / 9;
+    position: relative;
+  }
+  .thumb span {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: #111d;
+    color: #fff;
+    font-size: 10px;
+  }
+  .thumb img, .mini img, .thumbnail img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .identity-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .identity-copy strong, .entry strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .identity-copy strong { font-size: var(--fs-md); letter-spacing: -0.015em; }
+  .identity-copy span, .identity-copy small { color: var(--text-secondary); font-size: var(--fs-xs); }
+  .identity-copy em {
+    font-style: normal;
+    font-weight: 650;
+    color: var(--text-secondary);
+  }
+  .identity-copy small { color: var(--text-secondary); font-weight: 550; }
+
+  .policy {
+    display: grid;
+    grid-template-columns: auto minmax(168px, 200px);
+    gap: 8px 10px;
+    align-items: center;
+  }
+  .policy h2 {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .segment {
+    display: inline-flex;
+    padding: 3px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-md);
+  }
+  .segment button {
+    min-width: 68px;
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+  }
+  .segment button.active {
+    color: var(--text-primary);
+    background: var(--surface-base);
+    box-shadow: var(--shadow-card);
+  }
+  .policy select { height: 34px; padding: 0 10px; font-size: var(--fs-xs); }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface-subtle);
+    flex-shrink: 0;
+  }
+  .check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+  .range {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+  }
+  .range input {
+    width: 56px;
+    height: 32px;
+    padding: 0 8px;
+    text-align: center;
+  }
+  .toolbar input[type='search'] {
+    margin-left: auto;
+    width: min(240px, 100%);
+    height: 32px;
+    padding: 0 10px;
+    font-size: var(--fs-xs);
+  }
+
+  .entry-list {
+    flex: 1;
+    min-height: 220px;
+    overflow: auto;
+  }
+  .entry {
+    display: grid;
+    grid-template-columns: 16px 36px 64px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+    cursor: pointer;
+  }
+  .entry:hover { background: var(--surface-hover); }
+  .entry.unavailable {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .entry .number, .entry .meta {
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .entry strong { font-size: var(--fs-sm); font-weight: 550; }
+  .mini {
+    width: 64px;
+    aspect-ratio: 16 / 9;
+  }
+  .empty-list {
+    min-height: 160px;
+    display: grid;
+    place-items: center;
+    color: var(--text-muted);
+    font-size: var(--fs-sm);
+  }
+
+  .save-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 10px;
+    align-items: center;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--surface-base);
+    flex-shrink: 0;
+  }
+  .destination {
+    display: flex;
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    align-items: baseline;
+  }
+  .destination span { color: var(--text-secondary); font-size: var(--fs-sm); }
+  .destination strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-sm);
+  }
+  .destination small {
+    flex-basis: 100%;
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+  .queue { min-width: 168px; min-height: 40px; }
+
+  .pane {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+  .plan-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .plan-row {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    width: 100%;
+    min-height: 52px;
+    padding: 10px 18px;
+    border-top: 1px solid var(--border-subtle);
+    text-align: left;
+    color: var(--text-secondary);
+  }
+  .plan-row:first-child { border-top: 0; }
+  .plan-row:hover { background: var(--surface-hover); }
+  .plan-row.selected { background: var(--accent-soft); }
+  .plan-copy { min-width: 0; }
+  .plan-copy strong {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-primary);
+    font-size: var(--fs-sm);
+  }
+  .plan-copy em {
+    font-style: normal;
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--accent-600);
+  }
+  .plan-copy small {
+    display: block;
+    margin-top: 3px;
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+  .plan-size {
+    color: var(--text-primary);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .radio {
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid var(--border-strong);
+    border-radius: 50%;
+  }
+  .selected .radio { border: 4px solid var(--accent-600); }
+  .empty {
+    display: grid;
+    place-items: center;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+  }
+
+  .welcome {
+    flex: 1;
+    min-height: 280px;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    text-align: center;
+    color: var(--text-secondary);
+  }
+  .welcome h2 { margin: 16px 0 6px; font-size: var(--fs-lg); color: var(--text-primary); }
+  .welcome p { max-width: 440px; margin: 0; line-height: 1.55; font-size: var(--fs-sm); }
+  .download-mark {
+    width: 52px;
+    height: 52px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--r-lg);
+    background: var(--accent-soft);
+    color: var(--accent-600);
+  }
+
+  @media (max-width: 860px) {
+    .identity { grid-template-columns: 72px 1fr; }
+    .policy { grid-column: 1 / -1; }
+    .toolbar input[type='search'] { margin-left: 0; width: 100%; flex-basis: 100%; }
+  }
+  @media (max-width: 720px) {
+    .save-bar { grid-template-columns: 1fr auto; }
+    .destination { grid-column: 1 / -1; }
+    .queue { grid-column: 1 / -1; }
+    .entry { grid-template-columns: 16px 28px minmax(0, 1fr) auto; }
+    .mini { display: none; }
+  }
 </style>

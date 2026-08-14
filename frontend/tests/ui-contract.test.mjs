@@ -22,13 +22,18 @@ test('page titles and controls match the approved redesign', async () => {
     read('../src/pages/Downloads.svelte'), read('../src/pages/Settings.svelte'),
   ]);
   assert.match(home, /<h1 id="home-title">Download from YouTube<\/h1>/);
-  assert.match(home, /Paste a public video URL to analyze it and choose your download\./);
+  assert.match(home, /Paste a public YouTube video or playlist URL to analyze it and choose your download\./);
+  assert.match(home, /This link includes a playlist/);
+  assert.match(home, /All available/);
+  assert.match(home, /Search playlist…/);
   assert.match(home, />Choose Download</);
   assert.match(home, />Add to Queue</);
   assert.match(home, /'Analyze'/);
   assert.match(queue, /<QueueOverview/);
   assert.match(queue, /api\.queue\.pauseAll/);
   assert.match(queue, /api\.queue\.clearCompleted/);
+  assert.match(queue, /Cancel this playlist\?/);
+  assert.match(queue, /Remove this playlist from the queue\?/);
   assert.match(queue, /Jobs are saved automatically\./);
   assert.match(downloads, /View your recently downloaded items\./);
   assert.match(downloads, /placeholder="Search downloads…"/);
