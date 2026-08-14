@@ -8,7 +8,7 @@
     onClose?: () => void;
     closable?: boolean;
     children: Snippet;
-    /* Footer button label + callback; uses near-black primary by default */
+    /* Footer button label + callback; uses the accent primary by default */
     primaryLabel?: string;
     onPrimary?: () => void;
     primaryVariant?: 'primary' | 'danger';

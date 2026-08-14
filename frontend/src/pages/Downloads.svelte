@@ -107,7 +107,7 @@
     <div class="thead"><span>Title</span><span>Format</span><span>Size</span><span>Finished</span><span>Actions</span></div>
     {#each filtered as entry (entry.id)}
       <div class="tr" class:selected={selected?.id === entry.id} class:missing={entry.fileMissing}>
-        <button class="title-cell" type="button" aria-label={`Select ${entry.title}`} on:click={() => selected = entry}>
+        <button class="title-cell" type="button" aria-label={`Show ${entry.title} in Finder`} on:click={() => { selected = entry; reveal(entry); }}>
           <span class="thumb">{#if entry.thumbnail}<img src={entry.thumbnail} alt="" />{/if}</span>
           <span class="copy">
             <strong title={entry.title}>{entry.title}</strong>
@@ -118,8 +118,8 @@
         <span>{formatBytes(entry.sizeBytes)}</span>
         <span>{formatRelative(entry.completedAt)}</span>
         <span class="row-actions">
-          <button type="button" aria-label="Open downloaded file" disabled={entry.fileMissing} on:click={() => open(entry)}>↗&nbsp; Open</button>
-          <button type="button" aria-label="Show in Finder" disabled={entry.fileMissing} on:click={() => reveal(entry)}>▭</button>
+          <button type="button" aria-label="Show in Finder" disabled={entry.fileMissing} on:click={() => reveal(entry)}>Show in Finder</button>
+          <button type="button" aria-label="Open downloaded file" disabled={entry.fileMissing} on:click={() => open(entry)}>Open</button>
           <button type="button" aria-label="Remove from history" on:click={() => confirmRemoveHistory(entry)}>×</button>
         </span>
       </div>
@@ -159,33 +159,34 @@
 </section>
 
 <style>
-  .page { width: min(100%,1040px); margin: 0 auto; padding: 34px 42px 48px; }
-  h1 { margin: 0; font-size: 30px; letter-spacing: -.02em; } .page-header p { margin: 8px 0 20px; color: var(--text-secondary); font-size: 16px; }
+  .page-header {
+    margin-bottom: 20px;
+  }
   .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 12px; }
   .search { position: relative; width: min(540px, 65%); } .search > span { position: absolute; left: 14px; top: 8px; color: var(--text-secondary); font-size: 22px; z-index: 1; }
   .search input { height: 42px; padding-left: 42px; font-size: 15px; }
   .tabs { display: grid; grid-template-columns: 84px 84px; border: 1px solid var(--border-default); border-radius: 8px; padding: 3px; }
-  .tabs button { height: 34px; border-radius: 6px; color: var(--text-secondary); } .tabs button.active { color:#fff; background: linear-gradient(180deg,#347cf4,#2867d8); }
+  .tabs button { height: 34px; border-radius: 6px; color: var(--text-secondary); } .tabs button.active { color: var(--text-on-accent); background: var(--accent-600); }
   .table { overflow-x: auto; background: var(--surface-raised); border: 1px solid var(--border-default); border-radius: 8px; }
-  .thead,.tr { display: grid; grid-template-columns: minmax(300px,1.35fr) 150px 110px 130px 220px; gap: 12px; min-width: 900px; align-items: center; }
+  .thead,.tr { display: grid; grid-template-columns: minmax(300px,1.35fr) 150px 110px 130px 260px; gap: 12px; min-width: 940px; align-items: center; }
   .thead { padding: 10px 14px; color: var(--text-secondary); font-size: 13px; }
   .tr { width: 100%; min-height: 72px; padding: 8px 14px; text-align: left; border-top: 1px solid var(--border-subtle); color: var(--text-secondary); }
-  .tr:hover,.tr.selected { background: rgba(42,57,76,.3); }
+  .tr:hover,.tr.selected { background: var(--accent-soft); }
   .tr.missing { opacity: 0.82; }
   .title-cell { display: grid; grid-template-columns: 80px minmax(0,1fr); align-items:center; gap: 12px; min-width:0; }
   .thumb { width: 80px; aspect-ratio: 16/9; border-radius: 6px; overflow:hidden; background:var(--surface-sunken); } .thumb img { width:100%;height:100%;object-fit:cover; }
   .copy { min-width:0; } .copy strong,.copy small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .copy strong { color:var(--text-primary);font-weight:500; } .copy small { color:var(--accent-400);margin-top:5px; }
   .tr em { font-style:normal; color:var(--text-primary); border:1px solid var(--border-default); border-radius:6px; padding:5px 7px; display:inline-block; }
-  .codec { display:block; margin-top:4px; color:var(--text-muted); font-size:11px; }
+  .codec { display:block; margin-top:4px; color:var(--text-secondary); font-size:11px; }
   .row-actions { display:flex; justify-content:flex-end; gap:8px; } .row-actions button,.location button,.detail-actions button { min-height:32px;padding:0 10px;color:var(--text-primary);background:var(--surface-raised);border:1px solid var(--border-default);border-radius:6px; }
   .row-actions button:disabled,.location button:disabled,.detail-actions button:disabled { opacity:0.45; cursor:not-allowed; }
-  .empty { padding:70px 20px;text-align:center;color:var(--text-muted);border-top:1px solid var(--border-subtle); }
+  .empty { padding:70px 20px;text-align:center;color:var(--text-secondary);border-top:1px solid var(--border-subtle); }
   .detail-card { display:grid;grid-template-columns:180px minmax(0,1fr);gap:20px;margin-top:14px;padding:10px;background:var(--surface-raised);border:1px solid var(--border-default);border-radius:8px;min-width:0; }
   .detail-thumb { position:relative;aspect-ratio:16/10;border-radius:7px;overflow:hidden;background:var(--surface-sunken); } .detail-thumb img { width:100%;height:100%;object-fit:cover; } .detail-thumb span { position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.8);padding:2px 6px;border-radius:4px; }
   .detail-copy { min-width:0;padding:4px 2px; } .detail-copy h2 { margin:0;font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; } .detail-copy p { margin:4px 0;color:var(--accent-400); } .facts { display:flex;flex-wrap:wrap;gap:9px;color:var(--text-secondary);font-size:13px; }
   .missing-note { margin:10px 0 0; color: var(--status-warning); font-size: 12px; }
   .location { display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;margin-top:14px;min-width:0; } .location .location-label { color:var(--text-secondary);padding:0;border:0; } .location > span { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:7px 10px;border:1px solid var(--border-subtle);border-radius:7px;color:var(--text-secondary); }
   .detail-actions { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
-  .detail-actions .danger { color:#b91c1c; border-color:#fecaca; background:#fef2f2; }
+  .detail-actions .danger { color: var(--status-danger); border-color: var(--status-danger); background: var(--status-danger-soft); }
   @media(max-width:800px){.detail-card{grid-template-columns:1fr}.detail-thumb{max-width:240px}.location{grid-template-columns:1fr}.search{width:100%}.thead,.tr{grid-template-columns:minmax(240px,1.2fr) 140px 90px 110px 200px}}
 </style>

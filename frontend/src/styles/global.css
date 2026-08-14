@@ -1,56 +1,51 @@
 /* ----------------------------------------------------------------
  * Design tokens
  *
- * The colour, spacing, and type scale are pinned to the agreed design
- * contract: a light neutral content canvas under a compact dark
- * graphite sidebar, a restrained blue accent, near-black primary
- * actions, an 8px spacing rhythm, 6–8px radii, fine grey borders and
- * minimal shadows.
- *
- * Token names are stable (pages and components read from these
- * variables); the values now express the approved reference. New page
- * work should use the components under lib/components/ui and these
- * tokens — no component owns a colour of its own.
+ * Warm paper canvas, near-black ink, and a compact dark sidebar.
+ * Secondary copy is charcoal rather than mid-grey so it stays
+ * readable on light surfaces. Pages and components read from these
+ * variables; no component owns a colour of its own.
  * ---------------------------------------------------------------- */
 
 :root {
-  /* Surfaces — light neutral content canvas */
-  --surface-bg:        #F6F6F7;
-  --surface-base:      #FFFFFF;
-  --surface-raised:    #FFFFFF;
-  --surface-sunken:    #F1F1F3;
-  --surface-sidebar:   #1C1D21;
-  --surface-hover:     #ECECEF;
-  --surface-active:    #E3E4E8;
+  /* Surfaces — warm paper under cream cards */
+  --surface-bg:        #EDE6D8;
+  --surface-base:      #FFFBF5;
+  --surface-raised:    #FFFBF5;
+  --surface-sunken:    #E6DDD0;
+  --surface-subtle:    #F4EEE4;
+  --surface-sidebar:   #1A1714;
+  --surface-hover:     #E8DFD1;
+  --surface-active:    #DDD3C4;
 
-  /* Borders & dividers — fine greys */
-  --border-subtle:     #E8E9EB;
-  --border-default:    #D6D7DB;
-  --border-strong:     #A9ACB3;
+  /* Borders — warm stone, visible on paper */
+  --border-subtle:     #E2D8C9;
+  --border-default:    #CDBFAE;
+  --border-strong:     #A39482;
 
-  /* Text */
-  --text-primary:      #1A1B1E;
-  --text-secondary:    #565A63;
-  --text-muted:        #8A8E96;
-  --text-disabled:     #B9BBC2;
+  /* Text — ink, not grey */
+  --text-primary:      #1A1612;
+  --text-secondary:    #3F3933;
+  --text-muted:        #5C544C;
+  --text-disabled:     #9A9186;
   --text-on-accent:    #FFFFFF;
 
-  /* Accent — restrained blue */
-  --accent-500:        #2F6FED;
-  --accent-600:        #2458C5;
-  --accent-400:        #4C7FF0;
-  --accent-soft:       rgba(47, 111, 237, 0.10);
-  --accent-ring:       rgba(47, 111, 237, 0.28);
+  /* Accent — clear blue against warm paper */
+  --accent-500:        #2157D6;
+  --accent-600:        #1A46B5;
+  --accent-400:        #3C73E8;
+  --accent-soft:       rgba(33, 87, 214, 0.12);
+  --accent-ring:       rgba(33, 87, 214, 0.28);
 
   /* Status */
-  --status-success:    #1E8E4C;
-  --status-success-soft: rgba(30, 142, 76, 0.10);
-  --status-danger:     #D6453D;
-  --status-danger-soft:  rgba(214, 69, 61, 0.10);
-  --status-warning:    #B07607;
-  --status-warning-soft: rgba(176, 118, 7, 0.10);
-  --status-info:       #2F6FED;
-  --status-info-soft:  rgba(47, 111, 237, 0.10);
+  --status-success:    #1B7A42;
+  --status-success-soft: rgba(27, 122, 66, 0.12);
+  --status-danger:     #C43B34;
+  --status-danger-soft:  rgba(196, 59, 52, 0.12);
+  --status-warning:    #9A6408;
+  --status-warning-soft: rgba(154, 100, 8, 0.14);
+  --status-info:       #2157D6;
+  --status-info-soft:  rgba(33, 87, 214, 0.12);
 
   /* Typography — compact Inter/system */
   --font-sans: 'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
@@ -83,11 +78,14 @@
   --r-full: 9999px;
 
   /* Misc */
-  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.06);
-  --shadow-modal: 0 20px 48px rgba(16, 24, 40, 0.18);
+  --shadow-card: 0 1px 2px rgba(48, 36, 20, 0.08), 0 8px 20px rgba(48, 36, 20, 0.06);
+  --shadow-modal: 0 20px 48px rgba(48, 36, 20, 0.22);
 
   --sidebar-w: 160px;
   --header-h: 48px;
+  --page-pad-x: 32px;
+  --page-pad-y: 28px;
+  --page-pad-bottom: 40px;
 }
 
 * { box-sizing: border-box; }
@@ -96,6 +94,7 @@ html, body, #app {
   margin: 0;
   padding: 0;
   height: 100%;
+  overflow: hidden;
   background: var(--surface-bg);
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -120,7 +119,9 @@ button {
 
 button:disabled { cursor: not-allowed; opacity: 0.55; }
 
-input, textarea, select {
+input:not([type="checkbox"]):not([type="radio"]),
+textarea,
+select {
   font-family: inherit;
   font-size: inherit;
   color: inherit;
@@ -136,7 +137,9 @@ input, textarea, select {
 
 input::placeholder, textarea::placeholder { color: var(--text-muted); }
 
-input:focus, textarea:focus, select:focus {
+input:not([type="checkbox"]):not([type="radio"]):focus,
+textarea:focus,
+select:focus {
   border-color: var(--accent-500);
   box-shadow: 0 0 0 3px var(--accent-ring);
   background: var(--surface-base);
@@ -144,13 +147,116 @@ input:focus, textarea:focus, select:focus {
 
 input:disabled, textarea:disabled, select:disabled { opacity: 0.6; }
 
+input[type="checkbox"],
+input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  margin: 0;
+  padding: 0;
+  border: 1.5px solid var(--border-strong);
+  background: var(--surface-base);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow: none;
+}
+input[type="checkbox"] { border-radius: 4px; }
+input[type="radio"] { border-radius: 50%; }
+input[type="checkbox"]:hover:not(:disabled),
+input[type="radio"]:hover:not(:disabled) {
+  border-color: var(--accent-500);
+}
+input[type="checkbox"]:checked,
+input[type="checkbox"]:indeterminate,
+input[type="radio"]:checked {
+  background: var(--accent-500);
+  border-color: var(--accent-500);
+}
+input[type="checkbox"]:checked::before {
+  content: "";
+  width: 9px;
+  height: 5px;
+  border: 2px solid #fff;
+  border-top: 0;
+  border-right: 0;
+  transform: rotate(-45deg) translate(0.5px, -1px);
+}
+input[type="checkbox"]:indeterminate::before {
+  content: "";
+  width: 8px;
+  height: 2px;
+  background: #fff;
+}
+input[type="radio"]:checked::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent-400);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+input[type="number"] {
+  font-variant-numeric: tabular-nums;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 a { color: var(--accent-400); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: #C6C8CE; border-radius: var(--r-full); border: 2px solid var(--surface-bg); }
-::-webkit-scrollbar-thumb:hover { background: #A9ACB3; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: var(--r-full); border: 2px solid var(--surface-bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* Shared page chrome — every route uses the same indent and title rhythm */
+.page {
+  width: 100%;
+  margin: 0;
+  padding: var(--page-pad-y) var(--page-pad-x) var(--page-pad-bottom);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+.page-header {
+  flex-shrink: 0;
+  margin: 0 0 20px;
+}
+.page-header h1 {
+  margin: 0;
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+.page-header p {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+@media (max-width: 720px) {
+  .page {
+    padding: 24px 18px 32px;
+  }
+}
 
 /* Utility classes (kept tiny — the app doesn't rely on a framework) */
 .row { display: flex; align-items: center; }

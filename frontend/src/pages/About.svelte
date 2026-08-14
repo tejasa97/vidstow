@@ -7,7 +7,7 @@
 
   const APP = {
     name: 'VidStow',
-    tagline: 'A tidy, single-video YouTube downloader for the desktop.',
+    tagline: 'A tidy YouTube video and playlist downloader for the desktop.',
     description:
       'VidStow is an open-source desktop app that downloads public YouTube videos and audio. ' +
       'Analyze a URL, pick a complete output, and let the queue run — no account or tracking required.',
@@ -92,15 +92,11 @@
 
 <style>
   .page {
-    width: min(100%, 840px);
-    margin: 0 auto;
-    padding: var(--sp-6) var(--sp-5) var(--sp-8);
-    display: flex;
-    flex-direction: column;
     gap: var(--sp-4);
   }
-  .page-header h1 { margin: 0; font-size: var(--fs-2xl); letter-spacing: -0.02em; }
-  .page-header p { margin: var(--sp-2) 0 0; color: var(--text-secondary); font-size: var(--fs-md); }
+  .page-header {
+    margin-bottom: 0;
+  }
 
   .grid {
     display: grid;

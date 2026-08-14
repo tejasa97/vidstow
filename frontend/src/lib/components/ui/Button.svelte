@@ -74,10 +74,10 @@
   /* Variants */
   .variant-primary {
     color: var(--text-on-accent);
-    background: #15161A;
-    border: 1px solid #15161A;
+    background: var(--accent-600);
+    border: 1px solid var(--accent-600);
   }
-  .variant-primary:hover:not(:disabled) { background: #2A2C31; border-color: #2A2C31; }
+  .variant-primary:hover:not(:disabled) { background: var(--accent-500); border-color: var(--accent-500); }
 
   .variant-secondary {
     color: var(--text-primary);

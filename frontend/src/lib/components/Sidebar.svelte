@@ -94,7 +94,7 @@
     align-items: center;
     gap: var(--sp-2);
     padding: 2px 8px 16px;
-    color: #F5F6F8;
+    color: #F4EEE4;
     text-decoration: none;
     border-radius: var(--r-sm);
   }
@@ -138,19 +138,19 @@
     min-height: 38px;
     padding: 0 11px;
     border-radius: var(--r-sm);
-    color: #AEB1B8;
+    color: #C9BBA8;
     font-size: 13.5px;
     transition: background 120ms ease, color 120ms ease;
   }
 
   .nav-item:hover {
-    background: rgba(255, 255, 255, 0.06);
-    color: #F5F6F8;
+    background: rgba(255, 251, 245, 0.08);
+    color: #F4EEE4;
   }
 
   .nav-item.active {
-    background: rgba(255, 255, 255, 0.10);
-    color: #fff;
+    background: rgba(255, 251, 245, 0.12);
+    color: #FFFBF5;
     box-shadow: inset 2px 0 0 var(--accent-400);
   }
 
@@ -170,7 +170,7 @@
   }
   .nav-badge.subtle {
     background: rgba(255, 255, 255, 0.12);
-    color: #AEB1B8;
+    color: #C9BBA8;
   }
 
   .ffmpeg {
@@ -193,8 +193,8 @@
   .ffmpeg .dot.ok { background: #3FBF6F; }
   .ffmpeg .dot.missing { background: #E05D54; }
   .ffmpeg-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .ffmpeg-copy strong { color: #E8EAEE; font-size: 12px; font-weight: 600; }
-  .ffmpeg-copy span { color: #AEB1B8; font-size: 11px; margin-top: 1px; }
+  .ffmpeg-copy strong { color: #F4EEE4; font-size: 12px; font-weight: 600; }
+  .ffmpeg-copy span { color: #C9BBA8; font-size: 11px; margin-top: 1px; }
   .ffmpeg-link {
     color: var(--accent-400);
     font-size: 11px;

@@ -4,12 +4,18 @@ import test from 'node:test';
 
 const read = (path) => readFile(new URL(path, import.meta.url), 'utf8');
 
-test('design tokens match the approved light-canvas / dark-graphite contract', async () => {
+test('design tokens match the approved paper-and-ink contract', async () => {
   const css = await read('../src/styles/global.css');
-  assert.match(css, /--surface-bg:\s+#F6F6F7/);
-  assert.match(css, /--surface-base:\s+#FFFFFF/);
-  assert.match(css, /--surface-sidebar:\s+#1C1D21/);
+  assert.match(css, /--surface-bg:\s+#EDE6D8/);
+  assert.match(css, /--surface-base:\s+#FFFBF5/);
+  assert.match(css, /--surface-sidebar:\s+#1A1714/);
+  assert.match(css, /--text-secondary:\s+#3F3933/);
+  assert.match(css, /--text-muted:\s+#5C544C/);
   assert.match(css, /--sidebar-w:\s+160px/);
+  assert.match(css, /--page-pad-x:\s+32px/);
+  assert.match(css, /--page-pad-y:\s+28px/);
+  assert.match(css, /\.page \{/);
+  assert.match(css, /\.page-header h1 \{/);
   assert.match(css, /--r-sm:\s+6px/);
   assert.match(css, /--r-md:\s+8px/);
   assert.match(css, /--font-sans: 'Inter'/);
