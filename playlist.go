@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tejasa97/vidstow/internal/admission"
 	"github.com/tejasa97/vidstow/internal/jobs"
@@ -57,6 +58,9 @@ func (a *App) StartPlaylistDownload(req StartPlaylistRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if req.Quality == jobs.QualityAudioOnly && req.AudioBitrate != 0 && !a.ffmpegStatus().Available {
+		return "", errors.New("MP3 conversion needs FFmpeg; choose original audio or configure FFmpeg")
+	}
 	preview, entries, err := a.jobs.ResolvePlaylistSelection(validated.PlaylistID, req.SelectedItems)
 	if err != nil {
 		return "", err
@@ -69,7 +73,8 @@ func (a *App) StartPlaylistDownload(req StartPlaylistRequest) (string, error) {
 	defer cancel()
 	children, err := a.analyzePlaylistChildren(ctx, entries, req.Quality, req.AudioBitrate)
 	if err != nil {
-		return "", err
+		logAppErrorf(a.ctx, "desktop: analyze playlist children: %v", err)
+		return "", errors.New(friendlyAnalyzeError(err))
 	}
 	for _, child := range children {
 		if child.plan.RequiresFFmpeg && !a.ffmpegStatus().Available {
@@ -147,6 +152,18 @@ func (a *App) analyzePlaylistChildren(ctx context.Context, entries []jobs.Playli
 				if summary.VideoID != entry.VideoID || summary.URL != entry.URL {
 					fail(fmt.Errorf("analyze playlist item %d: video identity mismatch", entry.Index))
 					return
+				}
+				if strings.TrimSpace(summary.Title) == "" {
+					summary.Title = entry.Title
+					if strings.TrimSpace(summary.Title) == "" {
+						summary.Title = "Untitled video"
+					}
+				}
+				if summary.Channel == "" {
+					summary.Channel = "YouTube"
+				}
+				if summary.Thumbnail == "" {
+					summary.Thumbnail = entry.Thumbnail
 				}
 				plan, err := choosePlaylistPlan(privatePlans, quality, bitrate)
 				if err != nil {
@@ -234,5 +251,18 @@ func playlistSubfolder(title, playlistID string) string {
 	if len(idRunes) > 64 {
 		idRunes = idRunes[:64]
 	}
-	return videoSubfolder(title, string(idRunes))
+	name := videoSubfolder(title, string(idRunes))
+	const maxFolderBytes = 200
+	for len(name) > maxFolderBytes {
+		_, size := utf8.DecodeLastRuneInString(name)
+		if size <= 0 {
+			break
+		}
+		name = name[:len(name)-size]
+	}
+	name = strings.Trim(name, " .")
+	if name == "" {
+		return "Playlist"
+	}
+	return name
 }

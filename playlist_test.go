@@ -6,6 +6,7 @@ import (
 
 	"github.com/tejasa97/vidstow/internal/jobs"
 	"github.com/tejasa97/vidstow/internal/outputplan"
+	"github.com/tejasa97/vidstow/internal/reservation"
 )
 
 func TestValidatePlaylistPolicy(t *testing.T) {
@@ -65,8 +66,10 @@ func TestChoosePlaylistPlanUsesPerChildAvailabilityAndCaps(t *testing.T) {
 }
 
 func TestPlaylistSubfolderBoundsUntrustedIdentity(t *testing.T) {
-	folder := playlistSubfolder(strings.Repeat("title", 50), strings.Repeat("x", 500))
-	if len([]rune(folder)) > 140 || strings.ContainsAny(folder, `/\\`) {
-		t.Fatalf("unsafe playlist folder = %q", folder)
+	for _, title := range []string{strings.Repeat("title", 50), strings.Repeat("界", 200), `bad:/\\*title`} {
+		folder := playlistSubfolder(title, strings.Repeat("x", 500))
+		if len(folder) > 200 || strings.ContainsAny(folder, `/\\`) || reservation.ValidateBasename(folder) != nil {
+			t.Fatalf("unsafe playlist folder = %q (%d bytes)", folder, len(folder))
+		}
 	}
 }
