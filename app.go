@@ -62,6 +62,7 @@ type App struct {
 	mu              sync.Mutex
 	lastFFmpeg      ffmpegdetect.Status
 	quitMu          sync.Mutex
+	playlistMu      sync.Mutex
 	quitPermit      bool
 	quitRequestOpen bool
 	quitDeadline    time.Time

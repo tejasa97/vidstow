@@ -3596,7 +3596,12 @@ func (m *Manager) ResolvePlaylistSelection(playlistID string, selected []int) (P
 	summary := cached.summary
 	summary.Entries = append([]PlaylistEntrySummary(nil), cached.summary.Entries...)
 	entries := make([]PlaylistEntrySummary, 0, len(requested))
+	previewIndexes := make(map[int]struct{}, len(summary.Entries))
 	for _, entry := range summary.Entries {
+		if _, duplicate := previewIndexes[entry.Index]; duplicate {
+			return PlaylistSummary{}, nil, errors.New("jobs: playlist preview contains duplicate positions")
+		}
+		previewIndexes[entry.Index] = struct{}{}
 		if _, wanted := requested[entry.Index]; !wanted {
 			continue
 		}
@@ -3700,10 +3705,26 @@ func canonicalPlaylistChildURL(videoID, reportedURL string) (string, bool) {
 
 // Analyze calls engine.Run with Simulate=true to extract metadata for
 // the Home page preview. It uses NoPlaylist so watch?v=...&list= links
-// still surface as a single video.
+// still surface as a single video and caches private plans for single-video
+// admission.
 func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, error) {
+	summary, privatePlans, err := m.AnalyzeForAdmission(ctx, rawURL)
+	if err != nil {
+		return InfoSummary{}, err
+	}
+	if summary.VideoID != "" && len(privatePlans) > 0 {
+		m.cachePlans(summary.VideoID, privatePlans)
+	}
+	return summary, nil
+}
+
+// AnalyzeForAdmission returns private curated plans to trusted Go callers.
+// It is not a Wails binding and its selectors must never cross the renderer
+// boundary. Collection orchestration carries the selected plan directly into
+// atomic admission instead of relying on the bounded single-video plan cache.
+func (m *Manager) AnalyzeForAdmission(ctx context.Context, rawURL string) (InfoSummary, []outputplan.Plan, error) {
 	if rawURL == "" {
-		return InfoSummary{}, errors.New("analyze: empty url")
+		return InfoSummary{}, nil, errors.New("analyze: empty url")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -3711,7 +3732,7 @@ func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, erro
 	m.mu.Lock()
 	if m.closing || m.closed {
 		m.mu.Unlock()
-		return InfoSummary{}, ErrClosed
+		return InfoSummary{}, nil, ErrClosed
 	}
 	ffmpegLocation := m.ffmpegLocation
 	lifecycleCtx := m.lifecycleCtx
@@ -3735,16 +3756,13 @@ func (m *Manager) Analyze(ctx context.Context, rawURL string) (InfoSummary, erro
 	}
 	result, err := runner(analysisCtx, req)
 	if err != nil {
-		return InfoSummary{}, err
+		return InfoSummary{}, nil, err
 	}
 	summary, privatePlans, err := summarizeAnalysis(result.InfoJSON, rawURL)
 	if err != nil {
-		return InfoSummary{}, err
+		return InfoSummary{}, nil, err
 	}
-	if summary.VideoID != "" && len(privatePlans) > 0 {
-		m.cachePlans(summary.VideoID, privatePlans)
-	}
-	return summary, nil
+	return summary, privatePlans, nil
 }
 
 func summarizeAnalysis(raw json.RawMessage, rawURL string) (InfoSummary, []outputplan.Plan, error) {

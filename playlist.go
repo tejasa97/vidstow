@@ -41,6 +41,11 @@ func (a *App) StartPlaylistDownload(req StartPlaylistRequest) (string, error) {
 	if err := a.requireReady(); err != nil {
 		return "", err
 	}
+	a.playlistMu.Lock()
+	defer a.playlistMu.Unlock()
+	if err := a.requireReady(); err != nil {
+		return "", err
+	}
 	validated, err := urlcheck.Validate(req.URL)
 	if err != nil {
 		return "", err
@@ -83,19 +88,19 @@ func (a *App) StartPlaylistDownload(req StartPlaylistRequest) (string, error) {
 	}
 	defer root.Close()
 
-	admissionChildren := make([]admission.Request, len(children))
+	admissionChildren := make([]admission.CollectionChildRequest, len(children))
 	for index, child := range children {
-		admissionChildren[index] = admission.Request{
-			Queue: jobs.Request{
+		admissionChildren[index] = admission.CollectionChildRequest{
+			Request: admission.Request{Queue: jobs.Request{
 				URL: child.entry.URL, VideoID: child.entry.VideoID, Title: child.summary.Title,
 				Channel: child.summary.Channel, Quality: req.Quality, PlanID: child.plan.ID,
 				OutputDir: outputDir, Duration: child.summary.Duration, Thumbnail: child.summary.Thumbnail,
-			},
-			Metadata: value.NewInfo(value.NewObject(
+			}, Metadata: value.NewInfo(value.NewObject(
 				value.Field{Key: "title", Value: value.String(child.summary.Title)},
 				value.Field{Key: "id", Value: value.String(child.entry.VideoID)},
 				value.Field{Key: "channel", Value: value.String(child.summary.Channel)},
-			)),
+			))},
+			ResolvedPlan: child.plan,
 		}
 	}
 	result, err := a.coordinator.AdmitCollection(a.ctx, root, admission.CollectionRequest{
@@ -133,7 +138,7 @@ func (a *App) analyzePlaylistChildren(ctx context.Context, entries []jobs.Playli
 			for index := range work {
 				entry := entries[index]
 				childCtx, childCancel := context.WithTimeout(analysisCtx, 75*time.Second)
-				summary, err := a.jobs.Analyze(childCtx, entry.URL)
+				summary, privatePlans, err := a.jobs.AnalyzeForAdmission(childCtx, entry.URL)
 				childCancel()
 				if err != nil {
 					fail(fmt.Errorf("analyze playlist item %d: %w", entry.Index, err))
@@ -143,7 +148,7 @@ func (a *App) analyzePlaylistChildren(ctx context.Context, entries []jobs.Playli
 					fail(fmt.Errorf("analyze playlist item %d: video identity mismatch", entry.Index))
 					return
 				}
-				plan, err := choosePlaylistPlan(summary.Plans, quality, bitrate)
+				plan, err := choosePlaylistPlan(privatePlans, quality, bitrate)
 				if err != nil {
 					fail(fmt.Errorf("analyze playlist item %d: %w", entry.Index, err))
 					return
