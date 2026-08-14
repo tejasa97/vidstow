@@ -30,9 +30,16 @@ type Collection struct {
 
 // CollectionRequest contains children that the application has independently
 // resolved from a trusted playlist preview and analyzed on the backend.
+type CollectionChildRequest struct {
+	Request Request
+	// ResolvedPlan is selected from private backend analysis metadata. It must
+	// never be decoded from a renderer request.
+	ResolvedPlan outputplan.Plan
+}
+
 type CollectionRequest struct {
 	Collection Collection
-	Children   []Request
+	Children   []CollectionChildRequest
 }
 
 type CollectionChildResult struct {
@@ -104,7 +111,8 @@ func (c *Coordinator) AdmitCollection(ctx context.Context, root *reservationfs.R
 	}
 	prepared := make([]preparedCollectionChild, len(request.Children))
 	seenIDs := map[string]struct{}{collectionID: {}}
-	for index, child := range request.Children {
+	for index, collectionChild := range request.Children {
+		child := collectionChild.Request
 		if err := ctx.Err(); err != nil {
 			return CollectionResult{}, err
 		}
@@ -114,10 +122,7 @@ func (c *Coordinator) AdmitCollection(ctx context.Context, root *reservationfs.R
 		if err := verifyOutputRoot(child.Queue.OutputDir, facts.Volume.CanonicalPath); err != nil {
 			return CollectionResult{}, err
 		}
-		plan, resolveErr := c.deps.Resolver.ResolvePlan(child.Queue.VideoID, child.Queue.PlanID)
-		if resolveErr != nil {
-			return CollectionResult{}, fmt.Errorf("admission: resolve child %d output plan: %w", index+1, resolveErr)
-		}
+		plan := collectionChild.ResolvedPlan
 		if err := validateResolvedPlan(plan, child.Queue.PlanID); err != nil {
 			return CollectionResult{}, err
 		}

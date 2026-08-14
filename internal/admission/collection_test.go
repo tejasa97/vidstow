@@ -47,15 +47,15 @@ func collectionFixture(t *testing.T) (*Coordinator, *reservationfs.Root, *store.
 	if err != nil {
 		t.Fatal(err)
 	}
-	children := make([]Request, 2)
+	children := make([]CollectionChildRequest, 2)
 	for index := range children {
-		children[index] = Request{
-			Queue: jobs.Request{
+		children[index] = CollectionChildRequest{
+			Request: Request{Queue: jobs.Request{
 				URL: "https://www.youtube.com/watch?v=fixture0001", VideoID: "fixture0001",
 				Title: "Repeated title", Channel: "Channel", PlanID: plan.ID,
 				Quality: jobs.Quality1080p, OutputDir: outputDir,
-			},
-			Metadata: value.NewInfo(value.NewObject()),
+			}, Metadata: value.NewInfo(value.NewObject())},
+			ResolvedPlan: plan,
 		}
 	}
 	request := CollectionRequest{
@@ -112,7 +112,7 @@ func TestCoordinatorCollectionManagerFailureLeavesWholeDurableCollection(t *test
 
 func TestCoordinatorRejectsCollectionBeforeAnyDurableMutation(t *testing.T) {
 	coordinator, root, state, queue, request := collectionFixture(t)
-	request.Children[1].Queue.PlanID = "invented-plan"
+	request.Children[1].Request.Queue.PlanID = "invented-plan"
 	if _, err := coordinator.AdmitCollection(context.Background(), root, request); err == nil {
 		t.Fatal("AdmitCollection error = nil")
 	}
