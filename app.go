@@ -554,6 +554,41 @@ func (a *App) OpenQueueJob(id, token string) error {
 	return a.OpenFile(path)
 }
 
+func (a *App) PauseQueueCollection(id, token string) (int, error) {
+	if err := a.requireReady(); err != nil {
+		return 0, err
+	}
+	return a.jobs.QueuePauseCollection(id, token)
+}
+
+func (a *App) CancelQueueCollection(id, token string) (int, error) {
+	if err := a.requireReady(); err != nil {
+		return 0, err
+	}
+	return a.jobs.QueueCancelCollection(id, token)
+}
+
+func (a *App) ResumeQueueCollection(id, token string) (int, error) {
+	if err := a.requireReady(); err != nil {
+		return 0, err
+	}
+	return a.jobs.QueueResumeCollection(id, token)
+}
+
+func (a *App) RetryQueueCollection(id, token string) (int, error) {
+	if err := a.requireReady(); err != nil {
+		return 0, err
+	}
+	return a.jobs.QueueRetryCollection(id, token)
+}
+
+func (a *App) RemoveQueueCollection(id, token string) (int, error) {
+	if err := a.requireReady(); err != nil {
+		return 0, err
+	}
+	return a.jobs.QueueRemoveCollection(id, token)
+}
+
 func (a *App) PauseAllQueueJobs(token string) (int, error) {
 	if err := a.requireReady(); err != nil {
 		return 0, err

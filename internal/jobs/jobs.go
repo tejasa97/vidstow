@@ -232,22 +232,52 @@ type QueueJobCapabilities struct {
 // QueueRow is the safe frontend projection of a job. Lifecycle, phase,
 // desired state, and occupancy intentionally remain independent facts.
 type QueueRow struct {
-	ID            string                `json:"id"`
-	Title         string                `json:"title"`
-	Metadata      string                `json:"metadata,omitempty"`
-	ThumbnailURL  string                `json:"thumbnailUrl,omitempty"`
-	Lifecycle     jobmodel.Lifecycle    `json:"lifecycle"`
-	Phase         jobmodel.Phase        `json:"phase,omitempty"`
-	Desired       jobmodel.DesiredState `json:"desired"`
-	OccupiesSlot  bool                  `json:"occupiesSlot"`
-	QueuePosition int                   `json:"queuePosition,omitempty"`
-	Progress      float64               `json:"progress,omitempty"`
-	ProgressLabel string                `json:"progressLabel,omitempty"`
-	SpeedLabel    string                `json:"speedLabel,omitempty"`
-	ETALabel      string                `json:"etaLabel,omitempty"`
-	Message       string                `json:"message,omitempty"`
-	Capabilities  QueueJobCapabilities  `json:"capabilities"`
-	CommandToken  string                `json:"commandToken,omitempty"`
+	ID              string                `json:"id"`
+	CollectionID    string                `json:"collectionId,omitempty"`
+	CollectionIndex int                   `json:"collectionIndex,omitempty"`
+	Title           string                `json:"title"`
+	Metadata        string                `json:"metadata,omitempty"`
+	ThumbnailURL    string                `json:"thumbnailUrl,omitempty"`
+	Lifecycle       jobmodel.Lifecycle    `json:"lifecycle"`
+	Phase           jobmodel.Phase        `json:"phase,omitempty"`
+	Desired         jobmodel.DesiredState `json:"desired"`
+	OccupiesSlot    bool                  `json:"occupiesSlot"`
+	QueuePosition   int                   `json:"queuePosition,omitempty"`
+	Progress        float64               `json:"progress,omitempty"`
+	ProgressLabel   string                `json:"progressLabel,omitempty"`
+	SpeedLabel      string                `json:"speedLabel,omitempty"`
+	ETALabel        string                `json:"etaLabel,omitempty"`
+	Message         string                `json:"message,omitempty"`
+	Capabilities    QueueJobCapabilities  `json:"capabilities"`
+	CommandToken    string                `json:"commandToken,omitempty"`
+}
+
+type QueueCollectionCapabilities struct {
+	Pause  bool `json:"pause"`
+	Cancel bool `json:"cancel"`
+	Resume bool `json:"resume"`
+	Retry  bool `json:"retry"`
+	Remove bool `json:"remove"`
+}
+
+type QueueCollection struct {
+	ID            string                      `json:"id"`
+	Title         string                      `json:"title"`
+	Metadata      string                      `json:"metadata,omitempty"`
+	ThumbnailURL  string                      `json:"thumbnailUrl,omitempty"`
+	Policy        string                      `json:"policy"`
+	ChildJobIDs   []string                    `json:"childJobIds"`
+	Total         int                         `json:"total"`
+	Completed     int                         `json:"completed"`
+	Failed        int                         `json:"failed"`
+	Canceled      int                         `json:"canceled"`
+	Active        int                         `json:"active"`
+	Pending       int                         `json:"pending"`
+	Paused        int                         `json:"paused"`
+	Progress      float64                     `json:"progress"`
+	ProgressLabel string                      `json:"progressLabel"`
+	Capabilities  QueueCollectionCapabilities `json:"capabilities"`
+	CommandToken  string                      `json:"commandToken,omitempty"`
 }
 
 type QueueSummary struct {
@@ -273,6 +303,7 @@ type QueueCapabilities struct {
 type QueueView struct {
 	Revision     uint64            `json:"revision"`
 	Rows         []QueueRow        `json:"rows"`
+	Collections  []QueueCollection `json:"collections"`
 	Summary      QueueSummary      `json:"summary"`
 	Capabilities QueueCapabilities `json:"capabilities"`
 	Persistence  PersistenceStatus `json:"persistence"`
@@ -344,51 +375,58 @@ type DurablePersistence interface {
 // Manager owns the queue and the client used for metadata analysis. Downloads
 // use short-lived clients so each job can attach its own event handler.
 type Manager struct {
-	client             *engine.Client
-	listener           Listener
-	eventSignal        chan struct{}
-	eventMu            sync.Mutex
-	pendingEvents      []Event
-	eventStop          chan struct{}
-	eventDone          chan struct{}
-	eventClosed        bool
-	closeOnce          sync.Once
-	closeDone          chan struct{}
-	closeErr           error
-	closing            bool
-	closed             bool
-	lifecycleCtx       context.Context
-	lifecycleCancel    context.CancelCauseFunc
-	analysisWG         sync.WaitGroup
-	detachedWG         sync.WaitGroup
-	runDownload        downloadRunner
-	runAnalyze         analyzeRunner
-	inspectResume      resumeInspector
-	ffmpegLocation     string
-	mu                 sync.Mutex
-	all                map[string]*jobState
-	order              []string
-	active             map[string]*worker
-	concurrency        int
-	processing         chan struct{}
-	queueRevision      uint64
-	queueCommandToken  string
-	queueAuthoritySig  string
-	stateStore         StateStore
-	planCache          map[string]cachedPlans
-	playlistCache      map[string]cachedPlaylist
-	persistence        Persistence
-	persistenceDurable bool
-	persistMu          sync.Mutex
-	persistStatus      PersistenceStatus
-	persistSignal      chan struct{}
-	persistStop        chan struct{}
-	persistDone        chan struct{}
+	client               *engine.Client
+	listener             Listener
+	eventSignal          chan struct{}
+	eventMu              sync.Mutex
+	pendingEvents        []Event
+	eventStop            chan struct{}
+	eventDone            chan struct{}
+	eventClosed          bool
+	closeOnce            sync.Once
+	closeDone            chan struct{}
+	closeErr             error
+	closing              bool
+	closed               bool
+	lifecycleCtx         context.Context
+	lifecycleCancel      context.CancelCauseFunc
+	analysisWG           sync.WaitGroup
+	detachedWG           sync.WaitGroup
+	runDownload          downloadRunner
+	runAnalyze           analyzeRunner
+	inspectResume        resumeInspector
+	ffmpegLocation       string
+	mu                   sync.Mutex
+	all                  map[string]*jobState
+	order                []string
+	active               map[string]*worker
+	concurrency          int
+	processing           chan struct{}
+	queueRevision        uint64
+	queueCommandToken    string
+	queueAuthoritySig    string
+	stateStore           StateStore
+	planCache            map[string]cachedPlans
+	playlistCache        map[string]cachedPlaylist
+	collectionAuthority  map[string]collectionAuthority
+	collectionCommanding map[string]bool
+	persistence          Persistence
+	persistenceDurable   bool
+	persistMu            sync.Mutex
+	persistStatus        PersistenceStatus
+	persistSignal        chan struct{}
+	persistStop          chan struct{}
+	persistDone          chan struct{}
 }
 
 type cachedPlans struct {
 	plans     []outputplan.Plan
 	expiresAt time.Time
+}
+
+type collectionAuthority struct {
+	signature string
+	token     string
 }
 
 type cachedPlaylist struct {
@@ -441,22 +479,24 @@ func New(client *engine.Client, listener Listener) *Manager {
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancelCause(context.Background())
 	manager := &Manager{
-		client:            client,
-		listener:          listener,
-		closeDone:         make(chan struct{}),
-		eventDone:         make(chan struct{}),
-		lifecycleCtx:      lifecycleCtx,
-		lifecycleCancel:   lifecycleCancel,
-		runDownload:       defaultDownloadRunner,
-		runAnalyze:        client.Run,
-		inspectResume:     engine.InspectResumeState,
-		all:               make(map[string]*jobState),
-		active:            make(map[string]*worker),
-		concurrency:       DefaultDownloadConcurrency,
-		processing:        make(chan struct{}, MaxProcessingConcurrency),
-		queueCommandToken: uuid.NewString(),
-		planCache:         make(map[string]cachedPlans),
-		playlistCache:     make(map[string]cachedPlaylist),
+		client:               client,
+		listener:             listener,
+		closeDone:            make(chan struct{}),
+		eventDone:            make(chan struct{}),
+		lifecycleCtx:         lifecycleCtx,
+		lifecycleCancel:      lifecycleCancel,
+		runDownload:          defaultDownloadRunner,
+		runAnalyze:           client.Run,
+		inspectResume:        engine.InspectResumeState,
+		all:                  make(map[string]*jobState),
+		active:               make(map[string]*worker),
+		concurrency:          DefaultDownloadConcurrency,
+		processing:           make(chan struct{}, MaxProcessingConcurrency),
+		queueCommandToken:    uuid.NewString(),
+		planCache:            make(map[string]cachedPlans),
+		playlistCache:        make(map[string]cachedPlaylist),
+		collectionAuthority:  make(map[string]collectionAuthority),
+		collectionCommanding: make(map[string]bool),
 	}
 	if listener != nil {
 		manager.eventSignal = make(chan struct{}, 1)
@@ -1542,6 +1582,7 @@ func (m *Manager) queueViewLocked() QueueView {
 	view := QueueView{
 		Revision:     m.queueRevision,
 		Rows:         make([]QueueRow, 0, len(m.all)),
+		Collections:  []QueueCollection{},
 		Summary:      QueueSummary{SlotLimit: m.concurrency, ProcessingLimit: MaxProcessingConcurrency},
 		Capabilities: QueueCapabilities{CommandToken: m.queueCommandToken},
 		Persistence:  m.persistStatus,
@@ -1563,7 +1604,8 @@ func (m *Manager) queueViewLocked() QueueView {
 			lifecycle = lifecycleForStatus(snap.Status)
 		}
 		row := QueueRow{
-			ID: snap.ID, Title: snap.Title, Metadata: queueMetadata(snap), ThumbnailURL: queueThumbnailURL(snap),
+			ID: snap.ID, CollectionID: state.durable.CollectionID, CollectionIndex: state.durable.CollectionIndex,
+			Title: snap.Title, Metadata: queueMetadata(snap), ThumbnailURL: queueThumbnailURL(snap),
 			Lifecycle: lifecycle, Phase: snap.Phase, Desired: snap.Desired,
 			OccupiesSlot: m.active[snap.ID] != nil, QueuePosition: positions[snap.ID],
 			Progress: snap.Progress, Message: snap.Message,
@@ -1595,6 +1637,7 @@ func (m *Manager) queueViewLocked() QueueView {
 			view.Summary.PausedJobs++
 		}
 	}
+	view.Collections = m.queueCollectionsLocked(view.Rows)
 	for _, row := range view.Rows {
 		view.Capabilities.PauseAll = view.Capabilities.PauseAll || row.Capabilities.Pause
 		view.Capabilities.ClearCompleted = view.Capabilities.ClearCompleted || (row.Lifecycle == jobmodel.LifecycleCompleted && row.Capabilities.Remove)
@@ -1603,6 +1646,91 @@ func (m *Manager) queueViewLocked() QueueView {
 		view.Capabilities.CommandToken = ""
 	}
 	return view
+}
+
+func (m *Manager) queueCollectionsLocked(rows []QueueRow) []QueueCollection {
+	if m.stateStore == nil {
+		return []QueueCollection{}
+	}
+	durable := m.stateStore.Snapshot()
+	rowsByID := make(map[string]QueueRow, len(rows))
+	for _, row := range rows {
+		rowsByID[row.ID] = row
+	}
+	collections := make([]QueueCollection, 0, len(durable.Collections))
+	liveAuthority := make(map[string]struct{}, len(durable.Collections))
+	for _, parent := range durable.Collections {
+		collection := QueueCollection{
+			ID: parent.ID, Title: parent.Title, ThumbnailURL: parent.Thumbnail, Policy: parent.Policy,
+			ChildJobIDs: append([]string(nil), parent.ChildJobIDs...), Total: len(parent.ChildJobIDs),
+		}
+		if parent.Channel != "" {
+			collection.Metadata = parent.Channel
+		}
+		removeAll := len(parent.ChildJobIDs) > 0
+		progress := 0.0
+		signatureParts := make([]string, 0, len(parent.ChildJobIDs)+1)
+		signatureParts = append(signatureParts, fmt.Sprintf("%d", parent.Revision))
+		for _, childID := range parent.ChildJobIDs {
+			row, ok := rowsByID[childID]
+			state := m.all[childID]
+			if !ok || state == nil {
+				removeAll = false
+				signatureParts = append(signatureParts, childID+"=missing")
+				continue
+			}
+			caps := row.Capabilities
+			collection.Capabilities.Pause = collection.Capabilities.Pause || caps.Pause
+			collection.Capabilities.Cancel = collection.Capabilities.Cancel || caps.Cancel
+			collection.Capabilities.Resume = collection.Capabilities.Resume || caps.Resume
+			collection.Capabilities.Retry = collection.Capabilities.Retry || caps.Retry
+			removeAll = removeAll && caps.Remove
+			switch row.Lifecycle {
+			case jobmodel.LifecycleCompleted:
+				collection.Completed++
+				progress += 1
+			case jobmodel.LifecycleFailed, jobmodel.LifecycleActionRequired:
+				collection.Failed++
+			case jobmodel.LifecycleCanceled:
+				collection.Canceled++
+			case jobmodel.LifecycleActive, jobmodel.LifecyclePausing, jobmodel.LifecycleCanceling:
+				collection.Active++
+				progress += row.Progress
+			case jobmodel.LifecyclePending:
+				collection.Pending++
+			case jobmodel.LifecyclePaused:
+				collection.Paused++
+				progress += row.Progress
+			}
+			signatureParts = append(signatureParts, childID+"="+state.commandToken)
+		}
+		collection.Capabilities.Remove = removeAll
+		if m.collectionCommanding[parent.ID] {
+			collection.Capabilities = QueueCollectionCapabilities{}
+		}
+		if collection.Total > 0 {
+			collection.Progress = progress / float64(collection.Total)
+			collection.ProgressLabel = fmt.Sprintf("%d of %d complete", collection.Completed, collection.Total)
+		}
+		signature := strings.Join(signatureParts, "|") + fmt.Sprintf("|%t%t%t%t%t", collection.Capabilities.Pause, collection.Capabilities.Cancel, collection.Capabilities.Resume, collection.Capabilities.Retry, collection.Capabilities.Remove)
+		authority := m.collectionAuthority[parent.ID]
+		if authority.signature != signature {
+			authority = collectionAuthority{signature: signature, token: uuid.NewString()}
+			m.collectionAuthority[parent.ID] = authority
+		}
+		if collection.Capabilities != (QueueCollectionCapabilities{}) {
+			collection.CommandToken = authority.token
+		}
+		liveAuthority[parent.ID] = struct{}{}
+		collections = append(collections, collection)
+	}
+	for id := range m.collectionAuthority {
+		if _, exists := liveAuthority[id]; !exists {
+			delete(m.collectionAuthority, id)
+			delete(m.collectionCommanding, id)
+		}
+	}
+	return collections
 }
 
 // refreshQueueAuthorityLocked binds opaque tokens to the exact set of facts
@@ -1799,6 +1927,103 @@ func (m *Manager) QueueRemove(id, token string) error {
 		return err
 	}
 	return m.Remove(id)
+}
+
+func (m *Manager) authorizeCollectionCommand(id, token string, allowed func(QueueCollectionCapabilities) bool, childAllowed func(QueueJobCapabilities) bool) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	view := m.queueViewLocked()
+	var collection *QueueCollection
+	for index := range view.Collections {
+		if view.Collections[index].ID == id {
+			collection = &view.Collections[index]
+			break
+		}
+	}
+	if collection == nil || m.collectionCommanding[id] || token == "" || token != collection.CommandToken || !allowed(collection.Capabilities) {
+		return nil, errors.New("jobs: collection action is no longer available")
+	}
+	children := make([]string, 0, len(collection.ChildJobIDs))
+	for _, childID := range collection.ChildJobIDs {
+		state := m.all[childID]
+		if state == nil || !childAllowed(m.queueCapabilitiesLocked(state, state.snap)) {
+			continue
+		}
+		children = append(children, childID)
+	}
+	if len(children) == 0 {
+		return nil, errors.New("jobs: collection action has no eligible children")
+	}
+	authority := m.collectionAuthority[id]
+	authority.token = uuid.NewString()
+	m.collectionAuthority[id] = authority
+	m.collectionCommanding[id] = true
+	return children, nil
+}
+
+func (m *Manager) finishCollectionCommand(id string) {
+	m.mu.Lock()
+	if m.collectionCommanding[id] {
+		delete(m.collectionCommanding, id)
+		m.emitQueueLocked()
+	}
+	m.mu.Unlock()
+}
+
+func runCollectionCommand(children []string, action func(string) error) (int, error) {
+	completed := 0
+	for _, childID := range children {
+		if err := action(childID); err != nil {
+			return completed, fmt.Errorf("jobs: collection action stopped after %d children: %w", completed, err)
+		}
+		completed++
+	}
+	return completed, nil
+}
+
+func (m *Manager) QueuePauseCollection(id, token string) (int, error) {
+	children, err := m.authorizeCollectionCommand(id, token, func(c QueueCollectionCapabilities) bool { return c.Pause }, func(c QueueJobCapabilities) bool { return c.Pause })
+	if err != nil {
+		return 0, err
+	}
+	defer m.finishCollectionCommand(id)
+	return runCollectionCommand(children, m.Pause)
+}
+
+func (m *Manager) QueueCancelCollection(id, token string) (int, error) {
+	children, err := m.authorizeCollectionCommand(id, token, func(c QueueCollectionCapabilities) bool { return c.Cancel }, func(c QueueJobCapabilities) bool { return c.Cancel })
+	if err != nil {
+		return 0, err
+	}
+	defer m.finishCollectionCommand(id)
+	return runCollectionCommand(children, m.Cancel)
+}
+
+func (m *Manager) QueueResumeCollection(id, token string) (int, error) {
+	children, err := m.authorizeCollectionCommand(id, token, func(c QueueCollectionCapabilities) bool { return c.Resume }, func(c QueueJobCapabilities) bool { return c.Resume })
+	if err != nil {
+		return 0, err
+	}
+	defer m.finishCollectionCommand(id)
+	return runCollectionCommand(children, m.Resume)
+}
+
+func (m *Manager) QueueRetryCollection(id, token string) (int, error) {
+	children, err := m.authorizeCollectionCommand(id, token, func(c QueueCollectionCapabilities) bool { return c.Retry }, func(c QueueJobCapabilities) bool { return c.Retry })
+	if err != nil {
+		return 0, err
+	}
+	defer m.finishCollectionCommand(id)
+	return runCollectionCommand(children, m.Retry)
+}
+
+func (m *Manager) QueueRemoveCollection(id, token string) (int, error) {
+	children, err := m.authorizeCollectionCommand(id, token, func(c QueueCollectionCapabilities) bool { return c.Remove }, func(c QueueJobCapabilities) bool { return c.Remove })
+	if err != nil {
+		return 0, err
+	}
+	defer m.finishCollectionCommand(id)
+	return runCollectionCommand(children, m.Remove)
 }
 
 func (m *Manager) QueueDownloadAgainRequest(id, token string) (Request, error) {
