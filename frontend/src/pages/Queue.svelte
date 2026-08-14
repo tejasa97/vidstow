@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from '../lib/api.js';
-  import { queueView, showBanner, showError } from '../lib/stores.js';
+  import { modal, queueView, showBanner, showError } from '../lib/stores.js';
   import QueueOverview from '../lib/lifecycle-ui/QueueOverview.svelte';
   import type { LifecycleJobEventDetail, QueueCollectionActionEvent, QueueOverviewViewModel, QueueView } from '../lib/lifecycle-ui/types.js';
   import { newestQueueView } from '../lib/queue-view.js';
@@ -48,11 +48,24 @@
       retry: api.queue.retryCollection,
       remove: api.queue.removeCollection,
     };
-    try {
-      const count = await operations[detail.action](detail.collectionId, detail.commandToken);
-      await refresh();
-      showBanner('info', `${detail.action === 'remove' ? 'Removed' : 'Updated'} ${count} playlist item${count === 1 ? '' : 's'}.`);
-    } catch (err) { showError(err, `Could not ${detail.action} the playlist`); }
+    const execute = async () => {
+      try {
+        const count = await operations[detail.action](detail.collectionId, detail.commandToken);
+        await refresh();
+        showBanner('info', `${detail.action === 'remove' ? 'Removed' : 'Updated'} ${count} playlist item${count === 1 ? '' : 's'}.`);
+      } catch (err) { showError(err, `Could not ${detail.action} the playlist`); }
+    };
+    if (detail.action === 'cancel' || detail.action === 'remove') {
+      const collection = model.collections?.find((candidate) => candidate.id === detail.collectionId);
+      modal.set({
+        kind: 'confirm',
+        title: detail.action === 'cancel' ? 'Cancel this playlist?' : 'Remove this playlist from the queue?',
+        message: `${collection?.title ?? 'This playlist'} contains ${collection?.total ?? 0} queue item${collection?.total === 1 ? '' : 's'}.`,
+        actions: [{ label: detail.action === 'cancel' ? 'Cancel Playlist' : 'Remove Playlist', primary: true, action: execute }],
+      });
+      return;
+    }
+    await execute();
   }
 
   async function pauseAll() {

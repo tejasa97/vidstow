@@ -32,6 +32,8 @@ test('page titles and controls match the approved redesign', async () => {
   assert.match(queue, /<QueueOverview/);
   assert.match(queue, /api\.queue\.pauseAll/);
   assert.match(queue, /api\.queue\.clearCompleted/);
+  assert.match(queue, /Cancel this playlist\?/);
+  assert.match(queue, /Remove this playlist from the queue\?/);
   assert.match(queue, /Jobs are saved automatically\./);
   assert.match(downloads, /View your recently downloaded items\./);
   assert.match(downloads, /placeholder="Search downloads…"/);
