@@ -108,9 +108,10 @@ func TestQueueViewAuthorsCollectionCapabilitiesAndConsumesParentToken(t *testing
 	if len(view.Collections) != 1 || len(view.Collections[0].ChildJobIDs) != 2 || !view.Collections[0].Capabilities.Pause || !view.Collections[0].Capabilities.Cancel || view.Collections[0].CommandToken == "" {
 		t.Fatalf("collection view = %#v", view.Collections)
 	}
-	for index, row := range view.Rows {
-		if row.CollectionID != "collection" || row.CollectionIndex != index+1 {
-			t.Fatalf("child row[%d] = %#v", index, row)
+	wantIndexes := map[string]int{"one": 1, "two": 2}
+	for _, row := range view.Rows {
+		if row.CollectionID != "collection" || row.CollectionIndex != wantIndexes[row.ID] {
+			t.Fatalf("child row %q = %#v", row.ID, row)
 		}
 	}
 	m.mu.Lock()
