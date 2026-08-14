@@ -11,6 +11,7 @@ import type {
   HistoryEntry,
   InfoSummary,
   JobSnapshot,
+  PlaylistSummary,
   PersistenceStatus,
   PlaylistSummary,
   QuitSummary,
@@ -47,6 +48,18 @@ function call<T>(method: string, ...args: any[]): Promise<T> {
     return Promise.reject(new Error(`Go binding "${method}" is not available yet`));
   }
   return fn(...args);
+}
+
+export interface StartPlaylistRequest {
+  url: string;
+  playlistId: string;
+  title: string;
+  channel: string;
+  thumbnail: string;
+  quality: JobSnapshot['quality'];
+  audioBitrate?: number;
+  outputDir: string;
+  selectedItems: number[];
 }
 
 export interface StartRequest {
@@ -93,6 +106,10 @@ export const api = {
   },
   jobs: {
     start: (req: StartRequest) => call<string>('StartDownload', req),
+    startPlaylist: (req: StartPlaylistRequest) => call<string>('StartPlaylistDownload', req),
+    pausePlaylist: (id: string) => call<number>('PausePlaylist', id),
+    cancelPlaylist: (id: string) => call<number>('CancelPlaylist', id),
+    retryPlaylist: (id: string) => call<number>('RetryPlaylist', id),
     list: () => call<JobSnapshot[]>('ListJobs'),
     cancel: (id: string) => call<void>('CancelJob', id),
     pause: (id: string) => call<void>('PauseJob', id),

@@ -35,6 +35,7 @@ export const counts = derived(jobs, ($jobs) => {
   let complete = 0;
   let failed = 0;
   for (const job of $jobs) {
+    if (job.kind === 'playlist') continue;
     switch (job.status) {
       case 'active': active++; break;
       case 'pending': pending++; break;

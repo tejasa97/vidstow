@@ -107,7 +107,7 @@
     <div class="thead"><span>Title</span><span>Format</span><span>Size</span><span>Finished</span><span>Actions</span></div>
     {#each filtered as entry (entry.id)}
       <div class="tr" class:selected={selected?.id === entry.id} class:missing={entry.fileMissing}>
-        <button class="title-cell" type="button" aria-label={`Select ${entry.title}`} on:click={() => selected = entry}>
+        <button class="title-cell" type="button" aria-label={`Show ${entry.title} in Finder`} on:click={() => { selected = entry; reveal(entry); }}>
           <span class="thumb">{#if entry.thumbnail}<img src={entry.thumbnail} alt="" />{/if}</span>
           <span class="copy">
             <strong title={entry.title}>{entry.title}</strong>
