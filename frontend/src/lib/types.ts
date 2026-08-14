@@ -43,15 +43,6 @@ export interface OutputPlan {
 
 export interface JobSnapshot {
   id: string;
-  kind?: 'video' | 'playlist';
-  parentId?: string;
-  playlistId?: string;
-  playlistTitle?: string;
-  playlistIndex?: number;
-  itemCount?: number;
-  completedItems?: number;
-  failedItems?: number;
-  canceledItems?: number;
   url: string;
   videoID: string;
   title: string;

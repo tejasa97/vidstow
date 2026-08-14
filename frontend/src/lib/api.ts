@@ -13,7 +13,6 @@ import type {
   JobSnapshot,
   PlaylistSummary,
   PersistenceStatus,
-  PlaylistSummary,
   QuitSummary,
   QueueEvent,
   Settings,
@@ -107,9 +106,6 @@ export const api = {
   jobs: {
     start: (req: StartRequest) => call<string>('StartDownload', req),
     startPlaylist: (req: StartPlaylistRequest) => call<string>('StartPlaylistDownload', req),
-    pausePlaylist: (id: string) => call<number>('PausePlaylist', id),
-    cancelPlaylist: (id: string) => call<number>('CancelPlaylist', id),
-    retryPlaylist: (id: string) => call<number>('RetryPlaylist', id),
     list: () => call<JobSnapshot[]>('ListJobs'),
     cancel: (id: string) => call<void>('CancelJob', id),
     pause: (id: string) => call<void>('PauseJob', id),

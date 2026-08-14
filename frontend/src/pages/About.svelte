@@ -7,7 +7,7 @@
 
   const APP = {
     name: 'VidStow',
-    tagline: 'A tidy YouTube video and playlist downloader for the desktop.',
+    tagline: 'A tidy, single-video YouTube downloader for the desktop.',
     description:
       'VidStow is an open-source desktop app that downloads public YouTube videos and audio. ' +
       'Analyze a URL, pick a complete output, and let the queue run — no account or tracking required.',

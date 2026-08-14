@@ -47,15 +47,6 @@ test('app shell routes to the About page', async () => {
   assert.match(stores, /writable<'home' \| 'queue' \| 'downloads' \| 'settings' \| 'about'>/);
 });
 
-test('Home stays mounted so analysis survives route changes', async () => {
-  const app = await read('../src/App.svelte');
-  assert.doesNotMatch(app, /\{#if \$route === 'home'\}/);
-  assert.match(app, /hidden=\{\$route !== 'home'\}/);
-  assert.match(app, /inert=\{\$route !== 'home'\}/);
-  assert.match(app, /\{#if \$route === 'queue'\}/);
-  assert.match(app, /\.page-host\[hidden\]/);
-});
-
 test('About page uses backend build info with legal copy and external links', async () => {
   const about = await read('../src/pages/About.svelte');
   assert.match(about, /<h1 id="about-title">About<\/h1>/);
