@@ -42,6 +42,8 @@ maintainer step after the draft prerelease is reviewed.
 
 ### Changed
 
+- App icon, sidebar mark, and docs logos now use the simpler arrow-into-tray
+  download glyph.
 - The packaged application version is `0.1.0-beta.1`; no stable `0.1.0` release
   exists.
 - Candidate packaging currently targets macOS on Apple Silicon only.

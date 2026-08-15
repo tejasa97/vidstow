@@ -27,7 +27,7 @@ test('design tokens match the approved paper-and-ink contract', async () => {
 test('branded sidebar includes FFmpeg footer and About navigation', async () => {
   const sidebar = await read('../src/lib/components/Sidebar.svelte');
   assert.match(sidebar, /class="brand"/);
-  assert.match(sidebar, /import brandMark from '\.\.\/\.\.\/assets\/images\/brand-mark\.png'/);
+  assert.match(sidebar, /import brandMark from '\.\.\/\.\.\/assets\/images\/brand-mark\.svg'/);
   assert.match(sidebar, /<img src=\{brandMark\} alt="" width="26" height="26" \/>/);
   assert.match(sidebar, />VidStow</);
   assert.match(sidebar, /label: 'About'/);
