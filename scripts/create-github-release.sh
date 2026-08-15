@@ -100,8 +100,8 @@ to this release by following the repository's build instructions.
 
 ### Scope
 
-VidStow accepts public, on-demand, single-video YouTube URLs exposed by its UI.
-It does not support playlists, channels, search, Shorts, live streams,
+VidStow accepts public, on-demand YouTube video, Short, and playlist URLs exposed by its UI.
+It does not support channels, search, live streams,
 authentication, cookies, private media, DRM, or access-control circumvention.
 Pause/Resume does not guarantee universal byte reuse; saved bytes are reused
 only when the engine can validate their identity.

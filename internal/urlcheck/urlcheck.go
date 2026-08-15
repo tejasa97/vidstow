@@ -17,7 +17,6 @@ const (
 	ReasonPlaylist       Reason = "playlist"
 	ReasonSearch         Reason = "search"
 	ReasonLive           Reason = "live"
-	ReasonShorts         Reason = "shorts"
 	ReasonInvalidScheme  Reason = "invalid_scheme"
 	ReasonMalformed      Reason = "malformed"
 	ReasonMissingVideoID Reason = "missing_video_id"
@@ -77,8 +76,6 @@ func Validate(raw string) (Result, error) {
 		return Result{}, reject(ReasonSearch, "YouTube search pages are not supported. Paste a video or playlist link.")
 	case strings.HasPrefix(parsed.Path, "/channel/") || strings.HasPrefix(parsed.Path, "/c/") || strings.HasPrefix(parsed.Path, "/user/") || strings.HasPrefix(parsed.Path, "/@"):
 		return Result{}, reject(ReasonChannel, "YouTube channel pages are not supported. Paste a video or playlist link.")
-	case strings.HasPrefix(parsed.Path, "/shorts"):
-		return Result{}, reject(ReasonShorts, "YouTube Shorts are not supported in this version.")
 	case parsed.Path == "/live" || strings.HasPrefix(parsed.Path, "/live/"):
 		return Result{}, reject(ReasonLive, "YouTube live streams are not supported in this version.")
 	}
@@ -124,7 +121,7 @@ func ReasonOf(err error) Reason {
 }
 func isReason(s string) bool {
 	switch Reason(s) {
-	case ReasonEmpty, ReasonNotYouTube, ReasonChannel, ReasonPlaylist, ReasonSearch, ReasonLive, ReasonShorts, ReasonInvalidScheme, ReasonMalformed, ReasonMissingVideoID:
+	case ReasonEmpty, ReasonNotYouTube, ReasonChannel, ReasonPlaylist, ReasonSearch, ReasonLive, ReasonInvalidScheme, ReasonMalformed, ReasonMissingVideoID:
 		return true
 	}
 	return false
@@ -137,6 +134,12 @@ func extractVideoID(parsed *url.URL, host string) string {
 		return parsed.Query().Get("v")
 	}
 	if strings.HasPrefix(parsed.Path, "/embed/") || strings.HasPrefix(parsed.Path, "/v/") {
+		parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
+		if len(parts) >= 2 {
+			return parts[1]
+		}
+	}
+	if strings.HasPrefix(parsed.Path, "/shorts/") {
 		parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
 		if len(parts) >= 2 {
 			return parts[1]

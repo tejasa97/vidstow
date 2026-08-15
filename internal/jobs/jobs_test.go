@@ -221,8 +221,22 @@ func TestSummarizeAnalysisBuildsPublicCuratedPlans(t *testing.T) {
 	if summary.Access.Code != "public" || summary.Access.Label != "Publicly accessible" {
 		t.Fatalf("access = %#v; want public extraction metadata", summary.Access)
 	}
+	if summary.MediaType != "" {
+		t.Fatalf("media type = %q; want empty when the engine omits media_type", summary.MediaType)
+	}
 	if privatePlans[0].Selector != "137+140" {
 		t.Fatalf("private selector = %q; want 137+140", privatePlans[0].Selector)
+	}
+}
+
+func TestSummarizeAnalysisCopiesEngineMediaType(t *testing.T) {
+	raw := json.RawMessage(`{"id":"abc123","title":"Demo","media_type":"Short"}`)
+	summary, _, err := summarizeAnalysis(raw, "https://www.youtube.com/watch?v=abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.MediaType != "short" {
+		t.Fatalf("media type = %q; want short", summary.MediaType)
 	}
 }
 

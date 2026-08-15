@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { formatEngineVersion, formatViewCount } from '../src/lib/format.js';
+import { formatEngineVersion, formatViewCount, youtubeUrlFromText } from '../src/lib/format.js';
 
 describe('formatViewCount', () => {
   test('promotes 1000 of a unit to the next unit', () => {
@@ -13,6 +13,14 @@ describe('formatViewCount', () => {
     expect(formatViewCount(12_000_000)).toBe('12M');
     expect(formatViewCount(1500)).toBe('1.5K');
     expect(formatViewCount(999)).toBe('999');
+  });
+});
+
+describe('youtubeUrlFromText', () => {
+  test('extracts Shorts URLs from pasted text', () => {
+    expect(youtubeUrlFromText('check this https://www.youtube.com/shorts/dQw4w9WgXcQ out')).toBe(
+      'https://www.youtube.com/shorts/dQw4w9WgXcQ',
+    );
   });
 });
 
