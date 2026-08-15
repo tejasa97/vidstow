@@ -14,7 +14,8 @@ maintainer step after the draft prerelease is reviewed.
 
 ### Added
 
-- No entries yet.
+- Analysis and downloading of public YouTube channel pages, including Videos
+  and Shorts tabs, through the existing playlist collection workflow.
 
 ### Changed
 

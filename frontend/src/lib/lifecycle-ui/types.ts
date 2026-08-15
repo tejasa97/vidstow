@@ -102,6 +102,7 @@ export interface QueueCollectionCapabilities {
 export interface QueueCollectionViewModel {
   id: string;
   title: string;
+  kind?: 'playlist' | 'channel';
   metadata?: string;
   thumbnailUrl?: string;
   policy: string;
