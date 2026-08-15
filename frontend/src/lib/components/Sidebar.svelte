@@ -1,16 +1,19 @@
 <script lang="ts">
-  import { route, counts, ffmpeg } from '../stores.js';
+  import { route, counts, ffmpeg, history } from '../stores.js';
   import brandMark from '../../assets/images/brand-mark.png';
   type Route = 'home' | 'queue' | 'downloads' | 'settings' | 'about';
 
   $: c = $counts;
+  $: saved = $history.length;
 
   const items: Array<{ key: Route; label: string; icon: string }> = [
     { key: 'home',      label: 'Home',      icon: 'home' },
     { key: 'queue',     label: 'Queue',     icon: 'queue' },
     { key: 'downloads', label: 'Downloads', icon: 'downloads' },
-    { key: 'settings',  label: 'Settings',  icon: 'settings' },
-    { key: 'about',     label: 'About',     icon: 'about' },
+  ];
+  const utility: Array<{ key: Route; label: string; icon: string }> = [
+    { key: 'settings', label: 'Settings', icon: 'settings' },
+    { key: 'about',    label: 'About',    icon: 'about' },
   ];
 
   function go(target: Route) {
@@ -57,9 +60,34 @@
             {#if item.key === 'queue' && (c.active + c.pending) > 0}
               <span class="nav-badge" aria-label={`${c.active + c.pending} jobs`}>{c.active + c.pending}</span>
             {/if}
-            {#if item.key === 'downloads' && c.complete > 0}
-              <span class="nav-badge subtle" aria-label={`${c.complete} completed`}>{c.complete}</span>
+            {#if item.key === 'downloads' && saved > 0}
+              <span class="nav-badge subtle" aria-label={`${saved} downloads`}>{saved}</span>
             {/if}
+          </button>
+        </li>
+      {/each}
+    </ul>
+  </nav>
+
+  <nav class="utility" aria-label="App">
+    <ul>
+      {#each utility as item}
+        <li>
+          <button
+            type="button"
+            class="nav-item"
+            class:active={$route === item.key}
+            aria-current={$route === item.key ? 'page' : undefined}
+            onclick={() => go(item.key)}
+          >
+            <span class="nav-icon" aria-hidden="true">
+              {#if item.icon === 'about'}
+                <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18z"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M12 11v5"/><circle cx="12" cy="8" r="0.6" fill="currentColor"/></svg>
+              {:else}
+                <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+              {/if}
+            </span>
+            <span class="nav-label">{item.label}</span>
           </button>
         </li>
       {/each}
@@ -122,6 +150,7 @@
   }
 
   nav { flex: 1; padding-top: 2px; }
+  nav.utility { flex: 0; padding-top: 8px; }
   nav ul {
     list-style: none;
     margin: 0;

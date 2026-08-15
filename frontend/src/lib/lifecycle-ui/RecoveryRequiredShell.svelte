@@ -60,8 +60,8 @@
     </dl>
 
     <div class="actions">
-      <button type="button" class="outline-button" onclick={copyDiagnostics}>Copy diagnostics</button>
-      <button type="button" class="outline-button" onclick={openDataFolder}>Open data folder</button>
+      <button type="button" class="app-btn" onclick={copyDiagnostics}>Copy diagnostics</button>
+      <button type="button" class="app-btn primary" onclick={openDataFolder}>Open data folder</button>
     </div>
 
     <p class="footer-message">
@@ -86,8 +86,7 @@
   dt { color: var(--text-primary); font-size: var(--fs-md); }
   dd { margin: 0; color: var(--text-muted); font-size: var(--fs-md); text-align: right; }
   .actions { display: flex; gap: var(--sp-3); width: min(100%, 560px); margin-top: var(--sp-5); }
-  .outline-button { flex: 1; min-height: 42px; border: 1px solid var(--accent-500); border-radius: var(--r-md); color: var(--accent-600); background: var(--surface-base); font-size: var(--fs-md); font-weight: 600; }
-  .outline-button:hover { background: var(--accent-soft); }
+  .actions .app-btn { flex: 1; }
   .footer-message { display: flex; align-items: center; gap: var(--sp-3); margin: var(--sp-5) 0 0; color: var(--text-secondary); font-size: var(--fs-md); }
   .small-warning { display: inline-grid; place-items: center; width: 20px; height: 20px; border: 1.5px solid var(--status-warning); border-radius: 5px; color: var(--status-warning); font-size: var(--fs-sm); font-weight: 700; }
 
@@ -96,7 +95,7 @@
     .recovery-card { padding: var(--sp-6) var(--sp-4); }
     .intro { font-size: var(--fs-md); }
     .actions { flex-direction: column; width: 100%; }
-    .outline-button { width: 100%; }
+    .actions .app-btn { width: 100%; }
     .status-list { width: 100%; }
     .status-list > div { align-items: flex-start; flex-direction: column; gap: var(--sp-1); }
     dd { text-align: left; }

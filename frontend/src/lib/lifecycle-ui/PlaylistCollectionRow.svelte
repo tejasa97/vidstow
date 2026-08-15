@@ -64,18 +64,18 @@
 
     <div class="actions" aria-label="Playlist actions">
       {#if collection.capabilities?.resume}
-        <button type="button" disabled={!enabled('resume')} onclick={() => trigger('resume')}>Resume</button>
+        <button type="button" class="app-btn primary" disabled={!enabled('resume')} onclick={() => trigger('resume')}>Resume</button>
       {:else if collection.capabilities?.pause}
-        <button type="button" disabled={!enabled('pause')} onclick={() => trigger('pause')}>Pause</button>
+        <button type="button" class="app-btn" disabled={!enabled('pause')} onclick={() => trigger('pause')}>Pause</button>
       {/if}
       {#if collection.capabilities?.retry}
-        <button type="button" disabled={!enabled('retry')} onclick={() => trigger('retry')}>Retry failed</button>
+        <button type="button" class="app-btn primary" disabled={!enabled('retry')} onclick={() => trigger('retry')}>Retry failed</button>
       {/if}
       {#if collection.capabilities?.cancel}
-        <button type="button" disabled={!enabled('cancel')} onclick={() => trigger('cancel')}>Cancel</button>
+        <button type="button" class="app-btn" disabled={!enabled('cancel')} onclick={() => trigger('cancel')}>Cancel</button>
       {/if}
       {#if collection.capabilities?.remove}
-        <button type="button" disabled={!enabled('remove')} onclick={() => trigger('remove')}>Remove</button>
+        <button type="button" class="app-btn" disabled={!enabled('remove')} onclick={() => trigger('remove')}>Remove</button>
       {/if}
     </div>
   </div>
@@ -92,10 +92,10 @@
 <style>
   .collection { border-bottom: 1px solid var(--border-default); background: var(--surface-base); }
   .collection:last-child { border-bottom: 0; }
-  .parent-row { display: grid; grid-template-columns: 36px 104px minmax(0, 1fr) auto; align-items: center; gap: var(--sp-3); padding: var(--sp-4); background: var(--surface-sunken); }
+  .parent-row { display: grid; grid-template-columns: 36px 128px minmax(0, 1fr) auto; align-items: center; gap: var(--sp-3); padding: var(--sp-4); background: var(--surface-sunken); }
   .toggle { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid var(--border-default); border-radius: var(--r-md); background: var(--surface-base); color: var(--text-primary); font-size: var(--fs-lg); }
   .toggle:hover { background: var(--surface-hover); }
-  .thumbnail { width: 104px; height: 60px; object-fit: cover; border-radius: var(--r-sm); background: var(--surface-base); }
+  .thumbnail { width: 128px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--r-sm); background: var(--surface-base); }
   .placeholder { display: grid; place-items: center; color: var(--text-muted); font-weight: 650; }
   .identity { min-width: 0; }
   h3 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); }
@@ -104,10 +104,7 @@
   .track { width: min(220px, 35vw); height: 6px; overflow: hidden; border-radius: var(--r-full); background: var(--surface-active); }
   .track span { display: block; height: 100%; border-radius: inherit; background: var(--accent-500); }
   .failed { color: var(--status-danger); }
-  .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-2); max-width: 220px; }
-  .actions button { min-height: 34px; padding: 0 var(--sp-3); border: 1px solid var(--border-default); border-radius: var(--r-md); background: var(--surface-base); color: var(--text-primary); font-size: var(--fs-sm); font-weight: 550; }
-  .actions button:hover:not(:disabled) { background: var(--surface-hover); }
-  .actions button:disabled { opacity: 0.45; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-2); }
   .children { margin-left: 48px; border-left: 3px solid var(--accent-soft); }
   .children :global(.job-row) { border-radius: 0; }
 

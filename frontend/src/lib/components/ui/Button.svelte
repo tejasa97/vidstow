@@ -52,7 +52,7 @@
     gap: var(--sp-2);
     border-radius: var(--r-md);
     font-family: inherit;
-    font-weight: 550;
+    font-weight: 600;
     line-height: 1;
     white-space: nowrap;
     cursor: pointer;

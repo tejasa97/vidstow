@@ -1,8 +1,8 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import { api } from '../lib/api.js';
-  import { errorMessage, ffmpeg, modal, settings, showBanner } from '../lib/stores.js';
-  import { formatBytes, shortTitle } from '../lib/format.js';
+  import { errorMessage, ffmpeg, modal, pendingUrl, settings, showBanner } from '../lib/stores.js';
+  import { formatBytes, formatViewCount, shortTitle } from '../lib/format.js';
   import type { InfoSummary, OutputPlan, PlaylistSummary, Quality, UrlCheckResult } from '../lib/types.js';
 
   const dispatch = createEventDispatcher<{ goto: 'home' | 'queue' | 'downloads' | 'settings' | 'about' }>();
@@ -23,6 +23,8 @@
   let rangeStart = '';
   let rangeEnd = '';
   let selectAllBox: HTMLInputElement | undefined;
+  let linkedPlaylist: UrlCheckResult | null = null;
+  const PLAYLIST_ADMIT_CAP = 500;
 
   $: folder = $settings.downloadFolder || folder;
   $: plans = preview?.plans ?? [];
@@ -34,8 +36,16 @@
   $: playlistFirstIndex = playlist?.entries[0]?.index ?? 1;
   $: playlistLastIndex = playlist?.entries.at(-1)?.index ?? playlist?.entryCount ?? 1;
   $: allAvailableSelected = availableCount > 0 && selectedItems.size === availableCount;
+  $: playlistAtCap = (playlist?.entries.length ?? 0) >= PLAYLIST_ADMIT_CAP;
   $: if (selectAllBox && playlist) {
     selectAllBox.indeterminate = selectedItems.size > 0 && selectedItems.size < availableCount;
+  }
+
+  $: if ($pendingUrl) {
+    const droppedURL = $pendingUrl;
+    pendingUrl.set('');
+    url = droppedURL;
+    analyze();
   }
 
   const fallbackThumbnail = (videoId: string) => (videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '');
@@ -57,6 +67,7 @@
     url = nextURL;
     analysisGeneration += 1;
     busy = false;
+    linkedPlaylist = null;
     if (preview || playlist) clearAnalysis();
   }
 
@@ -89,10 +100,12 @@
     if (!submittedURL) return;
     const requestGeneration = ++analysisGeneration;
     busy = true;
+    linkedPlaylist = null;
     try {
       const accepted = await api.validation.url(submittedURL);
       if (requestGeneration !== analysisGeneration) return;
       if (accepted.kind === 'video_playlist') {
+        linkedPlaylist = accepted;
         modal.set({
           kind: 'confirm',
           title: 'This link includes a playlist',
@@ -197,6 +210,15 @@
     );
   }
 
+  function reviewLinkedPlaylist() {
+    if (!linkedPlaylist?.playlistUrl) return;
+    const requestGeneration = ++analysisGeneration;
+    withBusy(
+      () => analyzeTarget({ ...linkedPlaylist!, kind: 'playlist', url: linkedPlaylist!.playlistUrl! }, requestGeneration),
+      requestGeneration,
+    );
+  }
+
   function requireFFmpeg(message: string) {
     modal.set({
       kind: 'ffmpeg-missing',
@@ -225,7 +247,6 @@
           thumbnail: preview!.thumbnail,
         });
         showBanner('success', 'Added to queue');
-        dispatch('goto', 'queue');
       } catch (err) {
         modal.set({ kind: 'error', title: 'Download could not start', message: errorMessage(err, 'Could not start this download.') });
       }
@@ -264,7 +285,6 @@
           selectedItems: [...selectedItems].sort((a, b) => a - b),
         });
         showBanner('success', `Added ${selectedItems.size} videos to queue`);
-        dispatch('goto', 'queue');
       } catch (err) {
         modal.set({ kind: 'error', title: 'Playlist could not start', message: errorMessage(err, 'Could not add this playlist to the queue.') });
       }
@@ -292,8 +312,8 @@
 
   <form class="analyze-bar" on:submit|preventDefault={analyze}>
     <label class="visually-hidden" for="video-url">YouTube video or playlist URL</label>
-    <input id="video-url" type="url" value={url} on:input={updateURL} placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" />
-    <button class="primary" type="submit" disabled={busy || !url.trim()}>{busy ? 'Analyzing…' : 'Analyze'}</button>
+    <input id="video-url" type="url" value={url} on:input={updateURL} placeholder="https://www.youtube.com/watch?v=… or playlist?list=…" autocomplete="off" />
+    <button class="app-btn primary" type="submit" disabled={busy || !url.trim()}>{busy ? 'Analyzing…' : 'Analyze'}</button>
   </form>
 
   {#if playlist}
@@ -311,9 +331,13 @@
             {#if playlist.unavailable} · {playlist.unavailable} unavailable{/if}
           </span>
           <small aria-live="polite">{selectedItems.size} of {availableCount} selected</small>
+          {#if playlistAtCap}
+            <small class="cap-note">VidStow can review up to {PLAYLIST_ADMIT_CAP} videos from a playlist.</small>
+          {/if}
         </div>
         <div class="policy">
           <h2>Format</h2>
+          <p class="policy-note">Every selected video uses this format.</p>
           <div class="segment" aria-label="Output type">
             <button type="button" aria-pressed={playlistTab === 'video'} class:active={playlistTab === 'video'} on:click={() => playlistTab = 'video'}>Video</button>
             <button type="button" aria-pressed={playlistTab === 'audio'} class:active={playlistTab === 'audio'} on:click={() => playlistTab = 'audio'}>Audio</button>
@@ -383,8 +407,8 @@
           <strong title={folder}>{folder}</strong>
           <small title={`${playlist.title} [${playlist.id}]`}>Playlist folder · {shortTitle(playlist.title, 48)}</small>
         </div>
-        <button type="button" class="secondary" on:click={pickFolder}>Change…</button>
-        <button type="button" class="primary queue" on:click={enqueuePlaylist} disabled={!selectedItems.size || !folder}>
+        <button type="button" class="app-btn" on:click={pickFolder}>Change…</button>
+        <button type="button" class="app-btn primary queue" on:click={enqueuePlaylist} disabled={!selectedItems.size || !folder}>
           Add {selectedItems.size} {selectedItems.size === 1 ? 'Video' : 'Videos'} to Queue
         </button>
       </footer>
@@ -399,7 +423,10 @@
         <div class="identity-copy">
           <strong title={preview.title}>{preview.title}</strong>
           <span>{preview.channel || 'YouTube'}</span>
-          <small>{preview.duration || 'Duration unavailable'}{preview.viewCount ? ` · ${preview.viewCount.toLocaleString()} views` : ''}</small>
+          <small>{preview.duration || 'Duration unavailable'}{preview.viewCount ? ` · ${formatViewCount(preview.viewCount)} views` : ''}</small>
+          {#if linkedPlaylist?.playlistUrl}
+            <button type="button" class="ghost review-playlist" on:click={reviewLinkedPlaylist}>Review the playlist instead</button>
+          {/if}
         </div>
         <div class="policy">
           <h2>Choose Download</h2>
@@ -438,8 +465,8 @@
             <small>{selectedPlan.label} · {selectedPlan.container}{selectedPlan.approxBytes ? ` · ${selectedPlan.sizeIsApproximate ? '~' : ''}${formatBytes(selectedPlan.approxBytes)}` : ''}</small>
           {/if}
         </div>
-        <button type="button" class="secondary" on:click={pickFolder}>Change…</button>
-        <button type="button" class="primary queue" on:click={enqueueVideo} disabled={!selectedPlan}>Add to Queue</button>
+        <button type="button" class="app-btn" on:click={pickFolder}>Change…</button>
+        <button type="button" class="app-btn primary queue" on:click={enqueueVideo} disabled={!selectedPlan}>Add to Queue</button>
       </footer>
     </section>
   {:else}
@@ -450,7 +477,7 @@
         </svg>
       </div>
       <h2>Add a YouTube link</h2>
-      <p>VidStow will show the available video and audio outputs before anything downloads.</p>
+      <p>VidStow reviews a public video or playlist, then shows the files you’ll get before anything downloads.</p>
     </section>
   {/if}
 </section>
@@ -462,42 +489,30 @@
     overflow: hidden;
     padding-bottom: 20px;
   }
-  .page.fill .page-header {
-    margin-bottom: 12px;
-  }
   .analyze-bar {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 118px;
     gap: 10px;
     flex-shrink: 0;
   }
-  .analyze-bar input { height: 42px; }
-  .primary, .secondary, .ghost {
-    min-height: 36px;
-    padding: 0 14px;
-    border-radius: var(--r-md);
-    font-weight: 600;
-    font-size: var(--fs-sm);
-  }
-  .primary {
-    color: #fff;
-    background: var(--accent-600);
-    border: 1px solid var(--accent-600);
-  }
-  .primary:hover:not(:disabled) { background: var(--accent-500); border-color: var(--accent-500); }
-  .primary:disabled { opacity: 0.45; }
-  .secondary, .ghost {
+  .analyze-bar input { height: 40px; }
+  .analyze-bar .app-btn { min-height: 40px; }
+  .ghost {
+    min-height: 32px;
+    padding: 0 10px;
     border: 1px solid var(--border-default);
-    background: var(--surface-raised);
+    border-radius: var(--r-md);
+    background: var(--surface-base);
     color: var(--text-primary);
+    font-size: var(--fs-sm);
+    font-weight: 600;
   }
-  .ghost { min-height: 32px; padding: 0 10px; font-weight: 550; }
-  .secondary:hover:not(:disabled), .ghost:hover:not(:disabled) { background: var(--surface-hover); }
+  .ghost:hover:not(:disabled) { background: var(--surface-hover); }
 
   .workspace {
     flex: 1;
     min-height: 0;
-    margin-top: 16px;
+    margin-top: 0;
     display: flex;
     flex-direction: column;
     border: 1px solid var(--border-default);
@@ -574,6 +589,18 @@
     font-size: 11px;
     font-weight: 600;
   }
+  .policy-note {
+    grid-column: 1 / -1;
+    margin: -4px 0 0;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .cap-note, .review-playlist {
+    color: var(--accent-600);
+    font-weight: 600;
+  }
+  .review-playlist { justify-self: start; margin-top: 4px; min-height: 28px; padding: 0 8px; }
   .segment {
     display: inline-flex;
     padding: 3px;

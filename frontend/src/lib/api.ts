@@ -36,6 +36,7 @@ declare global {
       OpenFileDialog: (opts: any) => Promise<string>;
       ClipboardSetText: (text: string) => Promise<void>;
       BrowserOpenURL: (url: string) => void;
+      WindowSetTitle?: (title: string) => void;
       LogError: (msg: string) => void;
     };
   }

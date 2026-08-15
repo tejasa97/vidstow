@@ -85,6 +85,43 @@ export function shortTitle(title: string, max = 42): string {
   return `${trimmed.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
 }
 
+export function formatViewCount(count: number): string {
+  if (!Number.isFinite(count) || count < 0) return '';
+  const abs = Math.round(count);
+  if (abs < 1000) return abs.toLocaleString('en-US');
+
+  const label = (divisor: number) => {
+    const scaled = abs / divisor;
+    return scaled >= 100
+      ? String(Math.round(scaled))
+      : scaled.toFixed(scaled >= 10 ? 0 : 1).replace(/\.0$/, '');
+  };
+
+  if (abs >= 1_000_000_000 || label(1_000_000) === '1000') return `${label(1_000_000_000)}B`;
+  if (abs >= 1_000_000 || label(1_000) === '1000') return `${label(1_000_000)}M`;
+  return `${label(1_000)}K`;
+}
+
+export function formatEngineVersion(version: string): string {
+  if (!version || version === 'Loading…') return version;
+  // Go pseudo-versions use a timestamp and commit after the stable base.
+  const pseudo = version.match(/^(v?\d+\.\d+\.\d+)-(?:0\.)?\d{14}-([0-9a-f]{7,40})/i);
+  if (pseudo) return `${pseudo[1]} (${pseudo[2].slice(0, 7)})`;
+
+  const tag = version.match(/^(v?\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z.-]+)?)/)?.[1];
+  const hash = [...version.matchAll(/([0-9a-f]*[a-f][0-9a-f]{6,39})/gi)].at(-1)?.[1]?.slice(0, 7);
+  if (tag) return tag;
+  return hash ?? version;
+}
+
+export function youtubeUrlFromText(text: string): string {
+  if (!text) return '';
+  const match = text.match(
+    /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?[^\s]*v=[\w-]{6,}|playlist\?list=[\w-]+|shorts\/[\w-]{6,})|youtu\.be\/[\w-]{6,})[^\s]*/i,
+  );
+  return match?.[0] ?? '';
+}
+
 export function progressOf(job: JobSnapshot): number {
   if (job.total > 0 && job.bytes > 0) {
     return Math.max(0, Math.min(1, job.bytes / job.total));

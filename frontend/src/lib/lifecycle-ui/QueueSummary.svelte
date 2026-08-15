@@ -7,11 +7,9 @@
 
   let { summary }: Props = $props();
 
-  const jobWord = $derived(summary.totalJobs === 1 ? 'job' : 'jobs');
 </script>
 
 <div class="summary" aria-label="Queue summary">
-  <p class="count-line">{summary.totalJobs} {jobWord} · {summary.runningJobs} running</p>
   <div class="occupancy" role="status" aria-label={`${summary.occupiedSlots} of ${summary.slotLimit} active slots, ${summary.waitingJobs} waiting, ${summary.pausedJobs} paused`}>
     <span><strong>{summary.occupiedSlots} of {summary.slotLimit} active slots</strong></span>
     <span aria-hidden="true" class="divider"></span>
@@ -29,13 +27,6 @@
   .summary {
     display: flex;
     flex-direction: column;
-    gap: var(--sp-4);
-  }
-
-  .count-line {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: var(--fs-sm);
   }
 
   .occupancy {

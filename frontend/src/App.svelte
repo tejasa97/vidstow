@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { api } from './lib/api.js';
-  import { errorMessage, ffmpeg, history, jobs, queueView, route, settings, modal, persistence, showBanner } from './lib/stores.js';
+  import { errorMessage, ffmpeg, history, jobs, queueView, route, settings, modal, persistence, pendingUrl, showBanner } from './lib/stores.js';
+  import { progressOf, youtubeUrlFromText } from './lib/format.js';
   import type { QueueView } from './lib/lifecycle-ui/types.js';
   import { newestQueueView } from './lib/queue-view.js';
   import type { JobSnapshot, QuitSummary, StartupStatus } from './lib/types.js';
@@ -65,6 +66,14 @@
       history.set(savedHistory ?? []);
       ffmpeg.set(ffmpegStatus);
       persistence.set(persistenceStatus);
+      if (!ffmpegStatus.available) {
+        modal.set({
+          kind: 'ffmpeg-missing',
+          title: 'FFmpeg is required for most downloads',
+          message: 'Install FFmpeg or point VidStow at it in Settings. You can still queue original audio that does not need merging.',
+          actions: [{ label: 'Open Settings', primary: true, action: () => navigate('settings') }],
+        });
+      }
     } catch (err) {
       modal.set({
         kind: 'error',
@@ -125,6 +134,31 @@
     }
   }
 
+  $: {
+    const running = $jobs.find((job) => job.status === 'active');
+    const title = running
+      ? `Downloading “${(running.title || 'video').slice(0, 42)}” · ${Math.round(progressOf(running) * 100)}%`
+      : 'VidStow';
+    document.title = title;
+    window.runtime?.WindowSetTitle?.(title);
+  }
+
+  function acceptDrop(event: DragEvent) {
+    event.preventDefault();
+  }
+
+  function handleDrop(event: DragEvent) {
+    event.preventDefault();
+    const text = event.dataTransfer?.getData('text/uri-list') || event.dataTransfer?.getData('text/plain') || '';
+    const found = youtubeUrlFromText(text);
+    if (!found) {
+      showBanner('warning', 'Drop a public YouTube video or playlist link to analyze it.');
+      return;
+    }
+    pendingUrl.set(found);
+    route.set('home');
+  }
+
   async function pauseAndQuit() {
     try {
       await api.app.pauseAndQuit();
@@ -134,6 +168,8 @@
     }
   }
 </script>
+
+<svelte:window on:dragover={acceptDrop} on:drop={handleDrop} />
 
 {#if startupStatus?.mode === 'recovery-required'}
   <main class="main">

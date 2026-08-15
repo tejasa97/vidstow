@@ -86,6 +86,8 @@
   --page-pad-x: 32px;
   --page-pad-y: 28px;
   --page-pad-bottom: 40px;
+  --page-title-gap: 6px;
+  --page-section-gap: 16px;
 }
 
 * { box-sizing: border-box; }
@@ -100,6 +102,7 @@ html, body, #app {
   font-family: var(--font-sans);
   font-size: var(--fs-md);
   line-height: 1.45;
+  color-scheme: light;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -115,6 +118,8 @@ button {
   border: 0;
   cursor: pointer;
   padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 button:disabled { cursor: not-allowed; opacity: 0.55; }
@@ -125,14 +130,23 @@ select {
   font-family: inherit;
   font-size: inherit;
   color: inherit;
-  background: var(--surface-sunken);
+  background: var(--surface-base);
   border: 1px solid var(--border-default);
   border-radius: var(--r-md);
   padding: 0 var(--sp-4);
   height: 40px;
   outline: none;
   width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: none;
   transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+select {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'><path d='M2.5 4.5L6 8l3.5-3.5' stroke='%235C544C' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
 }
 
 input::placeholder, textarea::placeholder { color: var(--text-muted); }
@@ -232,11 +246,12 @@ a:hover { text-decoration: underline; }
   color: var(--text-primary);
   display: flex;
   flex-direction: column;
+  gap: var(--page-section-gap);
   box-sizing: border-box;
 }
 .page-header {
   flex-shrink: 0;
-  margin: 0 0 20px;
+  margin: 0;
 }
 .page-header h1 {
   margin: 0;
@@ -247,7 +262,7 @@ a:hover { text-decoration: underline; }
   color: var(--text-primary);
 }
 .page-header p {
-  margin: 6px 0 0;
+  margin: var(--page-title-gap) 0 0;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   line-height: 1.45;
@@ -256,6 +271,50 @@ a:hover { text-decoration: underline; }
   .page {
     padding: 24px 18px 32px;
   }
+}
+
+/* Shared action buttons — every page uses this family */
+.app-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: none;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.app-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+.app-btn:focus-visible {
+  outline: 2px solid var(--accent-400);
+  outline-offset: 2px;
+}
+.app-btn:disabled { opacity: 0.45; }
+.app-btn.primary {
+  color: var(--text-on-accent);
+  background: var(--accent-600);
+  border-color: var(--accent-600);
+}
+.app-btn.primary:hover:not(:disabled) {
+  background: var(--accent-500);
+  border-color: var(--accent-500);
+}
+.app-btn.danger {
+  color: var(--status-danger);
+}
+.app-btn.danger:hover:not(:disabled) {
+  background: var(--status-danger-soft);
+  border-color: rgba(196, 59, 52, 0.45);
 }
 
 /* Utility classes (kept tiny — the app doesn't rely on a framework) */
