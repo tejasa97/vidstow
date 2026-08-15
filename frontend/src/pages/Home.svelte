@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher, onMount } from 'svelte';
+  import { createEventDispatcher } from 'svelte';
   import { api } from '../lib/api.js';
   import { errorMessage, ffmpeg, modal, pendingUrl, settings, showBanner } from '../lib/stores.js';
   import { formatBytes, formatViewCount, shortTitle } from '../lib/format.js';
@@ -41,17 +41,10 @@
     selectAllBox.indeterminate = selectedItems.size > 0 && selectedItems.size < availableCount;
   }
 
-  onMount(() => {
-    if ($pendingUrl) {
-      url = $pendingUrl;
-      pendingUrl.set('');
-      analyze();
-    }
-  });
-
-  $: if ($pendingUrl && $pendingUrl !== url) {
-    url = $pendingUrl;
+  $: if ($pendingUrl) {
+    const droppedURL = $pendingUrl;
     pendingUrl.set('');
+    url = droppedURL;
     analyze();
   }
 
@@ -339,7 +332,7 @@
           </span>
           <small aria-live="polite">{selectedItems.size} of {availableCount} selected</small>
           {#if playlistAtCap}
-            <small class="cap-note">Showing the first {PLAYLIST_ADMIT_CAP} videos. Admit another batch for the rest.</small>
+            <small class="cap-note">VidStow can review up to {PLAYLIST_ADMIT_CAP} videos from a playlist.</small>
           {/if}
         </div>
         <div class="policy">

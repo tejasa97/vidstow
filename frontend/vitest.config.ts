@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [svelte(), svelteTesting()],
   test: {
     environment: 'jsdom',
-    include: ['tests/**/*.dom.test.ts'],
+    include: ['tests/**/*.test.ts'],
     restoreMocks: true,
   },
 });

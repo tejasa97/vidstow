@@ -27,6 +27,8 @@ test('page titles and controls match the approved redesign', async () => {
   assert.match(home, /Review the playlist instead/);
   assert.match(home, /Every selected video uses this format/);
   assert.match(home, /PLAYLIST_ADMIT_CAP = 500/);
+  assert.match(home, /VidStow can review up to \{PLAYLIST_ADMIT_CAP\} videos from a playlist\./);
+  assert.doesNotMatch(home, /Admit another batch/);
   assert.match(home, /All available/);
   assert.match(home, /Search playlist…/);
   assert.match(home, />Choose Download</);

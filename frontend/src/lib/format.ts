@@ -89,24 +89,29 @@ export function formatViewCount(count: number): string {
   if (!Number.isFinite(count) || count < 0) return '';
   const abs = Math.round(count);
   if (abs < 1000) return abs.toLocaleString('en-US');
-  if (abs < 1_000_000) {
-    const value = abs / 1000;
-    return `${value >= 100 ? Math.round(value) : value.toFixed(value >= 10 ? 0 : 1).replace(/\.0$/, '')}K`;
-  }
-  if (abs < 1_000_000_000) {
-    const value = abs / 1_000_000;
-    return `${value >= 100 ? Math.round(value) : value.toFixed(value >= 10 ? 0 : 1).replace(/\.0$/, '')}M`;
-  }
-  return `${(abs / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;
+
+  const label = (divisor: number) => {
+    const scaled = abs / divisor;
+    return scaled >= 100
+      ? String(Math.round(scaled))
+      : scaled.toFixed(scaled >= 10 ? 0 : 1).replace(/\.0$/, '');
+  };
+
+  if (abs >= 1_000_000_000 || label(1_000_000) === '1000') return `${label(1_000_000_000)}B`;
+  if (abs >= 1_000_000 || label(1_000) === '1000') return `${label(1_000_000)}M`;
+  return `${label(1_000)}K`;
 }
 
 export function formatEngineVersion(version: string): string {
   if (!version || version === 'Loading…') return version;
-  const hash = version.match(/([0-9a-f]{7,})/i)?.[1]?.slice(0, 7);
-  const base = version.match(/^(v?\d+\.\d+\.\d+)/)?.[1];
-  if (base && hash) return `${base} (${hash})`;
-  if (hash) return hash;
-  return version;
+  // Go pseudo-versions use a timestamp and commit after the stable base.
+  const pseudo = version.match(/^(v?\d+\.\d+\.\d+)-(?:0\.)?\d{14}-([0-9a-f]{7,40})/i);
+  if (pseudo) return `${pseudo[1]} (${pseudo[2].slice(0, 7)})`;
+
+  const tag = version.match(/^(v?\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z.-]+)?)/)?.[1];
+  const hash = [...version.matchAll(/([0-9a-f]*[a-f][0-9a-f]{6,39})/gi)].at(-1)?.[1]?.slice(0, 7);
+  if (tag) return tag;
+  return hash ?? version;
 }
 
 export function youtubeUrlFromText(text: string): string {

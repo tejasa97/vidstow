@@ -2,9 +2,10 @@ import { render, screen, waitFor } from '@testing-library/svelte';
 import '@testing-library/jest-dom/vitest';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { get } from 'svelte/store';
 
 import Home from '../src/pages/Home.svelte';
-import { settings } from '../src/lib/stores.js';
+import { pendingUrl, settings } from '../src/lib/stores.js';
 
 const firstURL = 'https://www.youtube.com/watch?v=fixture0001';
 
@@ -30,6 +31,7 @@ function installBindings() {
 
 describe('Home analysis authority', () => {
   beforeEach(() => {
+    pendingUrl.set('');
     settings.update((current) => ({ ...current, downloadFolder: '/tmp/downloads', confirmBeforeDownload: false }));
     installBindings();
   });
@@ -47,6 +49,19 @@ describe('Home analysis authority', () => {
     await user.type(input, 'https://www.youtube.com/watch?v=fixture0002');
     await waitFor(() => expect(screen.queryByText('Fixture video')).not.toBeInTheDocument());
     expect(screen.getByText('Add a YouTube link')).toBeInTheDocument();
+  });
+
+  test('re-analyzes a URL dropped while that URL is already in the field', async () => {
+    const { AnalyzeURL } = installBindings();
+    render(Home);
+
+    const input = screen.getByLabelText('YouTube video or playlist URL');
+    await userEvent.setup().type(input, firstURL);
+    pendingUrl.set(firstURL);
+
+    await waitFor(() => expect(AnalyzeURL).toHaveBeenCalledWith(firstURL));
+    expect(input).toHaveValue(firstURL);
+    expect(get(pendingUrl)).toBe('');
   });
 
   test('does not publish an in-flight result after the URL changes', async () => {
