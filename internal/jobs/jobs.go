@@ -724,8 +724,8 @@ func (m *Manager) commitDurable(state *jobState, mutate func(*jobmodel.DurableJo
 	if err != nil {
 		return err
 	}
-	state.durable = committed
 	m.mu.Lock()
+	state.durable = committed
 	if m.all[state.snap.ID] == state {
 		state.authorityRevision = committed.Revision
 		state.authorityAttemptID = committed.AttemptID
