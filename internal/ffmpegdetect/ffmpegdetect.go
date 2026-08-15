@@ -1,7 +1,7 @@
 // Package ffmpegdetect probes the ffmpeg tool pair used by the desktop app.
 // The resolved setting is passed to the focused engine composition at each
-// analyze/download.
-// request; this package does not mutate PATH or any process-global state.
+// analyze/download request. This package does not mutate PATH or any
+// process-global state.
 package ffmpegdetect
 
 import (
@@ -24,8 +24,9 @@ type Status struct {
 }
 
 // Probe inspects the requested path (if non-empty) and then falls back
-// to PATH discovery. A short context timeout bounds the call so the UI
-// stays responsive on misconfigured machines.
+// to PATH discovery, then well-known Homebrew prefixes. A short context
+// timeout bounds the call so the UI stays responsive on misconfigured
+// machines. Probe never mutates PATH.
 func Probe(ctx context.Context, requested string) Status {
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
@@ -58,28 +59,61 @@ func probeConfigured(ctx context.Context, requested string) Status {
 func probePATH(ctx context.Context) Status {
 	ffmpegPath, err := exec.LookPath("ffmpeg")
 	if err != nil {
-		return Status{Message: "ffmpeg was not found on PATH"}
+		return probeWellKnownOr(ctx, Status{Message: "ffmpeg was not found on PATH"})
 	}
 	status := Status{Path: ffmpegPath}
 	if ok, version := probeVersion(ctx, ffmpegPath); !ok {
 		status.Message = "ffmpeg on PATH did not run successfully"
-		return status
+		return probeWellKnownOr(ctx, status)
 	} else {
 		status.Version = version
 	}
 	ffprobePath, err := exec.LookPath("ffprobe")
 	if err != nil {
 		status.Message = "ffmpeg was detected, but ffprobe was not found on PATH"
-		return status
+		return probeWellKnownOr(ctx, status)
 	}
 	status.FFprobePath = ffprobePath
 	if !probeRunnable(ctx, ffprobePath) {
 		status.Message = "ffmpeg was detected, but ffprobe on PATH did not run successfully"
-		return status
+		return probeWellKnownOr(ctx, status)
 	}
 	status.Available = true
 	status.Message = "ffmpeg detected"
 	return status
+}
+
+func probeWellKnownOr(ctx context.Context, fallback Status) Status {
+	if status := probeWellKnownLocations(ctx); status.Available {
+		return status
+	}
+	return fallback
+}
+
+// extraBinDirs is the Homebrew/local fallback list used when PATH has no
+// ffmpeg. Tests replace this function; production never mutates PATH.
+var extraBinDirs = defaultExtraBinDirs
+
+func defaultExtraBinDirs() []string {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	return []string{"/opt/homebrew/bin", "/usr/local/bin"}
+}
+
+func probeWellKnownLocations(ctx context.Context) Status {
+	for _, dir := range extraBinDirs() {
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		status := probeConfigured(ctx, dir)
+		if status.Available {
+			status.Message = "ffmpeg detected"
+			return status
+		}
+	}
+	return Status{}
 }
 
 // ConfigurePath validates a user-supplied path without persisting it.

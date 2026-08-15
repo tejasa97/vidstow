@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { api } from './lib/api.js';
   import { errorMessage, ffmpeg, history, jobs, queueView, route, settings, modal, persistence, pendingUrl, showBanner } from './lib/stores.js';
   import { progressOf, youtubeUrlFromText } from './lib/format.js';
@@ -32,7 +33,10 @@
       api.events.onJobQueueView(applyQueueView),
       api.events.onHistory((entries) => history.set(entries ?? [])),
       api.events.onSettings((value) => settings.set(value)),
-      api.events.onFFmpeg((status) => ffmpeg.set(status)),
+      api.events.onFFmpeg((status) => {
+        ffmpeg.set(status);
+        if (status?.available && get(modal)?.kind === 'ffmpeg-missing') modal.set(null);
+      }),
       api.events.onPersistence((status) => {
         persistence.set(status);
         if (status.available && !status.healthy && status.message) showBanner('warning', status.message, 10_000);
