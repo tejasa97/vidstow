@@ -1,6 +1,6 @@
 <script lang="ts">
   import { route, counts, ffmpeg, history } from '../stores.js';
-  import brandMark from '../../assets/images/brand-mark.png';
+  import brandMark from '../../assets/images/brand-mark.svg';
   type Route = 'home' | 'queue' | 'downloads' | 'settings' | 'about';
 
   $: c = $counts;
