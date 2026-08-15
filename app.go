@@ -163,11 +163,11 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 
 	settings := a.store.Settings()
 	a.jobs.SetConcurrency(settings.DownloadConcurrency)
-	a.jobs.SetFFmpegLocation(settings.FFmpegPath)
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	a.cleanupCancel = cleanupCancel
 	a.cleanupDone = startStartupCleanup(cleanupCtx, st, recovery.DefaultCleanupInterval)
-	a.setFFmpegStatus(ffmpegdetect.Probe(ctx, settings.FFmpegPath))
+	a.applyFFmpegDiscovery(ffmpegdetect.Probe(ctx, settings.FFmpegPath))
+	emitAppEvent(ctx, "ffmpeg:update", a.ffmpegStatus())
 }
 
 // shutdown is called by Wails after the native close gate has permitted the
@@ -255,9 +255,8 @@ func (a *App) UpdateSettings(next store.Settings) (store.Settings, error) {
 	if err := a.store.SetSettings(next); err != nil {
 		return store.Settings{}, err
 	}
-	a.jobs.SetFFmpegLocation(next.FFmpegPath)
 	a.jobs.SetConcurrency(next.DownloadConcurrency)
-	a.setFFmpegStatus(ffmpegdetect.Probe(a.ctx, next.FFmpegPath))
+	a.applyFFmpegDiscovery(ffmpegdetect.Probe(a.ctx, next.FFmpegPath))
 	wailsruntime.EventsEmit(a.ctx, "settings:update", a.store.Settings())
 	return a.store.Settings(), nil
 }
@@ -319,7 +318,7 @@ func (a *App) ProbeFFmpeg() ffmpegdetect.Status {
 		return a.ffmpegStatus()
 	}
 	status := ffmpegdetect.Probe(a.ctx, a.store.Settings().FFmpegPath)
-	a.setFFmpegStatus(status)
+	a.applyFFmpegDiscovery(status)
 	wailsruntime.EventsEmit(a.ctx, "ffmpeg:update", status)
 	return status
 }
@@ -340,15 +339,14 @@ func (a *App) ConfigureFFmpeg(path string) (ffmpegdetect.Status, error) {
 	if err := a.store.SetSettings(settings); err != nil {
 		return status, err
 	}
-	a.jobs.SetFFmpegLocation(status.Path)
-	a.setFFmpegStatus(status)
+	a.applyFFmpegDiscovery(status)
 	wailsruntime.EventsEmit(a.ctx, "ffmpeg:update", status)
 	wailsruntime.EventsEmit(a.ctx, "settings:update", a.store.Settings())
 	return status, nil
 }
 
 // ClearFFmpegPath removes the configured path so the app falls back to
-// PATH discovery.
+// PATH and well-known Homebrew discovery.
 func (a *App) ClearFFmpegPath() ffmpegdetect.Status {
 	if a.store == nil || a.jobs == nil {
 		return a.ffmpegStatus()
@@ -356,9 +354,8 @@ func (a *App) ClearFFmpegPath() ffmpegdetect.Status {
 	settings := a.store.Settings()
 	settings.FFmpegPath = ""
 	_ = a.store.SetSettings(settings)
-	a.jobs.SetFFmpegLocation("")
 	status := ffmpegdetect.Probe(a.ctx, "")
-	a.setFFmpegStatus(status)
+	a.applyFFmpegDiscovery(status)
 	wailsruntime.EventsEmit(a.ctx, "ffmpeg:update", status)
 	wailsruntime.EventsEmit(a.ctx, "settings:update", a.store.Settings())
 	return status
@@ -998,6 +995,18 @@ func isSupportedQuality(q jobs.Quality) bool {
 
 func isTerminal(s jobs.Status) bool {
 	return s == jobs.StatusComplete || s == jobs.StatusFailed || s == jobs.StatusCanceled
+}
+
+func (a *App) applyFFmpegDiscovery(status ffmpegdetect.Status) {
+	a.setFFmpegStatus(status)
+	if a.jobs == nil {
+		return
+	}
+	if status.Available {
+		a.jobs.SetFFmpegLocation(status.Path)
+		return
+	}
+	a.jobs.SetFFmpegLocation("")
 }
 
 func (a *App) setFFmpegStatus(status ffmpegdetect.Status) {

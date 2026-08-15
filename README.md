@@ -60,8 +60,8 @@ verification details.
   indeterminate evidence does not authorize automatic destructive mutation.
 - **Destination reservations** — related artifacts for a job receive one
   collision decision, and an unrelated destination is not silently replaced.
-- **External FFmpeg support** — VidStow detects FFmpeg and FFprobe on `PATH` or
-  validates a user-selected FFmpeg/FFprobe pair.
+- **External FFmpeg support** — VidStow detects FFmpeg and FFprobe on `PATH`,
+  in Homebrew's default prefixes, or via a user-selected FFmpeg/FFprobe pair.
 - **Focused engine composition** — the desktop application supports only its
   explicitly exposed YouTube workflow, not the engine's wider extractor catalog.
 
@@ -127,7 +127,8 @@ workflow documented here and exposed by its desktop UI.
 
 - [Go 1.25.12](https://go.dev/dl/)
 - [Node.js 22](https://nodejs.org/) with npm
-- [FFmpeg and FFprobe](https://ffmpeg.org/download.html) on `PATH`, or a
+- [FFmpeg and FFprobe](https://ffmpeg.org/download.html) on `PATH`, in
+  Homebrew's default prefixes (`/opt/homebrew/bin` or `/usr/local/bin`), or a
   user-selected FFmpeg executable with matching FFprobe beside it
 - [Wails CLI v2.13.0](https://wails.io/docs/gettingstarted/installation/)
 
