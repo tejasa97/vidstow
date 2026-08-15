@@ -85,6 +85,38 @@ export function shortTitle(title: string, max = 42): string {
   return `${trimmed.slice(0, Math.max(1, max - 1)).trimEnd()}…`;
 }
 
+export function formatViewCount(count: number): string {
+  if (!Number.isFinite(count) || count < 0) return '';
+  const abs = Math.round(count);
+  if (abs < 1000) return abs.toLocaleString('en-US');
+  if (abs < 1_000_000) {
+    const value = abs / 1000;
+    return `${value >= 100 ? Math.round(value) : value.toFixed(value >= 10 ? 0 : 1).replace(/\.0$/, '')}K`;
+  }
+  if (abs < 1_000_000_000) {
+    const value = abs / 1_000_000;
+    return `${value >= 100 ? Math.round(value) : value.toFixed(value >= 10 ? 0 : 1).replace(/\.0$/, '')}M`;
+  }
+  return `${(abs / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;
+}
+
+export function formatEngineVersion(version: string): string {
+  if (!version || version === 'Loading…') return version;
+  const hash = version.match(/([0-9a-f]{7,})/i)?.[1]?.slice(0, 7);
+  const base = version.match(/^(v?\d+\.\d+\.\d+)/)?.[1];
+  if (base && hash) return `${base} (${hash})`;
+  if (hash) return hash;
+  return version;
+}
+
+export function youtubeUrlFromText(text: string): string {
+  if (!text) return '';
+  const match = text.match(
+    /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?[^\s]*v=[\w-]{6,}|playlist\?list=[\w-]+|shorts\/[\w-]{6,})|youtu\.be\/[\w-]{6,})[^\s]*/i,
+  );
+  return match?.[0] ?? '';
+}
+
 export function progressOf(job: JobSnapshot): number {
   if (job.total > 0 && job.bytes > 0) {
     return Math.max(0, Math.min(1, job.bytes / job.total));

@@ -47,6 +47,7 @@ export const counts = derived(jobs, ($jobs) => {
 });
 
 export const route = writable<'home' | 'queue' | 'downloads' | 'settings' | 'about'>('home');
+export const pendingUrl = writable('');
 
 // Modal state — only one modal at a time.
 export interface ModalState {

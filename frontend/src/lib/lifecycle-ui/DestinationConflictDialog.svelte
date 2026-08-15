@@ -75,8 +75,8 @@
       </div>
 
       <footer class="dialog-footer">
-        <button type="button" class="secondary-button" disabled={!hasConflictAuthority} onclick={cancelDownload}>Cancel download</button>
-        <button type="button" class="primary-button" data-autofocus disabled={!proposedNameAvailable || !hasConflictAuthority} onclick={useNewName}>Use new name</button>
+        <button type="button" class="app-btn" disabled={!hasConflictAuthority} onclick={cancelDownload}>Cancel download</button>
+        <button type="button" class="app-btn primary" data-autofocus disabled={!proposedNameAvailable || !hasConflictAuthority} onclick={useNewName}>Use new name</button>
       </footer>
     </div>
   </div>
@@ -99,16 +99,9 @@
   .available span { display: inline-grid; place-items: center; width: 18px; height: 18px; border: 1.5px solid currentColor; border-radius: 50%; }
   .unchanged-copy { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); }
   .dialog-footer { display: flex; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-3) var(--sp-6) var(--sp-5); }
-  .secondary-button, .primary-button { min-height: 36px; padding: 0 var(--sp-4); border-radius: var(--r-md); font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; }
-  .secondary-button { border: 1px solid var(--accent-500); background: var(--surface-base); color: var(--accent-600); }
-  .secondary-button:hover { background: var(--accent-soft); }
-  .primary-button { border: 1px solid var(--accent-500); background: var(--accent-500); color: var(--text-on-accent); }
-  .primary-button:hover:not(:disabled) { background: var(--accent-600); border-color: var(--accent-600); }
-  .primary-button:disabled { opacity: 0.5; }
-
   @media (max-width: 560px) {
     .dialog-header, .dialog-body { padding-left: var(--sp-4); padding-right: var(--sp-4); }
     .dialog-footer { flex-direction: column-reverse; padding-left: var(--sp-4); padding-right: var(--sp-4); }
-    .secondary-button, .primary-button { width: 100%; }
+    .dialog-footer .app-btn { width: 100%; }
   }
 </style>

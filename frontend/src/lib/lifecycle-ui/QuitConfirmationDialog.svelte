@@ -89,8 +89,8 @@
       </div>
 
       <footer class="dialog-footer">
-        <button type="button" class="secondary-button" data-autofocus onclick={keepWorking}>Keep working</button>
-        <button type="button" class="primary-button" onclick={pauseAndQuit}>Pause downloads and quit</button>
+        <button type="button" class="app-btn" data-autofocus onclick={keepWorking}>Keep working</button>
+        <button type="button" class="app-btn primary" onclick={pauseAndQuit}>Pause downloads and quit</button>
       </footer>
     </div>
   </div>
@@ -111,15 +111,9 @@
   dt { color: var(--text-primary); font-size: var(--fs-sm); }
   dd { margin: 0; color: var(--text-muted); font-size: var(--fs-sm); text-align: right; }
   .dialog-footer { display: flex; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-3) var(--sp-6) var(--sp-5); }
-  .secondary-button, .primary-button { min-height: 36px; padding: 0 var(--sp-4); border-radius: var(--r-md); font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; }
-  .secondary-button { border: 1px solid var(--border-default); background: var(--surface-base); color: var(--text-primary); }
-  .secondary-button:hover { background: var(--surface-hover); }
-  .primary-button { border: 1px solid var(--accent-500); background: var(--accent-500); color: var(--text-on-accent); }
-  .primary-button:hover { background: var(--accent-600); border-color: var(--accent-600); }
-
   @media (max-width: 560px) {
     .dialog-header, .dialog-body { padding-left: var(--sp-4); padding-right: var(--sp-4); }
     .dialog-footer { flex-direction: column-reverse; padding-left: var(--sp-4); padding-right: var(--sp-4); }
-    .secondary-button, .primary-button { width: 100%; }
+    .dialog-footer .app-btn { width: 100%; }
   }
 </style>

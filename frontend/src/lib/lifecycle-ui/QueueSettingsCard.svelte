@@ -36,7 +36,7 @@
   }
 </script>
 
-<section class="settings-card" aria-labelledby="lifecycle-queue-settings-title">
+<section class="queue-settings" aria-labelledby="lifecycle-queue-settings-title">
   <h2 id="lifecycle-queue-settings-title">{heading}</h2>
 
   <div class="setting interrupted-setting">
@@ -50,8 +50,7 @@
   <div class="setting concurrency-setting">
     <div>
       <label for="lifecycle-concurrency">Concurrent downloads</label>
-      <p>Choose from {minimum} to {maximum}. Reducing the limit waits for active jobs; it does not pause them.</p>
-      <p class="info"><span class="info-icon" aria-hidden="true">i</span>Default: {defaultValue} · FIFO order</p>
+      <p>Choose from {minimum} to {maximum}. Reducing the limit waits for active jobs; it does not pause them. Default: {defaultValue} · FIFO order</p>
     </div>
     <select
       id="lifecycle-concurrency"
@@ -68,43 +67,71 @@
 </section>
 
 <style>
-  .settings-card {
-    padding: var(--sp-5) var(--sp-6);
-    border: 1px solid var(--border-default);
-    border-radius: var(--r-md);
-    background: var(--surface-base);
-    box-shadow: var(--shadow-card);
+  .queue-settings { display: contents; }
+  h2 {
+    margin: 0;
+    padding: 10px 0 0;
+    border-top: 1px solid var(--border-subtle);
+    font-size: var(--fs-xs);
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
   }
-
-  h2 { margin: 0 0 var(--sp-3); font-size: var(--fs-lg); font-weight: 650; }
-  .setting { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-6); padding: var(--sp-4) 0; border-top: 1px solid var(--border-subtle); }
+  .setting {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-4);
+    min-height: 48px;
+    padding: 8px 0;
+    border-top: 1px solid var(--border-subtle);
+  }
   .setting > div { min-width: 0; }
-  strong, label { display: block; color: var(--text-primary); font-size: var(--fs-md); font-weight: 650; }
-  p { max-width: 68ch; margin: var(--sp-1) 0 0; color: var(--text-muted); font-size: var(--fs-sm); }
+  strong, label {
+    display: block;
+    color: var(--text-primary);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+  }
+  p {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+  }
 
   .fixed-value {
     flex: 0 0 auto;
-    padding: 6px 12px;
-    border-radius: var(--r-full);
-    background: var(--surface-hover);
-    color: var(--text-secondary);
+    color: var(--text-muted);
     font-size: var(--fs-sm);
-    font-weight: 550;
+    font-weight: 600;
     white-space: nowrap;
   }
 
   select {
     width: 84px;
     flex: 0 0 84px;
-    background: var(--surface-base);
+    height: 36px;
+    padding: 0 28px 0 12px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-md);
+    background-color: var(--surface-base);
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'><path d='M2.5 4.5L6 8l3.5-3.5' stroke='%235C544C' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    color: var(--text-primary);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    box-shadow: none;
+  }
+  select:hover:not(:disabled) {
+    background-color: var(--surface-hover);
+    border-color: var(--border-strong);
   }
 
-  .info { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2); color: var(--accent-500); }
-  .info-icon { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--accent-500); color: var(--text-on-accent); font-size: var(--fs-xs); font-weight: 700; }
-
   @media (max-width: 620px) {
-    .settings-card { padding: var(--sp-4); }
-    .setting { align-items: flex-start; flex-direction: column; gap: var(--sp-3); }
+    .setting { align-items: flex-start; flex-direction: column; gap: var(--sp-2); }
     .fixed-value, select { align-self: flex-start; }
   }
 </style>

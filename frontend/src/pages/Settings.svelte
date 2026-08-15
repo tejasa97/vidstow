@@ -75,20 +75,16 @@
   </header>
 
   <section class="group" aria-labelledby="general-title">
-    <header class="group-head">
-      <h2 id="general-title">Downloads</h2>
-      <p>Where files go, and how the queue runs.</p>
-    </header>
+    <h2 id="general-title">Downloads</h2>
 
     <div class="setting">
       <div class="copy">
         <strong>Default download folder</strong>
-        <span>New downloads are saved here.</span>
+        <span class="mono" title={folder}>{folder || 'Not set'}</span>
       </div>
-      <div class="path">
-        <code class="chip" title={folder}>{folder || 'Not set'}</code>
-        <button type="button" disabled={!folder} on:click={showFolder}>Show in Finder</button>
-        <button type="button" on:click={pickFolder}>Change…</button>
+      <div class="actions">
+        <button type="button" class="app-btn" disabled={!folder} on:click={showFolder}>Show in Finder</button>
+        <button type="button" class="app-btn primary" on:click={pickFolder}>Change…</button>
       </div>
     </div>
 
@@ -118,10 +114,7 @@
   </section>
 
   <section class="group" aria-labelledby="ffmpeg-title">
-    <header class="group-head">
-      <h2 id="ffmpeg-title">FFmpeg</h2>
-      <p>Needed to merge video and audio, and to convert to MP3.</p>
-    </header>
+    <h2 id="ffmpeg-title">FFmpeg</h2>
 
     <div class="setting">
       <div class="copy">
@@ -130,139 +123,103 @@
           {#if $ffmpeg.available && ffmpegVersion}
             Version {ffmpegVersion} · ready for merging and MP3 conversion
           {:else}
-            Used for stream merging and audio conversion.
+            Needed to merge video and audio, and to convert to MP3.
           {/if}
         </span>
       </div>
-      <div class="status-actions">
+      <div class="actions">
         <em class="badge" class:ok={$ffmpeg.available}>{$ffmpeg.available ? 'Ready' : 'Not found'}</em>
-        <button type="button" on:click={recheck}>Recheck</button>
+        <button type="button" class="app-btn" on:click={recheck}>Recheck</button>
       </div>
     </div>
 
     <div class="setting">
       <div class="copy">
         <strong>FFmpeg path</strong>
-        <span>Choose an installed FFmpeg executable.</span>
+        <span class="mono" class:empty={!displayedFFmpegPath} title={displayedFFmpegPath}>{displayedFFmpegPath || 'Not configured'}</span>
       </div>
-      <div class="path">
-        <code class="chip" class:empty={!displayedFFmpegPath} title={displayedFFmpegPath}>{displayedFFmpegPath || 'Not configured'}</code>
-        <button type="button" on:click={locateFFmpeg}>Change…</button>
+      <div class="actions">
+        <button type="button" class="app-btn primary" on:click={locateFFmpeg}>Change…</button>
       </div>
     </div>
 
     {#if !$ffmpeg.available}
       <div class="setting hint">
         <p>Install FFmpeg, then Recheck or choose the binary with Change…</p>
-        <button type="button" on:click={() => window.runtime.BrowserOpenURL('https://ffmpeg.org/download.html')}>Installation guide ↗</button>
+        <button type="button" class="app-btn" on:click={() => window.runtime.BrowserOpenURL('https://ffmpeg.org/download.html')}>Installation guide ↗</button>
       </div>
     {/if}
   </section>
 
   <section class="group" aria-labelledby="diagnostics-title">
-    <header class="group-head">
-      <h2 id="diagnostics-title">Diagnostics</h2>
-      <p>Copy a privacy-safe summary for troubleshooting.</p>
-    </header>
+    <h2 id="diagnostics-title">Diagnostics</h2>
     <div class="setting">
       <div class="copy">
         <strong>Support report</strong>
         <span>Includes app version and FFmpeg status. Paths stay private.</span>
       </div>
-      <button type="button" on:click={copyDiagnostics}>Copy Diagnostics</button>
+      <div class="actions">
+        <button type="button" class="app-btn primary" on:click={copyDiagnostics}>Copy Diagnostics</button>
+      </div>
     </div>
   </section>
 </section>
 
 <style>
   .group {
-    margin-top: 0;
-    padding: 4px 20px 8px;
+    padding: 2px 20px 8px;
     border: 1px solid var(--border-default);
     border-radius: var(--r-lg);
     background: var(--surface-raised);
     box-shadow: var(--shadow-card);
   }
-  .group + .group { margin-top: 16px; }
-  .group-head {
-    padding: 16px 0 10px;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-  .group-head h2 {
+  .group h2 {
     margin: 0;
+    padding: 12px 0 2px;
     font-size: var(--fs-xs);
     font-weight: 650;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: var(--text-secondary);
-  }
-  .group-head p {
-    margin: 4px 0 0;
-    color: var(--text-secondary);
-    font-size: var(--fs-sm);
+    color: var(--text-muted);
   }
 
   .setting {
-    min-height: 64px;
+    min-height: 48px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 24px;
-    padding: 14px 0;
+    gap: var(--sp-4);
+    padding: 8px 0;
     border-top: 1px solid var(--border-subtle);
   }
-  .group-head + .setting { border-top: 0; }
-  .copy {
-    min-width: 0;
-    flex: 1;
-  }
+  .group > h2 + .setting { border-top: 0; }
+  .copy { min-width: 0; flex: 1; }
   .copy strong, .copy span, .copy small { display: block; }
-  .copy strong { font-size: var(--fs-sm); color: var(--text-primary); }
+  .copy strong { font-size: var(--fs-sm); color: var(--text-primary); font-weight: 600; }
   .copy span, .copy small {
     margin-top: 4px;
     color: var(--text-secondary);
     font-size: var(--fs-xs);
     line-height: 1.45;
   }
-  label.setting { cursor: pointer; }
-  label.setting input { margin-left: 8px; }
-
-  .path, .status-actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 8px;
-    flex-shrink: 0;
-    max-width: 58%;
-  }
-  .chip {
-    min-width: 0;
-    max-width: 280px;
+  .copy .mono {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    padding: 7px 10px;
-    border: 1px solid var(--border-default);
-    border-radius: var(--r-md);
-    background: var(--surface-subtle);
-    color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: 11px;
   }
-  .chip.empty { color: var(--text-secondary); font-style: italic; font-family: var(--font-sans); }
+  .copy .mono.empty { font-family: var(--font-sans); font-style: italic; }
+  label.setting { cursor: pointer; }
+  label.setting input { margin-left: 8px; flex-shrink: 0; }
 
-  .setting button, .hint button {
-    min-height: 34px;
-    padding: 0 12px;
-    border: 1px solid var(--border-default);
-    border-radius: var(--r-md);
-    background: var(--surface-base);
-    color: var(--text-primary);
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    white-space: nowrap;
+  .actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+    flex-shrink: 0;
   }
-  .setting button:hover:not(:disabled), .hint button:hover { background: var(--surface-hover); }
 
   .badge {
     padding: 4px 10px;
@@ -282,9 +239,9 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    margin: 0 0 12px;
-    padding: 10px 12px;
+    gap: var(--sp-3);
+    margin: 4px 0 6px;
+    padding: 8px 12px;
     border-radius: var(--r-md);
     font-size: var(--fs-sm);
   }
@@ -302,7 +259,6 @@
 
   @media (max-width: 720px) {
     .setting, .hint { flex-direction: column; align-items: flex-start; }
-    .path, .status-actions { max-width: 100%; width: 100%; justify-content: flex-start; flex-wrap: wrap; }
-    .chip { max-width: 100%; }
+    .actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
   }
 </style>

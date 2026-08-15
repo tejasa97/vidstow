@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Card, Button } from '../lib/components/ui/index.js';
   import { api } from '../lib/api.js';
   import { showBanner, showError } from '../lib/stores.js';
+  import { formatEngineVersion } from '../lib/format.js';
   import type { BuildInfo } from '../lib/types.js';
 
   const APP = {
@@ -46,92 +46,161 @@
 <section class="page" aria-labelledby="about-title">
   <header class="page-header">
     <h1 id="about-title">About</h1>
-    <p>About VidStow, its license, and the open-source tools that power it.</p>
+    <p>{APP.tagline}</p>
   </header>
 
-  <div class="grid">
-    <Card title={APP.name} description={`Version ${build.version} · ${APP.license}`}>
-      <div class="intro">
-        <p class="tagline">{APP.tagline}</p>
-        <p class="description">{APP.description}</p>
-      </div>
-      <dl class="build-info">
-        <div><dt>Engine</dt><dd>youtube_dlp {build.engineVersion}</dd></div>
-        <div><dt>Platform</dt><dd>{build.os && build.architecture ? `${build.os}/${build.architecture}` : 'Loading…'}</dd></div>
-      </dl>
-      <div class="actions">
-        <Button variant="primary" label="View source" onclick={() => open(APP.source)}>View source</Button>
-        <Button variant="secondary" label="Read the docs" onclick={() => open(APP.docs)}>Read the docs</Button>
-        <Button variant="secondary" label="Copy Diagnostics" onclick={copyDiagnostics}>Copy Diagnostics</Button>
-      </div>
-    </Card>
+  <section class="group" aria-labelledby="app-title">
+    <h2 id="app-title">{APP.name}</h2>
+    <p class="lede">{APP.description}</p>
 
-    <Card title="Built with open source" description="VidStow depends on these projects.">
+    <dl class="facts">
+      <div>
+        <dt>Version</dt>
+        <dd>{build.version} · {APP.license}</dd>
+      </div>
+      <div>
+        <dt>Engine</dt>
+        <dd>youtube_dlp {formatEngineVersion(build.engineVersion)}</dd>
+      </div>
+      <div>
+        <dt>Platform</dt>
+        <dd>{build.os && build.architecture ? `${build.os}/${build.architecture}` : 'Loading…'}</dd>
+      </div>
+    </dl>
+
+    <div class="setting">
+      <div class="copy">
+        <strong>Source</strong>
+        <span>Open source on GitHub, with setup notes in the readme.</span>
+      </div>
+      <div class="actions">
+        <button type="button" class="app-btn" on:click={() => open(APP.source)}>View source</button>
+        <button type="button" class="app-btn primary" on:click={() => open(APP.docs)}>Read the docs</button>
+      </div>
+    </div>
+    <div class="setting">
+      <div class="copy">
+        <strong>Support report</strong>
+        <span>Includes app version and FFmpeg status. Paths stay private.</span>
+      </div>
+      <div class="actions">
+        <button type="button" class="app-btn primary" on:click={copyDiagnostics}>Copy Diagnostics</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="group" aria-labelledby="stack-title">
+    <h2 id="stack-title">Built with open source</h2>
+    <div class="setting">
+      <div class="copy">
+        <strong>Dependencies</strong>
+        <span>VidStow depends on these projects.</span>
+      </div>
       <ul class="stack">
         {#each builtWith as tool}
           <li>
-            <button type="button" class="link-button" onclick={() => open(tool.url)}>
-              <span class="stack-name">{tool.name}</span>
-              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 13v7H4V6h7"/></svg>
-            </button>
+            <button type="button" class="app-btn" on:click={() => open(tool.url)}>{tool.name}</button>
           </li>
         {/each}
       </ul>
-    </Card>
-  </div>
+    </div>
+  </section>
 
-  <Card title="Legal">
+  <section class="group" aria-labelledby="legal-title">
+    <h2 id="legal-title">Legal</h2>
     <p class="legal">
       VidStow is distributed under the Apache License 2.0. It is not affiliated with, or endorsed by,
       YouTube or Google. Video and audio content is downloaded only where you have the right to do so —
       please respect each creator's terms and local laws. FFmpeg, yt-dlp, Go, Wails, and Svelte are
       independent open-source projects with their own licenses.
     </p>
-  </Card>
+  </section>
+
 </section>
 
 <style>
-  .page {
-    gap: var(--sp-4);
+  .group {
+    padding: 2px 20px 8px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-lg);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-card);
   }
-  .page-header {
-    margin-bottom: 0;
+  .group h2 {
+    margin: 0;
+    padding: 12px 0 2px;
+    font-size: var(--fs-xs);
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
   }
-
-  .grid {
+  .lede, .legal {
+    margin: 8px 0 10px;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+  }
+  .facts {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: var(--sp-4);
+    margin: 8px 0 4px;
+    padding: 10px 0 12px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .facts dt {
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    font-weight: 650;
+    letter-spacing: 0.02em;
+  }
+  .facts dd {
+    margin: 4px 0 0;
+    color: var(--text-primary);
+    font-size: var(--fs-sm);
+    overflow-wrap: anywhere;
   }
 
-  .intro { display: flex; flex-direction: column; gap: var(--sp-2); }
-  .tagline { margin: 0; font-size: var(--fs-md); font-weight: 600; color: var(--text-primary); }
-  .description { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.55; }
-  .build-info { margin: var(--sp-3) 0 0; display: grid; gap: var(--sp-1); font-size: var(--fs-xs); color: var(--text-secondary); }
-  .build-info div { display: flex; gap: var(--sp-2); }
-  .build-info dt { color: var(--text-muted); }
-  .build-info dd { margin: 0; overflow-wrap: anywhere; }
-  .actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); flex-wrap: wrap; }
-
-  .stack { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-  .stack li { border-top: 1px solid var(--border-subtle); }
-  .stack li:first-child { border-top: 0; }
-  .link-button {
-    width: 100%;
+  .setting {
+    min-height: 48px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--sp-2);
-    padding: var(--sp-3) var(--sp-2);
-    border-radius: var(--r-sm);
-    color: var(--text-secondary);
-    font-size: var(--fs-sm);
+    gap: var(--sp-4);
+    padding: 8px 0;
+    border-top: 1px solid var(--border-subtle);
   }
-  .link-button:hover { background: var(--surface-hover); color: var(--accent-600); }
+  .group > h2 + .setting, .group > h2 + .lede + .setting { border-top: 0; }
+  .copy { min-width: 0; flex: 1; }
+  .copy strong, .copy span { display: block; }
+  .copy strong { font-size: var(--fs-sm); color: var(--text-primary); font-weight: 600; }
+  .copy span {
+    margin-top: 4px;
+    color: var(--text-secondary);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+  }
 
-  .legal { margin: 0; color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.6; }
-
-  @media (max-width: 760px) {
-    .grid { grid-template-columns: 1fr; }
+  .actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+    flex-shrink: 0;
+  }
+  .stack {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--sp-2);
+  }
+  @media (max-width: 720px) {
+    .setting { flex-direction: column; align-items: flex-start; }
+    .facts { grid-template-columns: 1fr; gap: var(--sp-3); }
+    .actions, .stack { width: 100%; justify-content: flex-start; }
   }
 </style>

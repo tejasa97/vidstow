@@ -97,7 +97,7 @@
           {#if job.lifecycle === 'paused'}
             <button
               type="button"
-              class="action-button"
+              class="app-btn primary"
               aria-label="Resume download"
               disabled={!enabled('resume')}
               onclick={() => trigger('resume')}
@@ -105,45 +105,36 @@
           {:else}
             <button
               type="button"
-              class="icon-button"
+              class="app-btn"
               aria-label="Pause download"
-              title="Pause download"
               disabled={!enabled('pause')}
               onclick={() => trigger('pause')}
-            >
-              <span aria-hidden="true">Ⅱ</span>
-            </button>
+            >Pause</button>
           {/if}
           <button
             type="button"
-            class="icon-button"
+            class="app-btn"
             aria-label="Cancel download"
-            title="Cancel download"
             disabled={!enabled('cancel')}
             onclick={() => trigger('cancel')}
-          >
-            <span aria-hidden="true">×</span>
-          </button>
+          >Cancel</button>
         {:else if isTerminal}
           {#if enabled('retry')}
-            <button type="button" class="action-button" onclick={() => trigger('retry')}>Retry</button>
+            <button type="button" class="app-btn primary" onclick={() => trigger('retry')}>Retry</button>
           {:else if enabled('download-again')}
-            <button type="button" class="action-button" onclick={() => trigger('download-again')}>Download again</button>
+            <button type="button" class="app-btn primary" onclick={() => trigger('download-again')}>Download again</button>
           {:else if enabled('review')}
-            <button type="button" class="action-button" onclick={() => trigger('review')}>Review</button>
+            <button type="button" class="app-btn primary" onclick={() => trigger('review')}>Review</button>
           {:else if enabled('open')}
-            <button type="button" class="action-button" onclick={() => trigger('open')}>Open</button>
+            <button type="button" class="app-btn primary" onclick={() => trigger('open')}>Open</button>
           {/if}
           <button
             type="button"
-            class="icon-button"
+            class="app-btn"
             aria-label="Remove download"
-            title="Remove download"
             disabled={!enabled('remove')}
             onclick={() => trigger('remove')}
-          >
-            <span aria-hidden="true">×</span>
-          </button>
+          >Remove</button>
         {/if}
       </div>
     </div>
@@ -176,7 +167,7 @@
 <style>
   .job-row {
     display: grid;
-    grid-template-columns: 144px minmax(0, 1fr);
+    grid-template-columns: 128px minmax(0, 1fr);
     gap: var(--sp-4);
     min-height: 116px;
     padding: var(--sp-4);
@@ -188,8 +179,8 @@
   .job-row:last-child { border-bottom: 0; border-radius: 0 0 var(--r-md) var(--r-md); }
 
   .thumbnail {
-    width: 144px;
-    height: 82px;
+    width: 128px;
+    aspect-ratio: 16 / 9;
     align-self: center;
     object-fit: cover;
     border-radius: var(--r-sm);
@@ -231,25 +222,7 @@
     min-width: 90px;
   }
 
-  .icon-button,
-  .action-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 36px;
-    border: 1px solid var(--border-default);
-    border-radius: var(--r-md);
-    background: var(--surface-base);
-    color: var(--text-primary);
-    font-size: var(--fs-sm);
-    font-weight: 550;
-    white-space: nowrap;
-  }
-
-  .icon-button { width: 36px; font-size: var(--fs-lg); font-weight: 400; }
-  .action-button { padding: 0 var(--sp-4); color: var(--accent-600); border-color: var(--accent-500); }
-  .icon-button:hover:not(:disabled), .action-button:hover:not(:disabled) { background: var(--surface-hover); }
-  .icon-button:disabled, .action-button:disabled { opacity: 0.45; }
+  .icon-button { width: 36px; min-height: 36px; }
 
   .progress-line {
     display: grid;
