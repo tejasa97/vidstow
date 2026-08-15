@@ -3743,6 +3743,7 @@ type InfoSummary struct {
 	ViewCount       int64             `json:"viewCount"`
 	UploadDate      string            `json:"uploadDate"`
 	Description     string            `json:"description"`
+	MediaType       string            `json:"mediaType,omitempty"`
 	Access          AccessSummary     `json:"access"`
 	Plans           []outputplan.Plan `json:"plans"`
 }
@@ -4050,6 +4051,9 @@ func summarizeAnalysis(raw json.RawMessage, rawURL string) (InfoSummary, []outpu
 	}
 	if v, ok := info["description"].(string); ok {
 		summary.Description = v
+	}
+	if mediaType := strings.ToLower(strings.TrimSpace(metadataText(info, "media_type"))); mediaType != "" {
+		summary.MediaType = mediaType
 	}
 	summary.Access = summarizeAccess(info)
 	plans := outputplan.Build(info, summary.DurationSeconds)

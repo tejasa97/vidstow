@@ -155,6 +155,7 @@ export interface InfoSummary {
   viewCount: number;
   uploadDate: string;
   description: string;
+  mediaType?: string;
   access: AccessSummary;
   plans: OutputPlan[];
 }

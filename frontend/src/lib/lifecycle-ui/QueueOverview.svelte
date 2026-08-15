@@ -120,7 +120,7 @@
         {/each}
       </div>
     {:else}
-      <div class="empty" role="status">Nothing in the queue. Add a video or playlist from Home to get started.</div>
+      <div class="empty" role="status">Nothing in the queue. Add a video, Short, or playlist from Home to get started.</div>
     {/if}
   </section>
 

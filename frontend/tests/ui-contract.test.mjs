@@ -22,7 +22,7 @@ test('page titles and controls match the approved redesign', async () => {
     read('../src/pages/Downloads.svelte'), read('../src/pages/Settings.svelte'),
   ]);
   assert.match(home, /<h1 id="home-title">Download from YouTube<\/h1>/);
-  assert.match(home, /Paste a public YouTube video or playlist URL to analyze it and choose your download\./);
+  assert.match(home, /Paste a public YouTube video, Short, or playlist URL to analyze it and choose your download\./);
   assert.match(home, /This link includes a playlist/);
   assert.match(home, /Review the playlist instead/);
   assert.match(home, /Every selected video uses this format/);
@@ -62,7 +62,7 @@ test('unsupported and FFmpeg-required states retain accurate product copy', asyn
   const [home, modal] = await Promise.all([
     read('../src/pages/Home.svelte'), read('../src/lib/components/Modal.svelte'),
   ]);
-  assert.match(home, /valid, publicly accessible YouTube video/);
+  assert.match(home, /valid, publicly accessible YouTube video, Short, or playlist/);
   assert.doesNotMatch(home, /supports YouTube videos and playlists/);
   assert.match(home, /title: 'FFmpeg Required'/);
   assert.match(home, /choose an original audio option/);

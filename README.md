@@ -22,8 +22,8 @@ A local desktop application built with Go, Wails, and Svelte.
 ![VidStow analyzing Big Buck Bunny and showing video output choices](docs/assets/screenshots/video-options.png)
 
 > [!IMPORTANT]
-> VidStow is beta software for public, on-demand YouTube video and playlist URLs.
-> Channels, search, Shorts, live streams, authenticated downloads, and other
+> VidStow is beta software for public, on-demand YouTube video, Short, and playlist URLs.
+> Channels, search, live streams, authenticated downloads, and other
 > sites are outside the supported application scope.
 
 ## Download
@@ -238,7 +238,7 @@ intentionally not tracked.
 
 VidStow does not support:
 
-- playlists, channels, search, Shorts, live streams, or authenticated workflows;
+- channels, search, live streams, or authenticated workflows;
 - sites other than YouTube;
 - DRM decryption or access-control circumvention;
 - universal resumability or byte reuse when media equivalence is unproved;

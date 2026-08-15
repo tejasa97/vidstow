@@ -123,7 +123,7 @@
       modal.set({
         kind: 'error',
         title: 'Unsupported URL',
-        message: errorMessage(err, 'VidStow could not extract information from this URL. Make sure it is a valid, publicly accessible YouTube video or playlist.'),
+        message: errorMessage(err, 'VidStow could not extract information from this URL. Make sure it is a valid, publicly accessible YouTube video, Short, or playlist.'),
       });
     } finally {
       if (requestGeneration === analysisGeneration) busy = false;
@@ -306,13 +306,13 @@
   <header class="page-header">
     <h1 id="home-title">Download from YouTube</h1>
     {#if !playlist && !preview}
-      <p>Paste a public YouTube video or playlist URL to analyze it and choose your download.</p>
+      <p>Paste a public YouTube video, Short, or playlist URL to analyze it and choose your download.</p>
     {/if}
   </header>
 
   <form class="analyze-bar" on:submit|preventDefault={analyze}>
-    <label class="visually-hidden" for="video-url">YouTube video or playlist URL</label>
-    <input id="video-url" type="url" value={url} on:input={updateURL} placeholder="https://www.youtube.com/watch?v=… or playlist?list=…" autocomplete="off" />
+    <label class="visually-hidden" for="video-url">YouTube video, Short, or playlist URL</label>
+    <input id="video-url" type="url" value={url} on:input={updateURL} placeholder="https://www.youtube.com/watch?v=…, shorts/…, or playlist?list=…" autocomplete="off" />
     <button class="app-btn primary" type="submit" disabled={busy || !url.trim()}>{busy ? 'Analyzing…' : 'Analyze'}</button>
   </form>
 
@@ -422,7 +422,7 @@
         </div>
         <div class="identity-copy">
           <strong title={preview.title}>{preview.title}</strong>
-          <span>{preview.channel || 'YouTube'}</span>
+          <span>{preview.channel || 'YouTube'}{#if preview.mediaType === 'short'} · <em>Short</em>{/if}</span>
           <small>{preview.duration || 'Duration unavailable'}{preview.viewCount ? ` · ${formatViewCount(preview.viewCount)} views` : ''}</small>
           {#if linkedPlaylist?.playlistUrl}
             <button type="button" class="ghost review-playlist" on:click={reviewLinkedPlaylist}>Review the playlist instead</button>
@@ -477,7 +477,7 @@
         </svg>
       </div>
       <h2>Add a YouTube link</h2>
-      <p>VidStow reviews a public video or playlist, then shows the files you’ll get before anything downloads.</p>
+      <p>VidStow reviews a public video, Short, or playlist, then shows the files you’ll get before anything downloads.</p>
     </section>
   {/if}
 </section>

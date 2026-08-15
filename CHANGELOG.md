@@ -12,6 +12,7 @@ No public VidStow release has been published yet.
 
 ### Added
 
+- Analysis and downloading of public, on-demand YouTube Shorts URLs.
 - Initial desktop workflow for public single-video YouTube URLs.
 - Analyze, quality presets, download queue, history, and FFmpeg diagnostics.
 - Durable State v2 queue lifecycle, destination reservation, startup recovery,

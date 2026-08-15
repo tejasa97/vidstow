@@ -40,7 +40,7 @@ describe('Home analysis authority', () => {
     const user = userEvent.setup();
     render(Home);
 
-    const input = screen.getByLabelText('YouTube video or playlist URL');
+    const input = screen.getByLabelText('YouTube video, Short, or playlist URL');
     await user.type(input, firstURL);
     await user.click(screen.getByRole('button', { name: 'Analyze' }));
     expect(await screen.findByText('Fixture video')).toBeInTheDocument();
@@ -55,7 +55,7 @@ describe('Home analysis authority', () => {
     const { AnalyzeURL } = installBindings();
     render(Home);
 
-    const input = screen.getByLabelText('YouTube video or playlist URL');
+    const input = screen.getByLabelText('YouTube video, Short, or playlist URL');
     await userEvent.setup().type(input, firstURL);
     pendingUrl.set(firstURL);
 
@@ -71,7 +71,7 @@ describe('Home analysis authority', () => {
     (window as any).go.main.App.AnalyzeURL = AnalyzeURL;
     render(Home);
 
-    const input = screen.getByLabelText('YouTube video or playlist URL');
+    const input = screen.getByLabelText('YouTube video, Short, or playlist URL');
     await user.type(input, firstURL);
     await user.click(screen.getByRole('button', { name: 'Analyze' }));
     await waitFor(() => expect(AnalyzeURL).toHaveBeenCalledOnce());
@@ -100,18 +100,48 @@ describe('Home analysis authority', () => {
     }));
     render(Home);
 
-    await user.type(screen.getByLabelText('YouTube video or playlist URL'), playlistURL);
+    await user.type(screen.getByLabelText('YouTube video, Short, or playlist URL'), playlistURL);
     await user.click(screen.getByRole('button', { name: 'Analyze' }));
 
     expect(await screen.findByText('Fixture playlist')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add 1 Video to Queue' })).toBeDisabled();
   });
 
+  test('badges a Short from extracted media type, not the submitted URL', async () => {
+    const user = userEvent.setup();
+    const { AnalyzeURL } = installBindings();
+    AnalyzeURL.mockImplementation(async (raw: string) => ({ ...videoSummary(raw), mediaType: 'short' }));
+    render(Home);
+
+    await user.type(screen.getByLabelText('YouTube video, Short, or playlist URL'), firstURL);
+    await user.click(screen.getByRole('button', { name: 'Analyze' }));
+
+    expect(await screen.findByText('Fixture video')).toBeInTheDocument();
+    expect(screen.getByText((content, el) => el?.tagName === 'EM' && content === 'Short')).toBeInTheDocument();
+  });
+
+  test('does not badge a Shorts URL without extracted media type', async () => {
+    const user = userEvent.setup();
+    const shortsURL = 'https://www.youtube.com/shorts/fixture0001';
+    const watchURL = 'https://www.youtube.com/watch?v=fixture0001';
+    const { ValidateURL } = installBindings();
+    ValidateURL.mockImplementation(async () => ({
+      kind: 'single_video', url: watchURL, videoUrl: watchURL, playlistUrl: '', videoId: 'fixture0001', playlistId: '',
+    }));
+    render(Home);
+
+    await user.type(screen.getByLabelText('YouTube video, Short, or playlist URL'), shortsURL);
+    await user.click(screen.getByRole('button', { name: 'Analyze' }));
+
+    expect(await screen.findByText('Fixture video')).toBeInTheDocument();
+    expect(screen.queryByText('Short')).not.toBeInTheDocument();
+  });
+
   test('switching output types selects a visible compatible plan', async () => {
     const user = userEvent.setup();
     render(Home);
 
-    await user.type(screen.getByLabelText('YouTube video or playlist URL'), firstURL);
+    await user.type(screen.getByLabelText('YouTube video, Short, or playlist URL'), firstURL);
     await user.click(screen.getByRole('button', { name: 'Analyze' }));
     expect(await screen.findByText('Video plan')).toBeInTheDocument();
 
