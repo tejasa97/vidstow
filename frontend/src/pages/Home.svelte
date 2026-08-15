@@ -3,7 +3,8 @@
   import { api } from '../lib/api.js';
   import { errorMessage, ffmpeg, modal, pendingUrl, settings, showBanner } from '../lib/stores.js';
   import { formatBytes, formatViewCount, shortTitle } from '../lib/format.js';
-  import type { InfoSummary, OutputPlan, PlaylistSummary, Quality, UrlCheckResult } from '../lib/types.js';
+  import type { InfoSummary, OutputOptions, OutputPlan, PlaylistSummary, Quality, SubtitleLanguage, UrlCheckResult } from '../lib/types.js';
+  import OutputOptionsEditor from '../lib/components/OutputOptionsEditor.svelte';
 
   const dispatch = createEventDispatcher<{ goto: 'home' | 'queue' | 'downloads' | 'settings' | 'about' }>();
 
@@ -24,6 +25,8 @@
   let rangeEnd = '';
   let selectAllBox: HTMLInputElement | undefined;
   let linkedPlaylist: UrlCheckResult | null = null;
+  let videoOptions: OutputOptions = {};
+  let playlistOptions: OutputOptions = {};
   const PLAYLIST_ADMIT_CAP = 500;
 
   $: folder = $settings.downloadFolder || folder;
@@ -59,6 +62,8 @@
     selectedItems = new Set();
     selectedPlanId = '';
     search = '';
+    videoOptions = {};
+    playlistOptions = {};
   }
 
   function updateURL(event: Event) {
@@ -80,6 +85,7 @@
       if (requestGeneration !== analysisGeneration) return;
       url = canonicalURL;
       playlist = summary;
+      playlistOptions = seedOutputOptions([]);
       selectedItems = new Set(summary.entries.filter((entry) => entry.available).map((entry) => entry.index));
       rangeStart = summary.entries[0]?.index ? String(summary.entries[0].index) : '1';
       rangeEnd = summary.entries.at(-1)?.index ? String(summary.entries.at(-1)!.index) : String(summary.entryCount);
@@ -89,10 +95,46 @@
       if (requestGeneration !== analysisGeneration) return;
       url = canonicalURL;
       preview = summary;
+      videoOptions = seedOutputOptions(summary.subtitles ?? []);
       const recommended = summary.plans.find((plan) => plan.recommended) ?? summary.plans[0];
       selectedPlanId = recommended?.id ?? '';
       tab = recommended?.kind ?? 'video';
     }
+  }
+
+  // Seeds the advanced section from the saved defaults. Language preference
+  // is not persisted: English is pre-selected when the video offers it,
+  // otherwise the engine's first-available default applies.
+  function seedOutputOptions(languages: SubtitleLanguage[]): OutputOptions {
+    const seeded = { ...($settings.outputOptions ?? {}) };
+    if (!$ffmpeg.available) {
+      seeded.subtitleMode = seeded.subtitleMode === 'embed' ? '' : seeded.subtitleMode;
+      seeded.subtitleFormat = '';
+      seeded.embedMetadata = false;
+      seeded.embedThumbnail = false;
+      seeded.embedChapters = false;
+    }
+    if (seeded.subtitleMode && !seeded.subtitleLanguages?.length && languages.some((language) => language.code === 'en')) {
+      seeded.subtitleLanguages = ['en'];
+    }
+    return seeded;
+  }
+
+  // Subtitles only ride along with video outputs; captions cannot be embedded
+  // in or written beside audio-only downloads.
+  function effectiveOptions(options: OutputOptions, subtitlesAllowed: boolean): OutputOptions {
+    if (subtitlesAllowed) return options;
+    return { ...options, subtitleMode: '', subtitleLanguages: undefined, subtitleAutoCaptions: false, subtitleFormat: '' };
+  }
+
+  function optionsNeedFFmpeg(options: OutputOptions): boolean {
+    return (
+      options.subtitleMode === 'embed' ||
+      !!options.embedMetadata ||
+      !!options.embedThumbnail ||
+      !!options.embedChapters ||
+      (options.subtitleMode === 'sidecar' && !!options.subtitleFormat)
+    );
   }
 
   async function analyze() {
@@ -234,6 +276,11 @@
       requireFFmpeg('This output needs FFmpeg for merging or conversion. Install FFmpeg, set its path in Settings, or choose an original audio option.');
       return;
     }
+    const options = effectiveOptions(videoOptions, tab === 'video');
+    if (optionsNeedFFmpeg(options) && !$ffmpeg.available) {
+      requireFFmpeg('Subtitles and embedded details need FFmpeg. Install FFmpeg, set its path in Settings, or turn those options off.');
+      return;
+    }
     const start = async () => {
       try {
         await api.jobs.start({
@@ -245,6 +292,7 @@
           outputDir: folder,
           duration: preview!.duration,
           thumbnail: preview!.thumbnail,
+          options,
         });
         showBanner('success', 'Added to queue');
       } catch (err) {
@@ -275,6 +323,11 @@
       requireFFmpeg('MP3 conversion needs FFmpeg. Choose original audio or configure FFmpeg.');
       return;
     }
+    const options = effectiveOptions(playlistOptions, playlistTab === 'video');
+    if (optionsNeedFFmpeg(options) && !$ffmpeg.available) {
+      requireFFmpeg('Subtitles and embedded details need FFmpeg. Install FFmpeg, set its path in Settings, or turn those options off.');
+      return;
+    }
     const start = async () => {
       try {
         await api.jobs.startPlaylist({
@@ -283,6 +336,7 @@
           quality,
           audioBitrate,
           selectedItems: [...selectedItems].sort((a, b) => a - b),
+          options,
         });
         showBanner('success', `Added ${selectedItems.size} videos to queue`);
       } catch (err) {
@@ -401,6 +455,14 @@
         {/each}
       </div>
 
+      <OutputOptionsEditor
+        bind:value={playlistOptions}
+        collectionMode={true}
+        allowSubtitles={playlistTab === 'video'}
+        ffmpegAvailable={$ffmpeg.available}
+        on:goto-settings={() => dispatch('goto', 'settings')}
+      />
+
       <footer class="save-bar">
         <div class="destination">
           <span>Save to</span>
@@ -456,6 +518,14 @@
       {:else}
         <div class="empty pane">No {tab} outputs were reported for this video.</div>
       {/if}
+
+      <OutputOptionsEditor
+        bind:value={videoOptions}
+        languages={preview?.subtitles ?? []}
+        allowSubtitles={tab === 'video'}
+        ffmpegAvailable={$ffmpeg.available}
+        on:goto-settings={() => dispatch('goto', 'settings')}
+      />
 
       <footer class="save-bar">
         <div class="destination">

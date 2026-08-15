@@ -1140,3 +1140,35 @@ func mustJSON(t *testing.T, value any) []byte {
 	}
 	return data
 }
+
+func TestV2SettingsOutputOptionsRoundTrip(t *testing.T) {
+	s, status, err := OpenV2(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil || !status.Healthy() || s == nil {
+		t.Fatalf("OpenV2 = %v, %#v, %v", s, status, err)
+	}
+	want := Settings{
+		DownloadFolder:      "/tmp/downloads",
+		DownloadConcurrency: 2,
+		OutputOptions: jobmodel.OutputOptions{
+			SubtitleMode:      jobmodel.SubtitleModeSidecar,
+			SubtitleFormat:    "srt",
+			SubtitleLanguages: []string{"en", "de"},
+			EmbedMetadata:     true,
+		},
+	}
+	if err := s.SetSettings(want); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+	got := s.Settings()
+	if !got.OutputOptions.Equal(want.OutputOptions) {
+		t.Fatalf("round trip output options = %#v; want %#v", got.OutputOptions, want.OutputOptions)
+	}
+	invalid := want
+	invalid.OutputOptions.SubtitleMode = "banana"
+	if err := s.SetSettings(invalid); err == nil || !strings.Contains(err.Error(), "unsupported subtitle mode") {
+		t.Fatalf("SetSettings(invalid) error = %v; want unsupported subtitle mode", err)
+	}
+	if got := s.Settings(); !got.OutputOptions.Equal(want.OutputOptions) {
+		t.Fatalf("invalid write changed settings: %#v", got.OutputOptions)
+	}
+}

@@ -154,6 +154,10 @@ const (
 	StatusActionRequired Status = "action-required"
 )
 
+// OutputOptions re-exports the shared per-download output preferences so
+// callers can build jobs requests without importing the durable model.
+type OutputOptions = jobmodel.OutputOptions
+
 // Request is the data needed to schedule one download.
 type Request struct {
 	URL       string  `json:"url"`
@@ -165,6 +169,9 @@ type Request struct {
 	OutputDir string  `json:"outputDir"`
 	Duration  string  `json:"duration"`
 	Thumbnail string  `json:"thumbnail"`
+	// Options carries this download's subtitle and embedding choices. The
+	// zero value keeps the historical media-only output.
+	Options OutputOptions `json:"options,omitempty"`
 }
 
 // AdmittedOutput is the internal admission-to-manager contract. The basename
@@ -213,6 +220,9 @@ type JobSnapshot struct {
 	AbsolutePath    string                `json:"absolutePath"`
 	Message         string                `json:"message"`
 	ErrorReason     string                `json:"errorReason,omitempty"`
+	// OptionsNote is a backend-authored summary of non-default output
+	// options (subtitles, embedded metadata) shown in queue row metadata.
+	OptionsNote string `json:"optionsNote,omitempty"`
 }
 
 // QueueJobCapabilities is deliberately backend-authored. The frontend must
@@ -457,6 +467,7 @@ type jobState struct {
 	snap               JobSnapshot
 	plan               *outputplan.Plan
 	outputTemplate     string
+	options            jobmodel.OutputOptions
 	worker             *worker
 	done               chan struct{}
 	durable            jobmodel.DurableJob
@@ -618,6 +629,7 @@ func stateFromDurable(durable jobmodel.DurableJob) (*jobState, error) {
 		DurationLabel: durable.Request.Duration, Status: status, Lifecycle: durable.Lifecycle,
 		Phase: durable.Phase, Desired: durable.Desired, OccupiesSlot: false, CreatedAt: durable.CreatedAt.UTC().Format(time.RFC3339Nano),
 		Filename: filename, AbsolutePath: absolutePath, ErrorReason: durable.LastErrorCode,
+		OptionsNote: durable.Request.OutputOptions.Note(),
 	}
 	switch status {
 	case StatusPaused:
@@ -641,7 +653,7 @@ func stateFromDurable(durable jobmodel.DurableJob) (*jobState, error) {
 			return nil, err
 		}
 	}
-	return &jobState{snap: snapshot, plan: plan, outputTemplate: outputTemplate, done: make(chan struct{}), durable: durable, fromStateV2: true, commandToken: uuid.NewString(), authorityRevision: durable.Revision, authorityAttemptID: durable.AttemptID}, nil
+	return &jobState{snap: snapshot, plan: plan, outputTemplate: outputTemplate, options: durable.Request.OutputOptions.Clone(), done: make(chan struct{}), durable: durable, fromStateV2: true, commandToken: uuid.NewString(), authorityRevision: durable.Revision, authorityAttemptID: durable.AttemptID}, nil
 }
 
 func (m *Manager) stateStoreSnapshot() StateStore {
@@ -1421,6 +1433,9 @@ func (m *Manager) SubmitAdmitted(id string, req Request, selectedPlan *outputpla
 		if req.URL != durable.Request.SourceURL || req.VideoID != durable.Request.VideoID || req.Title != durable.Request.Title || req.PlanID != durable.Request.PlanID {
 			return "", errors.New("jobs: admitted request does not match State v2")
 		}
+		if !req.Options.Equal(durable.Request.OutputOptions) {
+			return "", errors.New("jobs: admitted output options do not match State v2")
+		}
 		if durable.Plan.ID != selectedPlan.ID || durable.Plan.PrivateSelector != selectedPlan.Selector {
 			return "", errors.New("jobs: admitted plan does not match State v2")
 		}
@@ -1470,6 +1485,9 @@ func (m *Manager) submit(id string, req Request, admittedPlan *outputplan.Plan, 
 	if req.OutputDir == "" {
 		return "", errors.New("jobs: empty output directory")
 	}
+	if err := req.Options.Validate(); err != nil {
+		return "", fmt.Errorf("jobs: %w", err)
+	}
 	if err := ensureDir(req.OutputDir); err != nil {
 		return "", fmt.Errorf("jobs: prepare output dir: %w", err)
 	}
@@ -1512,9 +1530,11 @@ func (m *Manager) submit(id string, req Request, admittedPlan *outputplan.Plan, 
 			Thumbnail:     req.Thumbnail,
 			Status:        StatusPending,
 			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+			OptionsNote:   req.Options.Note(),
 		},
 		plan:               selectedPlan,
 		outputTemplate:     "",
+		options:            req.Options.Clone(),
 		done:               make(chan struct{}),
 		durable:            durable,
 		fromStateV2:        fromStateV2,
@@ -1812,7 +1832,7 @@ func queueThumbnailURL(snap JobSnapshot) string {
 }
 
 func queueMetadata(snap JobSnapshot) string {
-	parts := []string{snap.Channel, snap.DurationLabel, snap.QualityLabel}
+	parts := []string{snap.Channel, snap.DurationLabel, snap.QualityLabel, snap.OptionsNote}
 	result := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if strings.TrimSpace(part) != "" {
@@ -2962,6 +2982,7 @@ func (m *Manager) DownloadAgain(id string) (string, error) {
 			snap:               state.snap,
 			plan:               plan,
 			outputTemplate:     state.outputTemplate,
+			options:            state.options.Clone(),
 			durable:            durable,
 			fromStateV2:        true,
 			done:               make(chan struct{}),
@@ -3267,6 +3288,28 @@ func (m *Manager) startWorker(state *jobState, worker *worker) {
 	m.run(state, worker)
 }
 
+// subtitleEngineOptions maps UI subtitle preferences onto the engine request.
+// Embedding always converts to VTT: WebM containers only accept VTT tracks and
+// MP4-family embedding re-encodes to mov_text internally, so one normalized
+// format covers every plan VidStow offers. An empty mode disables subtitles.
+func subtitleEngineOptions(options jobmodel.OutputOptions) engine.SubtitleOptions {
+	if options.SubtitleMode == "" {
+		return engine.SubtitleOptions{}
+	}
+	subs := engine.SubtitleOptions{
+		WriteManual:    true,
+		WriteAutomatic: options.SubtitleAutoCaptions,
+		Languages:      options.SubtitleLanguages,
+	}
+	if options.SubtitleMode == jobmodel.SubtitleModeEmbed {
+		subs.Embed = true
+		subs.ConvertFormat = "vtt"
+	} else {
+		subs.ConvertFormat = options.SubtitleFormat
+	}
+	return subs
+}
+
 func (m *Manager) run(state *jobState, worker *worker) {
 	defer close(worker.Done)
 
@@ -3300,6 +3343,19 @@ func (m *Manager) run(state *jobState, worker *worker) {
 					Bitrate: fmt.Sprintf("%dk", state.plan.AudioBitrateKbps),
 				},
 			}}
+		}
+	}
+	if !state.options.IsZero() {
+		req.Subtitles = subtitleEngineOptions(state.options)
+		if state.options.EmbedMetadata {
+			req.EmbedMetadata = true
+		}
+		if state.options.EmbedMetadata || state.options.EmbedChapters {
+			embedChapters := state.options.EmbedChapters
+			req.EmbedChapters = &embedChapters
+		}
+		if state.options.EmbedThumbnail {
+			req.Thumbnails = engine.ThumbnailOptions{Write: true, Embed: true}
 		}
 	}
 	if state.fromStateV2 {
@@ -3733,19 +3789,29 @@ type PlaylistEntrySummary struct {
 
 // InfoSummary is the metadata displayed on the Home page after analyse.
 type InfoSummary struct {
-	Title           string            `json:"title"`
-	Channel         string            `json:"channel"`
-	Duration        string            `json:"duration"`
-	DurationSeconds int64             `json:"durationSeconds"`
-	Thumbnail       string            `json:"thumbnail"`
-	VideoID         string            `json:"videoId"`
-	URL             string            `json:"url"`
-	ViewCount       int64             `json:"viewCount"`
-	UploadDate      string            `json:"uploadDate"`
-	Description     string            `json:"description"`
-	MediaType       string            `json:"mediaType,omitempty"`
-	Access          AccessSummary     `json:"access"`
-	Plans           []outputplan.Plan `json:"plans"`
+	Title           string             `json:"title"`
+	Channel         string             `json:"channel"`
+	Duration        string             `json:"duration"`
+	DurationSeconds int64              `json:"durationSeconds"`
+	Thumbnail       string             `json:"thumbnail"`
+	VideoID         string             `json:"videoId"`
+	URL             string             `json:"url"`
+	ViewCount       int64              `json:"viewCount"`
+	UploadDate      string             `json:"uploadDate"`
+	Description     string             `json:"description"`
+	MediaType       string             `json:"mediaType,omitempty"`
+	Access          AccessSummary      `json:"access"`
+	Subtitles       []SubtitleLanguage `json:"subtitles,omitempty"`
+	Plans           []outputplan.Plan  `json:"plans"`
+}
+
+// SubtitleLanguage is one caption track reported by analysis, used to render
+// the language picker. Only the code, display name, and origin cross the
+// desktop boundary; track URLs and payloads are dropped.
+type SubtitleLanguage struct {
+	Code string `json:"code"`
+	Name string `json:"name,omitempty"`
+	Auto bool   `json:"auto,omitempty"`
 }
 
 // AccessSummary is informational extraction metadata, not a product gate.
@@ -4056,9 +4122,72 @@ func summarizeAnalysis(raw json.RawMessage, rawURL string) (InfoSummary, []outpu
 		summary.MediaType = mediaType
 	}
 	summary.Access = summarizeAccess(info)
+	summary.Subtitles = summarizeSubtitleLanguages(info)
 	plans := outputplan.Build(info, summary.DurationSeconds)
 	summary.Plans = publicPlans(plans)
 	return summary, plans, nil
+}
+
+// Analysis subtitle lists are bounded: YouTube reports well over a hundred
+// auto-generated languages, far beyond anything a picker should render.
+const (
+	maxManualSubtitleLanguages    = 40
+	maxAutomaticSubtitleLanguages = 60
+)
+
+// summarizeSubtitleLanguages extracts the language codes the engine reported
+// in the info dict's "subtitles" and "automatic_captions" collections. Manual
+// tracks come first so the picker can favour them; entries are sorted by code
+// and every collection is capped.
+func summarizeSubtitleLanguages(info map[string]any) []SubtitleLanguage {
+	manual := subtitleLanguageCollection(info["subtitles"], false, maxManualSubtitleLanguages)
+	automatic := subtitleLanguageCollection(info["automatic_captions"], true, maxAutomaticSubtitleLanguages)
+	if len(manual) == 0 && len(automatic) == 0 {
+		return nil
+	}
+	result := make([]SubtitleLanguage, 0, len(manual)+len(automatic))
+	result = append(result, manual...)
+	result = append(result, automatic...)
+	return result
+}
+
+func subtitleLanguageCollection(raw any, auto bool, limit int) []SubtitleLanguage {
+	collection, ok := raw.(map[string]any)
+	if !ok || len(collection) == 0 {
+		return nil
+	}
+	codes := make([]string, 0, len(collection))
+	for code := range collection {
+		if jobmodel.ValidSubtitleLanguage(code) {
+			codes = append(codes, code)
+		}
+	}
+	sort.Strings(codes)
+	if len(codes) > limit {
+		codes = codes[:limit]
+	}
+	result := make([]SubtitleLanguage, 0, len(codes))
+	for _, code := range codes {
+		language := SubtitleLanguage{Code: code, Auto: auto}
+		if tracks, ok := collection[code].([]any); ok && len(tracks) > 0 {
+			if track, ok := tracks[0].(map[string]any); ok {
+				if name, ok := track["name"].(string); ok {
+					language.Name = boundedText(name, 64)
+				}
+			}
+		}
+		result = append(result, language)
+	}
+	return result
+}
+
+func boundedText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) > limit {
+		return string(runes[:limit])
+	}
+	return value
 }
 
 func metadataInteger(value any) int64 {

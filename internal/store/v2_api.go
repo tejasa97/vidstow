@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -48,6 +49,7 @@ func (s *V2Store) Settings() Settings {
 		DownloadConcurrency:   state.Settings.DownloadConcurrency,
 		PerVideoSubfolder:     state.Settings.PerVideoSubfolder,
 		ConfirmBeforeDownload: state.Settings.ConfirmBeforeDownload,
+		OutputOptions:         state.Settings.OutputOptions.Clone(),
 	}
 }
 
@@ -55,6 +57,9 @@ func (s *V2Store) Settings() Settings {
 func (s *V2Store) SetSettings(next Settings) error {
 	if s == nil {
 		return errors.New("store: nil v2 store")
+	}
+	if err := next.OutputOptions.Validate(); err != nil {
+		return fmt.Errorf("store: invalid output options: %w", err)
 	}
 	settings := jobmodel.Settings{
 		DownloadFolder:        next.DownloadFolder,
@@ -64,6 +69,7 @@ func (s *V2Store) SetSettings(next Settings) error {
 		DownloadConcurrency:   next.DownloadConcurrency,
 		PerVideoSubfolder:     next.PerVideoSubfolder,
 		ConfirmBeforeDownload: next.ConfirmBeforeDownload,
+		OutputOptions:         next.OutputOptions.Clone(),
 	}
 	if settings.DownloadFolder == "" {
 		settings.DownloadFolder = defaultStateV2().Settings.DownloadFolder

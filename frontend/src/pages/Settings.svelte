@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '../lib/api.js';
   import { settings, ffmpeg, showBanner, showError } from '../lib/stores.js';
-  import type { Settings } from '../lib/types.js';
+  import type { OutputOptions, Settings } from '../lib/types.js';
   import QueueSettingsCard from '../lib/lifecycle-ui/QueueSettingsCard.svelte';
 
   let folder = '';
@@ -66,6 +66,10 @@
   async function changeConcurrency(value: number) {
     await update({ ...$settings, downloadConcurrency: value });
   }
+
+  async function updateOutputOptions(patch: Partial<OutputOptions>) {
+    await update({ ...$settings, outputOptions: { ...$settings.outputOptions, ...patch } }, 'Output defaults updated');
+  }
 </script>
 
 <section class="page" aria-labelledby="settings-title">
@@ -102,6 +106,77 @@
         <small>Shows the selected output before adding it to the queue.</small>
       </span>
       <input type="checkbox" checked={$settings.confirmBeforeDownload} on:change={(e) => update({ ...$settings, confirmBeforeDownload: e.currentTarget.checked })} />
+    </label>
+
+    <div class="setting">
+      <span class="copy">
+        <strong>Subtitles by default</strong>
+        <small>Pre-selects subtitles for new downloads when the video offers them.</small>
+      </span>
+      <div class="actions">
+        <select
+          aria-label="Default subtitle mode"
+          value={$settings.outputOptions.subtitleMode ?? ''}
+          on:change={(e) => updateOutputOptions({ subtitleMode: (e.currentTarget as HTMLSelectElement).value as OutputOptions['subtitleMode'] })}
+        >
+          <option value="">Off</option>
+          <option value="sidecar">Subtitle file</option>
+          <option value="embed" disabled={!$ffmpeg.available}>Embed in video</option>
+        </select>
+      </div>
+    </div>
+
+    {#if $settings.outputOptions.subtitleMode === 'sidecar'}
+      <div class="setting">
+        <span class="copy">
+          <strong>Subtitle file format</strong>
+          <small>{$ffmpeg.available ? 'Converted with FFmpeg when needed.' : 'FFmpeg is needed to convert; the original format is kept.'}</small>
+        </span>
+        <div class="actions">
+          <select
+            aria-label="Default subtitle format"
+            disabled={!$ffmpeg.available}
+            value={$settings.outputOptions.subtitleFormat ?? ''}
+            on:change={(e) => updateOutputOptions({ subtitleFormat: (e.currentTarget as HTMLSelectElement).value as OutputOptions['subtitleFormat'] })}
+          >
+            <option value="">Original</option>
+            <option value="srt">SRT</option>
+            <option value="vtt">VTT</option>
+          </select>
+        </div>
+      </div>
+    {/if}
+
+    <label class="setting">
+      <span class="copy">
+        <strong>Include auto-generated captions</strong>
+        <small>Uses auto-generated tracks when a language has no real subtitles.</small>
+      </span>
+      <input type="checkbox" checked={!!$settings.outputOptions.subtitleAutoCaptions} on:change={(e) => updateOutputOptions({ subtitleAutoCaptions: e.currentTarget.checked })} />
+    </label>
+
+    <label class="setting">
+      <span class="copy">
+        <strong>Embed title &amp; channel details</strong>
+        <small>Writes the video's details into the downloaded file.</small>
+      </span>
+      <input type="checkbox" disabled={!$ffmpeg.available} checked={!!$settings.outputOptions.embedMetadata} on:change={(e) => updateOutputOptions({ embedMetadata: e.currentTarget.checked })} />
+    </label>
+
+    <label class="setting">
+      <span class="copy">
+        <strong>Embed thumbnail artwork</strong>
+        <small>Shows the video's artwork in media players.</small>
+      </span>
+      <input type="checkbox" disabled={!$ffmpeg.available} checked={!!$settings.outputOptions.embedThumbnail} on:change={(e) => updateOutputOptions({ embedThumbnail: e.currentTarget.checked })} />
+    </label>
+
+    <label class="setting">
+      <span class="copy">
+        <strong>Embed chapter markers</strong>
+        <small>Adds the video's chapters where the format supports them.</small>
+      </span>
+      <input type="checkbox" disabled={!$ffmpeg.available} checked={!!$settings.outputOptions.embedChapters} on:change={(e) => updateOutputOptions({ embedChapters: e.currentTarget.checked })} />
     </label>
 
     <QueueSettingsCard
@@ -220,6 +295,7 @@
     gap: var(--sp-2);
     flex-shrink: 0;
   }
+  .actions select { min-width: 130px; }
 
   .badge {
     padding: 4px 10px;

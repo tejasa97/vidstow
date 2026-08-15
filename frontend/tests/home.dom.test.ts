@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { get } from 'svelte/store';
 
 import Home from '../src/pages/Home.svelte';
-import { pendingUrl, settings } from '../src/lib/stores.js';
+import { ffmpeg, pendingUrl, settings } from '../src/lib/stores.js';
 
 const firstURL = 'https://www.youtube.com/watch?v=fixture0001';
 
@@ -13,6 +13,11 @@ function videoSummary(raw: string) {
   return {
     title: 'Fixture video', channel: 'Fixture channel', duration: '1:00', thumbnail: '', videoId: 'fixture0001', url: raw,
     durationSeconds: 60, viewCount: 1, uploadDate: '', description: '', access: { code: 'public', label: 'Public' },
+    subtitles: [
+      { code: 'en', name: 'English' },
+      { code: 'de', name: 'German' },
+      { code: 'en', name: 'English (auto-generated)', auto: true },
+    ],
     plans: [
       { id: 'video', kind: 'video', label: 'Video plan', container: 'mp4', available: true, recommended: true },
       { id: 'audio', kind: 'audio', label: 'Audio plan', container: 'm4a', available: true },
@@ -149,5 +154,30 @@ describe('Home analysis authority', () => {
     expect(screen.getByText('Audio plan')).toBeInTheDocument();
     expect(screen.queryByText('Video plan')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add to Queue' })).toBeEnabled();
+  });
+
+  test('passes subtitle and detail choices to StartDownload', async () => {
+    const user = userEvent.setup();
+    ffmpeg.set({ available: true, path: '/usr/bin/ffmpeg', version: 'ffmpeg version 7', ffprobePath: '', message: '' });
+    const StartDownload = vi.fn(async (_request: { options: Record<string, unknown> }) => 'job-1');
+    (window as any).go.main.App.StartDownload = StartDownload;
+    render(Home);
+
+    await user.type(screen.getByLabelText('YouTube video, Short, or playlist URL'), firstURL);
+    await user.click(screen.getByRole('button', { name: 'Analyze' }));
+    expect(await screen.findByText('Fixture video')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Subtitles & details/ }));
+    await user.click(screen.getByRole('button', { name: 'Subtitle file' }));
+    await user.click(screen.getByLabelText('English'));
+    await user.click(screen.getByLabelText('Title & channel details'));
+    await user.click(screen.getByRole('button', { name: 'Add to Queue' }));
+
+    await waitFor(() => expect(StartDownload).toHaveBeenCalledTimes(1));
+    const request = StartDownload.mock.calls[0][0];
+    expect(request.options.subtitleMode).toBe('sidecar');
+    expect(request.options.subtitleLanguages).toEqual(['en']);
+    expect(request.options.subtitleFormat).toBe('srt');
+    expect(request.options.embedMetadata).toBe(true);
   });
 });

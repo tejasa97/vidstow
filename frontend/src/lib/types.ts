@@ -75,6 +75,7 @@ export interface JobSnapshot {
   absolutePath: string;
   message: string;
   errorReason?: string;
+  optionsNote?: string;
 }
 
 export interface HistoryEntry {
@@ -111,6 +112,26 @@ export interface Settings {
   downloadConcurrency: number;
   perVideoSubfolder: boolean;
   confirmBeforeDownload: boolean;
+  outputOptions: OutputOptions;
+}
+
+// One caption track reported by analysis; auto marks auto-generated tracks.
+export interface SubtitleLanguage {
+  code: string;
+  name?: string;
+  auto?: boolean;
+}
+
+// Per-download subtitle and embedding choices. Mirrors jobmodel.OutputOptions;
+// the zero value means VidStow's plain media-only output.
+export interface OutputOptions {
+  subtitleMode?: '' | 'sidecar' | 'embed';
+  subtitleLanguages?: string[];
+  subtitleAutoCaptions?: boolean;
+  subtitleFormat?: '' | 'srt' | 'vtt';
+  embedMetadata?: boolean;
+  embedThumbnail?: boolean;
+  embedChapters?: boolean;
 }
 
 export interface UrlCheckResult {
@@ -157,6 +178,7 @@ export interface InfoSummary {
   description: string;
   mediaType?: string;
   access: AccessSummary;
+  subtitles?: SubtitleLanguage[];
   plans: OutputPlan[];
 }
 

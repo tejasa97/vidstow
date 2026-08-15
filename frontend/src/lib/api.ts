@@ -11,6 +11,7 @@ import type {
   HistoryEntry,
   InfoSummary,
   JobSnapshot,
+  OutputOptions,
   PlaylistSummary,
   PersistenceStatus,
   QuitSummary,
@@ -56,6 +57,7 @@ export interface StartPlaylistRequest {
   quality: JobSnapshot['quality'];
   audioBitrate?: number;
   selectedItems: number[];
+  options?: OutputOptions;
 }
 
 export interface StartRequest {
@@ -68,6 +70,7 @@ export interface StartRequest {
   outputDir: string;
   duration: string;
   thumbnail: string;
+  options?: OutputOptions;
 }
 
 export const api = {
