@@ -12,8 +12,8 @@
       'VidStow is an open-source desktop app that downloads public YouTube videos, Shorts, playlists, and audio. ' +
       'Analyze a URL, choose the items and output, and let the queue run — no account or tracking required.',
     license: 'Apache-2.0',
-    source: 'https://github.com/tejasa97/vidstow',
-    docs: 'https://github.com/tejasa97/vidstow#readme',
+    source: 'https://github.com/vidstow/vidstow',
+    docs: 'https://github.com/vidstow/vidstow#readme',
   };
 
   const builtWith: Array<{ name: string; url: string }> = [
