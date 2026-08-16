@@ -28,15 +28,21 @@ A local desktop application built with Go, Wails, and Svelte.
 
 ## Download
 
-VidStow can be built from the Apache-2.0 source using the
-[local build instructions](#run-locally). When `v0.1.0-beta.1` is published, it
-will also provide a prebuilt `VidStow-0.1.0-beta.1-darwin-arm64.zip` for macOS
-Apple Silicon.
+[`v0.1.0-beta.1`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.1)
+is the first public macOS Apple Silicon preview. Open
+[`VidStow-0.1.0-beta.1-darwin-arm64.dmg`](https://github.com/vidstow/vidstow/releases/download/v0.1.0-beta.1/VidStow-0.1.0-beta.1-darwin-arm64.dmg)
+and drag VidStow to Applications. A
+[`VidStow-0.1.0-beta.1-darwin-arm64.zip`](https://github.com/vidstow/vidstow/releases/download/v0.1.0-beta.1/VidStow-0.1.0-beta.1-darwin-arm64.zip)
+archive of the same app is attached as well.
 
-The beta release will include `SHA256SUMS` and build metadata identifying the
-exact source revision and engine dependency. FFmpeg and FFprobe are external
-requirements. Updates are installed manually from the project's GitHub Releases
-page.
+The release includes `SHA256SUMS` and build metadata identifying the exact
+source revision and engine dependency. FFmpeg and FFprobe are external
+requirements. The app is ad-hoc signed, not notarized; on first launch, open it
+from Finder with right-click Open. Updates are installed manually from the
+project's GitHub Releases page.
+
+VidStow can also be built from the Apache-2.0 source using the
+[local build instructions](#run-locally).
 
 Windows, Linux, and macOS Intel packages are outside the supported release
 scope. See the [release guide](docs/RELEASE.md) for artifact packaging and
@@ -129,7 +135,7 @@ application and engine versions and by artifact-specific validation.
 | Area | Supported boundary |
 | --- | --- |
 | Product | Beta; focused public YouTube video, Short, and playlist workflow |
-| Package | `v0.1.0-beta.1` will provide a macOS Apple Silicon preview when published |
+| Package | [`v0.1.0-beta.1`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.1) provides a macOS Apple Silicon DMG and zip preview |
 | Source | Apache-2.0 source and self-build instructions |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
 | Engine | `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.1` |

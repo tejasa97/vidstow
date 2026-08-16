@@ -6,9 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow semantic versioning where practical for a desktop
 application.
 
-No public VidStow release has been published yet. `v0.1.0-beta.1` is the first
-packaged macOS Apple Silicon candidate; publication remains a separate
-maintainer step after the draft prerelease is reviewed.
+`v0.1.0-beta.1` is the first public VidStow prerelease. It packages a macOS
+Apple Silicon preview; a later stable `0.1.0` does not exist yet.
 
 ## [Unreleased]
 
@@ -18,7 +17,8 @@ maintainer step after the draft prerelease is reviewed.
 
 ### Changed
 
-- No entries yet.
+- README and release packaging now describe the published `v0.1.0-beta.1`
+  macOS Apple Silicon DMG and zip.
 
 ### Fixed
 
