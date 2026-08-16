@@ -13,12 +13,15 @@ Apple Silicon preview; a later stable `0.1.0` does not exist yet.
 
 ### Added
 
-- No entries yet.
+- `scripts/install-macos.sh` builds the current checkout and installs
+  `VidStow.app` into `/Applications` on Apple Silicon.
 
 ### Changed
 
 - README and release packaging now describe the published `v0.1.0-beta.1`
   macOS Apple Silicon DMG and zip.
+- README now leads with the local install script. The published
+  `v0.1.0-beta.1` DMG and zip remain attached as ad-hoc artifacts.
 
 ### Fixed
 

@@ -24,6 +24,18 @@ or reproducibility.
 Windows, Linux, and macOS Intel packages are outside the current supported
 release scope.
 
+## Local install
+
+On an Apple Silicon Mac with the documented toolchain, build the current
+checkout and copy `VidStow.app` to `/Applications`:
+
+```sh
+./scripts/install-macos.sh
+```
+
+The script does not download a GitHub release artifact and does not remove
+macOS quarantine attributes.
+
 ## Local packaging
 
 Install the documented Go, Node.js, Wails, and Xcode command-line tool versions,

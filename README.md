@@ -28,21 +28,29 @@ A local desktop application built with Go, Wails, and Svelte.
 
 ## Download
 
+The supported way to get a runnable macOS app is to build this source on an
+Apple Silicon Mac:
+
+```sh
+git clone https://github.com/vidstow/vidstow.git
+cd vidstow
+./scripts/install-macos.sh
+```
+
+The script checks for Go 1.25, Node.js 22 or newer, and Xcode command-line
+tools, installs the pinned Wails CLI if needed, builds `VidStow.app` from the
+current checkout, and copies it to `/Applications`. FFmpeg and FFprobe remain
+external requirements.
+
 [`v0.1.0-beta.1`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.1)
-is the first public macOS Apple Silicon preview. Open
-[`VidStow-0.1.0-beta.1-darwin-arm64.dmg`](https://github.com/vidstow/vidstow/releases/download/v0.1.0-beta.1/VidStow-0.1.0-beta.1-darwin-arm64.dmg)
-and drag VidStow to Applications. A
-[`VidStow-0.1.0-beta.1-darwin-arm64.zip`](https://github.com/vidstow/vidstow/releases/download/v0.1.0-beta.1/VidStow-0.1.0-beta.1-darwin-arm64.zip)
-archive of the same app is attached as well.
-
-The release includes `SHA256SUMS` and build metadata identifying the exact
-source revision and engine dependency. FFmpeg and FFprobe are external
-requirements. The app is ad-hoc signed, not notarized; on first launch, open it
-from Finder with right-click Open. Updates are installed manually from the
-project's GitHub Releases page.
-
-VidStow can also be built from the Apache-2.0 source using the
-[local build instructions](#run-locally).
+also attaches a
+[`DMG`](https://github.com/vidstow/vidstow/releases/download/v0.1.0-beta.1/VidStow-0.1.0-beta.1-darwin-arm64.dmg)
+and
+[`zip`](https://github.com/vidstow/vidstow/releases/download/v0.1.0-beta.1/VidStow-0.1.0-beta.1-darwin-arm64.zip)
+of the same ad-hoc signed bundle, plus `SHA256SUMS` and build metadata. Those
+artifacts are not Apple-notarized. A browser download is quarantined by macOS,
+so Gatekeeper refuses to open that copy; that is not a corrupt file. Use the
+install script instead of bypassing operating-system security controls.
 
 Windows, Linux, and macOS Intel packages are outside the supported release
 scope. See the [release guide](docs/RELEASE.md) for artifact packaging and
@@ -135,12 +143,12 @@ application and engine versions and by artifact-specific validation.
 | Area | Supported boundary |
 | --- | --- |
 | Product | Beta; focused public YouTube video, Short, and playlist workflow |
-| Package | [`v0.1.0-beta.1`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.1) provides a macOS Apple Silicon DMG and zip preview |
-| Source | Apache-2.0 source and self-build instructions |
+| Package | Local `./scripts/install-macos.sh` on Apple Silicon; [`v0.1.0-beta.1`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.1) also attaches an ad-hoc DMG and zip |
+| Source | Apache-2.0 source; the install script builds the current checkout |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
 | Engine | `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.1` |
 | Resume | Session reuse is evidence-dependent; no universal transfer continuation or guaranteed byte reuse |
-| Updates | Manual downloads from GitHub Releases |
+| Updates | Rebuild from a newer checkout |
 
 The underlying [`youtube_dlp`](https://github.com/tejasa97/youtube_dlp)
 project has broader extractor and CLI capabilities. VidStow supports only the
@@ -155,7 +163,8 @@ workflow documented here and exposed by its desktop UI.
   user-selected FFmpeg executable with matching FFprobe beside it
 - [Wails CLI v2.13.0](https://wails.io/docs/gettingstarted/installation/)
 
-Install the pinned Wails CLI:
+`./scripts/install-macos.sh` installs the pinned Wails CLI when it is missing.
+To install it yourself:
 
 ```sh
 go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
@@ -176,8 +185,16 @@ wails dev
 
 ## Build the desktop app
 
+To build and install into `/Applications`:
+
 ```sh
-wails build
+./scripts/install-macos.sh
+```
+
+To build without installing:
+
+```sh
+wails build -platform darwin/arm64
 ```
 
 The native artifact is written beneath `build/bin/`. A JavaScript helper used
