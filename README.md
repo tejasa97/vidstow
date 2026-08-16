@@ -158,7 +158,7 @@ go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 ## Run locally
 
 ```sh
-git clone https://github.com/tejasa97/vidstow.git
+git clone https://github.com/vidstow/vidstow.git
 cd vidstow
 
 cd frontend

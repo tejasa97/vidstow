@@ -50,5 +50,5 @@ maintainer step after the draft prerelease is reviewed.
 - Release automation creates a draft prerelease and cannot publish it.
 - The desktop engine pin is `github.com/tejasa97/youtube_dlp v0.2.1`.
 
-[Unreleased]: https://github.com/tejasa97/vidstow/compare/v0.1.0-beta.1...HEAD
-[0.1.0-beta.1]: https://github.com/tejasa97/vidstow/releases/tag/v0.1.0-beta.1
+[Unreleased]: https://github.com/vidstow/vidstow/compare/v0.1.0-beta.1...HEAD
+[0.1.0-beta.1]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.1
