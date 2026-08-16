@@ -395,6 +395,7 @@ type Manager struct {
 	runDownload          downloadRunner
 	runAnalyze           analyzeRunner
 	inspectResume        resumeInspector
+	prepareResumeDiscard resumeDiscardPreparer
 	ffmpegLocation       string
 	mu                   sync.Mutex
 	all                  map[string]*jobState
@@ -439,6 +440,8 @@ type downloadRunner func(context.Context, engine.Request, engine.EventHandler) (
 type analyzeRunner func(context.Context, engine.Request) (engine.Result, error)
 
 type resumeInspector func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error)
+
+type resumeDiscardPreparer func(context.Context, engine.OutputRootRef, string) (*engine.ResumeDiscardHandle, error)
 
 // worker is runtime-only attempt state. It is never restored from State v2;
 // active is the sole live occupancy authority and retains this value until
@@ -488,6 +491,7 @@ func New(client *engine.Client, listener Listener) *Manager {
 		runDownload:          defaultDownloadRunner,
 		runAnalyze:           client.Run,
 		inspectResume:        engine.InspectResumeState,
+		prepareResumeDiscard: engine.PrepareResumeDiscard,
 		all:                  make(map[string]*jobState),
 		active:               make(map[string]*worker),
 		concurrency:          DefaultDownloadConcurrency,
@@ -863,9 +867,8 @@ func historyFromSnapshot(snap JobSnapshot) jobmodel.HistoryEntry {
 }
 
 // upsertJobCleanupTombstone records cleanup-pending evidence for one session
-// of a job. A job may tombstone several sessions over its lifetime (a discard
-// that failed during retry escalation, then the final cancel), so entries are
-// keyed by both job and session identity.
+// of a job. Entries are keyed by both job and session identity so a later
+// cancel cannot clobber an unrelated session's tombstone.
 func upsertJobCleanupTombstone(document *jobmodel.State, jobID, sessionID string, outputRoot jobmodel.OutputRootRef, reservation jobmodel.ReservationSet, errorCode string, now time.Time) {
 	for index := range document.Cleanup {
 		if document.Cleanup[index].JobID == jobID && document.Cleanup[index].SessionID == sessionID {
@@ -939,7 +942,27 @@ func (m *Manager) settleDurable(state *jobState, lifecycle jobmodel.Lifecycle, d
 }
 
 func (m *Manager) discardSession(state *jobState) (bool, string) {
-	handle, unavailable, err := prepareDiscardSession(state)
+	if state == nil {
+		return false, ""
+	}
+	return m.discardKnownSession(state, state.durable.SessionID)
+}
+
+// discardRetiredSession best-effort deletes a session that Retry has already
+// rotated off the durable row. A failure never blocks or rolls back the fresh
+// retry: it is logged without paths or other sensitive data and the workspace
+// is left for the recovery orphan scanner, which reclaims unreferenced
+// sessions after OrphanAge. The production store cannot tombstone a retired
+// session of a still-live job.
+func (m *Manager) discardRetiredSession(state *jobState, sessionID string) {
+	cleanupPending, _ := m.discardKnownSession(state, sessionID)
+	if cleanupPending && state != nil {
+		logRetiredSessionLeak("vidstow: retry escalation could not discard the retired session for job %s; recovery will reclaim it as an orphan", state.snap.ID)
+	}
+}
+
+func (m *Manager) discardKnownSession(state *jobState, sessionID string) (bool, string) {
+	handle, unavailable, err := m.prepareDiscardSession(state, sessionID)
 	if err != nil {
 		return true, "cleanup"
 	}
@@ -957,11 +980,11 @@ func (m *Manager) discardSession(state *jobState) (bool, string) {
 // before State mutation. A missing workspace is a valid no-op: there is no
 // session evidence to tombstone. Any other failure is retained as cleanup
 // evidence and never silently treated as a successful discard.
-func prepareDiscardSession(state *jobState) (*engine.ResumeDiscardHandle, bool, error) {
-	if state == nil || !state.fromStateV2 || state.durable.SessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
+func (m *Manager) prepareDiscardSession(state *jobState, sessionID string) (*engine.ResumeDiscardHandle, bool, error) {
+	if state == nil || !state.fromStateV2 || sessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
 		return nil, true, nil
 	}
-	handle, err := engine.PrepareResumeDiscard(context.Background(), engineRootRef(state.durable.OutputRoot), state.durable.SessionID)
+	handle, err := m.prepareResumeDiscard(context.Background(), engineRootRef(state.durable.OutputRoot), sessionID)
 	if err != nil {
 		if strings.Contains(err.Error(), "workspace unavailable") {
 			return nil, true, nil
@@ -1879,7 +1902,7 @@ func queueCapabilitiesFor(state *jobState, snap JobSnapshot) QueueJobCapabilitie
 	case StatusPaused:
 		return QueueJobCapabilities{Resume: true, Cancel: true}
 	case StatusFailed:
-		return QueueJobCapabilities{Retry: true, Remove: true}
+		return QueueJobCapabilities{Retry: !retryExhausted(state), Remove: true}
 	case StatusCanceled:
 		// A fresh admission must resolve the persisted server-owned plan after
 		// restart. That resolver is not available in this manager yet, so do
@@ -2247,7 +2270,7 @@ func (m *Manager) cancelIdle(state *jobState) {
 	if state == nil {
 		return
 	}
-	handle, unavailable, prepareErr := prepareDiscardSession(state)
+	handle, unavailable, prepareErr := m.prepareDiscardSession(state, state.durable.SessionID)
 	if prepareErr != nil {
 		// Preserve the row and surface the failure through the existing
 		// runtime event stream; no destructive operation occurred.
@@ -2797,6 +2820,31 @@ func shouldRestartZeroProgressFailure(state *jobState, summary engine.ResumeSumm
 	return state.durable.ZeroProgressResumes >= zeroProgressResumeThreshold && committedBytesFromSummary(summary) > 0
 }
 
+// retryExhausted reports the durable "download again from Home" marker. The
+// restart count alone must not exhaust a row: a fresh session that made
+// progress and then failed transiently is still a valid resume.
+func retryExhausted(state *jobState) bool {
+	if state == nil {
+		return false
+	}
+	return state.durable.LastErrorCode == retryCodeFreshDownloadRequired || state.snap.ErrorReason == retryCodeFreshDownloadRequired
+}
+
+// shouldSettleFreshDownloadRequired reports that Retry can no longer help:
+// the restart budget is spent and this failure would otherwise demand another
+// escalation — a dead link (download-phase 403) or a resume that froze the
+// checkpoint exactly where the previous failure left it. It applies the same
+// condition the retry-time decline gate uses.
+func shouldSettleFreshDownloadRequired(state *jobState, err error, committedBytes int64, sawPostprocess bool) bool {
+	if state == nil || state.durable.SessionRestarts < maxZeroProgressRestarts {
+		return false
+	}
+	if isExpiredMediaLinkError(err) {
+		return true
+	}
+	return committedBytes > 0 && !sawPostprocess && committedBytes == state.durable.LastFailureCommittedBytes
+}
+
 func (m *Manager) requireRetryAction(state *jobState, code string) error {
 	if code == "" {
 		code = "session-reconciliation-required"
@@ -2919,10 +2967,12 @@ func (m *Manager) Retry(id string) error {
 	}
 
 	if state.fromStateV2 {
+		if retryExhausted(state) {
+			return m.declineZeroProgressRetry(state)
+		}
 		sessionID := state.durable.SessionID
 		retryMode := jobmodel.RetryModeResumeValidated
 		escalatedRestart := false
-		escalationCleanupPending := false
 		if sessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
 			sessionID = newSessionID()
 			retryMode = jobmodel.RetryModeRestartNewSession
@@ -2944,18 +2994,21 @@ func (m *Manager) Retry(id string) error {
 					} else {
 						return m.requireRetryAction(state, actionCode)
 					}
-				} else if shouldRestartZeroProgressFailure(state, summary) {
-					if state.durable.SessionRestarts >= maxZeroProgressRestarts {
+				} else {
+					needsFreshSession := shouldRestartZeroProgressFailure(state, summary)
+					if needsFreshSession && state.durable.SessionRestarts >= maxZeroProgressRestarts {
 						return m.declineZeroProgressRetry(state)
 					}
-					// The validated session is pinned to a dead signed URL.
-					// Discard its committed bytes before the fresh session
-					// takes over; a failed discard is tombstoned below for
-					// startup recovery instead of blocking the restart.
-					escalationCleanupPending, _ = m.discardSession(state)
-					sessionID = newSessionID()
-					retryMode = jobmodel.RetryModeRestartNewSession
-					escalatedRestart = true
+					if needsFreshSession {
+						// Rotate the durable row onto a fresh session first. Discard
+						// of the retired workspace is best-effort afterward; a
+						// mid-life tombstone cannot be persisted while the job is
+						// still live, and discarding before commit can strand the
+						// row as action-required if the rotation fails.
+						sessionID = newSessionID()
+						retryMode = jobmodel.RetryModeRestartNewSession
+						escalatedRestart = true
+					}
 				}
 			}
 		}
@@ -2971,9 +3024,6 @@ func (m *Manager) Retry(id string) error {
 				job.LastFailureCommittedBytes = 0
 				job.ZeroProgressResumes = 0
 				job.SessionRestarts++
-				if escalationCleanupPending && previousSessionID != "" && previousSessionID != sessionID {
-					upsertJobCleanupTombstone(document, job.ID, previousSessionID, job.OutputRoot, job.Reservation, "cleanup", time.Now().UTC())
-				}
 			}
 			if document.NextQueueOrdinal == ^uint64(0) {
 				return errors.New("jobs: queue ordinal exhausted")
@@ -2986,6 +3036,9 @@ func (m *Manager) Retry(id string) error {
 			state.commanding = false
 			m.mu.Unlock()
 			return err
+		}
+		if escalatedRestart && previousSessionID != "" && previousSessionID != sessionID {
+			m.discardRetiredSession(state, previousSessionID)
 		}
 	}
 
@@ -3510,6 +3563,10 @@ func (m *Manager) run(state *jobState, worker *worker) {
 		terminal.Status = StatusFailed
 		terminal.Message = failureMessage(err, failureCommitted, sawPostprocess)
 		terminal.ErrorReason = errorReason(err)
+		if shouldSettleFreshDownloadRequired(state, err, failureCommitted, sawPostprocess) {
+			terminal.Message = freshDownloadRequiredNotice
+			terminal.ErrorReason = retryCodeFreshDownloadRequired
+		}
 		terminal.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 		if terminal.Bytes == 0 {
 			terminal.Progress = 0
@@ -3557,7 +3614,7 @@ func (m *Manager) run(state *jobState, worker *worker) {
 		case canceled:
 			settleErr = m.settleDurable(state, jobmodel.LifecycleCanceled, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp, terminal, cleanupCode, cleanupPending, -1)
 		case err != nil:
-			settleErr = m.settleDurable(state, jobmodel.LifecycleFailed, jobmodel.DesiredRunning, jobmodel.PhasePreparing, terminal, errorReason(err), false, failureCommitted)
+			settleErr = m.settleDurable(state, jobmodel.LifecycleFailed, jobmodel.DesiredRunning, jobmodel.PhasePreparing, terminal, terminal.ErrorReason, false, failureCommitted)
 		default:
 			settleErr = m.settleDurable(state, jobmodel.LifecycleCompleted, jobmodel.DesiredRunning, jobmodel.PhaseReadyToPublish, terminal, "", false, -1)
 		}

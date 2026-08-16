@@ -3,7 +3,10 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -722,6 +725,9 @@ func TestV2ProgressMakingResumeStillResumes(t *testing.T) {
 	store.state.Jobs[0].Desired = jobmodel.DesiredRunning
 	store.state.Jobs[0].LastFailureCommittedBytes = 100
 	store.state.Jobs[0].ZeroProgressResumes = 0
+	// The budget is already spent: a resume that committed new bytes must
+	// still resume rather than decline on the restart count alone.
+	store.state.Jobs[0].SessionRestarts = maxZeroProgressRestarts
 	original := store.state.Jobs[0]
 
 	manager := New(nil, nil)
@@ -752,8 +758,8 @@ func TestV2ProgressMakingResumeStillResumes(t *testing.T) {
 		t.Fatalf("progress-making retry session = %q; want validated session %q", request.Filesystem.Resume.SessionID, original.SessionID)
 	}
 	completed := waitForV2Job(t, store, "job-progress", jobmodel.LifecycleCompleted)
-	if completed.RetryMode != jobmodel.RetryModeResumeValidated || completed.SessionRestarts != 0 {
-		t.Fatalf("progress-making retry mode/restarts = %s/%d; want resume-validated and no restarts", completed.RetryMode, completed.SessionRestarts)
+	if completed.RetryMode != jobmodel.RetryModeResumeValidated || completed.SessionRestarts != maxZeroProgressRestarts {
+		t.Fatalf("progress-making retry mode/restarts = %s/%d; want resume-validated and an unchanged budget", completed.RetryMode, completed.SessionRestarts)
 	}
 }
 
@@ -860,6 +866,236 @@ func TestV2ZeroProgressEscalationIsBounded(t *testing.T) {
 	if snapshot, ok := restored.Find("job-escalation-spent"); !ok || snapshot.Message != freshDownloadRequiredNotice {
 		t.Fatalf("restored declined row message = %q, %v; want persisted guidance copy", snapshot.Message, ok)
 	}
+
+	view := manager.QueueView()
+	if len(view.Rows) != 1 || view.Rows[0].Capabilities.Retry || !view.Rows[0].Capabilities.Remove {
+		t.Fatalf("exhausted row capabilities = %#v; want Retry hidden and Remove kept", view.Rows)
+	}
+	if err := manager.Retry("job-escalation-spent"); err == nil {
+		t.Fatal("repeated Retry() after exhaustion succeeded; want decline")
+	}
+	if runs != 0 {
+		t.Fatalf("repeated declined retry started %d runners; want 0", runs)
+	}
+}
+
+// TestV2BudgetSpentTransientFailureStillResumes pins the reviewer's
+// correction: the restart count alone must not exhaust a row. When the final
+// fresh session has committed new bytes and then failed transiently, Retry
+// must offer a validated resume, not a decline.
+func TestV2BudgetSpentTransientFailureStillResumes(t *testing.T) {
+	store, root, _ := newV2TestStore(t, "job-progress-at-cap")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleFailed
+	store.state.Jobs[0].Desired = jobmodel.DesiredRunning
+	store.state.Jobs[0].LastErrorCode = "internal"
+	store.state.Jobs[0].LastFailureCommittedBytes = 150
+	store.state.Jobs[0].ZeroProgressResumes = 0
+	store.state.Jobs[0].SessionRestarts = maxZeroProgressRestarts
+	original := store.state.Jobs[0]
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{
+			HasManifest: true, Classification: "available",
+			Components: []engine.ResumeComponent{{ID: "video", Kind: "video", CommittedBytes: 150}},
+		}, nil
+	}
+	requests := make(chan engine.Request, 1)
+	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		requests <- request
+		return engine.Result{Filename: filepath.Join(root, "Demo [abc123] [1080p].mp4")}, nil
+	}
+
+	view := manager.QueueView()
+	if len(view.Rows) != 1 || !view.Rows[0].Capabilities.Retry {
+		t.Fatalf("budget-spent unexhausted capabilities = %#v; want Retry still offered", view.Rows)
+	}
+	if err := manager.Retry("job-progress-at-cap"); err != nil {
+		t.Fatalf("Retry() of a transient failure at the restart cap failed: %v", err)
+	}
+	request := <-requests
+	if request.Filesystem.Resume.SessionID != original.SessionID {
+		t.Fatalf("transient retry session = %q; want validated session %q", request.Filesystem.Resume.SessionID, original.SessionID)
+	}
+	completed := waitForV2Job(t, store, "job-progress-at-cap", jobmodel.LifecycleCompleted)
+	if completed.RetryMode != jobmodel.RetryModeResumeValidated || completed.SessionRestarts != maxZeroProgressRestarts {
+		t.Fatalf("transient retry mode/restarts = %s/%d; want resume-validated and an unchanged budget", completed.RetryMode, completed.SessionRestarts)
+	}
+}
+
+// TestV2ExpiredMediaLinkAtRestartCapSettlesGuidance covers the last restart:
+// a 403 after SessionRestarts reaches the cap must persist the exhausted
+// marker and copy before any further click.
+func TestV2ExpiredMediaLinkAtRestartCapSettlesGuidance(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "job-cap-copy")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleFailed
+	store.state.Jobs[0].Desired = jobmodel.DesiredRunning
+	store.state.Jobs[0].LastErrorCode = retryCodeMediaLinkExpired
+	store.state.Jobs[0].LastFailureCommittedBytes = 3145728
+	store.state.Jobs[0].SessionRestarts = maxZeroProgressRestarts - 1
+	original := store.state.Jobs[0]
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{
+			HasManifest: true, Classification: "available",
+			Components: []engine.ResumeComponent{{ID: "video", Kind: "video", CommittedBytes: 3145728}},
+		}, nil
+	}
+	runs := 0
+	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		runs++
+		if request.Filesystem.Resume.SessionID == original.SessionID {
+			t.Error("at-cap restart reused the retired session")
+		}
+		return engine.Result{}, errors.New("multi-track transfer: download HTTP status 403")
+	}
+
+	if err := manager.Retry("job-cap-copy"); err != nil {
+		t.Fatal(err)
+	}
+	failed := waitForV2Job(t, store, "job-cap-copy", jobmodel.LifecycleFailed)
+	if failed.SessionRestarts != maxZeroProgressRestarts || failed.LastErrorCode != retryCodeFreshDownloadRequired {
+		t.Fatalf("at-cap 403 settle = restarts %d code %q; want %d/%s", failed.SessionRestarts, failed.LastErrorCode, maxZeroProgressRestarts, retryCodeFreshDownloadRequired)
+	}
+	snapshot, ok := manager.Find("job-cap-copy")
+	if !ok || snapshot.Message != freshDownloadRequiredNotice || snapshot.ErrorReason != retryCodeFreshDownloadRequired {
+		t.Fatalf("at-cap 403 runtime copy = %#v, %v; want exhausted notice before the next click", snapshot, ok)
+	}
+	if runs != 1 {
+		t.Fatalf("at-cap restart started %d runners; want 1", runs)
+	}
+	view := manager.QueueView()
+	if len(view.Rows) != 1 || view.Rows[0].Capabilities.Retry {
+		t.Fatalf("at-cap 403 capabilities = %#v; want Retry hidden", view.Rows)
+	}
+	if err := manager.Retry("job-cap-copy"); err == nil {
+		t.Fatal("Retry() after at-cap settle succeeded; want decline")
+	}
+	if runs != 1 {
+		t.Fatalf("Retry after at-cap settle started extra runners (%d)", runs)
+	}
+}
+
+// TestV2MidTransferAtRestartCapSettlesGuidance is the non-403 twin of the
+// at-cap copy test, as an honest ladder: the final restart's first failure
+// moved the checkpoint, so its row still promises a resume; only the follow-up
+// resume that freezes the checkpoint again settles the exhausted marker.
+func TestV2MidTransferAtRestartCapSettlesGuidance(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "job-cap-mid")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleFailed
+	store.state.Jobs[0].Desired = jobmodel.DesiredRunning
+	store.state.Jobs[0].LastFailureCommittedBytes = 100
+	store.state.Jobs[0].ZeroProgressResumes = 1
+	store.state.Jobs[0].SessionRestarts = maxZeroProgressRestarts - 1
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	var committed int64 = 100
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{
+			HasManifest: true, Classification: "available",
+			Components: []engine.ResumeComponent{{ID: "video", Kind: "video", CommittedBytes: committed}},
+		}, nil
+	}
+	sessions := make(chan string, 2)
+	runs := 0
+	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		runs++
+		sessions <- request.Filesystem.Resume.SessionID
+		return engine.Result{}, errors.New("connection reset by peer")
+	}
+
+	// The pre-restart session is zero-progress, so this retry spends the last
+	// restart instead of resuming it.
+	if err := manager.Retry("job-cap-mid"); err != nil {
+		t.Fatal(err)
+	}
+	restarted := <-sessions
+	first := waitForV2Job(t, store, "job-cap-mid", jobmodel.LifecycleFailed)
+	if first.SessionRestarts != maxZeroProgressRestarts || first.LastErrorCode == retryCodeFreshDownloadRequired {
+		t.Fatalf("first failure of final restart settled exhausted: %#v", first)
+	}
+	if snapshot, ok := manager.Find("job-cap-mid"); !ok || snapshot.Message != downloadStoppedMidMessage {
+		t.Fatalf("first failure of final restart copy = %#v, %v; want honest mid-transfer message", snapshot, ok)
+	}
+
+	// The restarted session's first failure recorded a fresh checkpoint, so
+	// this retry is a validated resume of the same session.
+	if err := manager.Retry("job-cap-mid"); err != nil {
+		t.Fatal(err)
+	}
+	if resumed := <-sessions; resumed != restarted {
+		t.Fatalf("budget-spent resume session = %q; want the restarted session %q", resumed, restarted)
+	}
+	failed := waitForV2Job(t, store, "job-cap-mid", jobmodel.LifecycleFailed)
+	if failed.LastErrorCode != retryCodeFreshDownloadRequired {
+		t.Fatalf("frozen follow-up resume settle code = %q; want %s", failed.LastErrorCode, retryCodeFreshDownloadRequired)
+	}
+	snapshot, ok := manager.Find("job-cap-mid")
+	if !ok || snapshot.Message != freshDownloadRequiredNotice {
+		t.Fatalf("frozen follow-up resume copy = %#v, %v; want exhausted notice", snapshot, ok)
+	}
+	view := manager.QueueView()
+	if len(view.Rows) != 1 || view.Rows[0].Capabilities.Retry {
+		t.Fatalf("settled exhausted capabilities = %#v; want Retry hidden", view.Rows)
+	}
+	if err := manager.Retry("job-cap-mid"); err == nil {
+		t.Fatal("Retry() after at-cap settle succeeded; want decline")
+	}
+	if runs != 2 {
+		t.Fatalf("post-exhaustion ladder started %d runners; want 2", runs)
+	}
+}
+
+func TestShouldSettleFreshDownloadRequired(t *testing.T) {
+	expired := errors.New("multi-track transfer: download HTTP status 403")
+	reset := errors.New("connection reset by peer")
+	tests := []struct {
+		name      string
+		restarts  int
+		err       error
+		committed int64
+		last      int64
+		post      bool
+		want      bool
+	}{
+		{name: "403 below cap", restarts: 1, err: expired, committed: 100, last: 100, want: false},
+		{name: "403 at cap", restarts: maxZeroProgressRestarts, err: expired, committed: 100, last: 100, want: true},
+		{name: "frozen checkpoint at cap", restarts: maxZeroProgressRestarts, err: reset, committed: 100, last: 100, want: true},
+		{name: "progress making failure at cap keeps resume", restarts: maxZeroProgressRestarts, err: reset, committed: 150, last: 100, want: false},
+		{name: "first failure of fresh session at cap keeps resume", restarts: maxZeroProgressRestarts, err: reset, committed: 100, last: 0, want: false},
+		{name: "postprocess at cap keeps own copy", restarts: maxZeroProgressRestarts, err: reset, committed: 100, last: 100, post: true, want: false},
+		{name: "unknown evidence at cap", restarts: maxZeroProgressRestarts, err: reset, committed: -1, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := &jobState{durable: jobmodel.DurableJob{SessionRestarts: test.restarts, LastFailureCommittedBytes: test.last}}
+			if got := shouldSettleFreshDownloadRequired(state, test.err, test.committed, test.post); got != test.want {
+				t.Fatalf("shouldSettleFreshDownloadRequired() = %t; want %t", got, test.want)
+			}
+		})
+	}
 }
 
 func TestShouldRestartZeroProgressFailure(t *testing.T) {
@@ -926,6 +1162,117 @@ func TestExpiredMediaLinkFailureCopy(t *testing.T) {
 	}
 	if got := errorReason(errors.New("connection reset by peer")); got != "internal" {
 		t.Fatalf("generic reason = %q; want internal", got)
+	}
+}
+
+// TestV2EscalationDiscardRunsOnlyAfterCommit covers the destructive-cleanup
+// ordering the review required: the fresh session must be durably committed
+// before the retired workspace is touched, a discard failure must never block
+// or roll back the fresh retry, and an omitted discard (crash-equivalent)
+// leaves a recoverable orphan instead of a stranded row.
+func TestV2EscalationDiscardRunsOnlyAfterCommit(t *testing.T) {
+	tests := []struct {
+		name          string
+		failCommit    bool
+		discardErr    error
+		wantDiscarded bool
+		wantLeakLog   bool
+	}{
+		{name: "transaction failure before discard", failCommit: true, wantDiscarded: false, wantLeakLog: false},
+		{name: "post-commit discard failure", discardErr: errors.New("discard rejected"), wantDiscarded: true, wantLeakLog: true},
+		{name: "crash-equivalent omission of discard", wantDiscarded: true, wantLeakLog: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, root, _ := newV2TestStore(t, "job-discard-order")
+			store.state.Jobs[0].Lifecycle = jobmodel.LifecycleFailed
+			store.state.Jobs[0].Desired = jobmodel.DesiredRunning
+			store.state.Jobs[0].LastFailureCommittedBytes = 100
+			store.state.Jobs[0].ZeroProgressResumes = zeroProgressResumeThreshold
+			original := store.state.Jobs[0]
+
+			manager := New(nil, nil)
+			defer manager.Close()
+			if err := manager.SetStateStore(store); err != nil {
+				t.Fatal(err)
+			}
+			if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+				t.Fatal(err)
+			}
+			manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+				return engine.ResumeSummary{
+					HasManifest: true, Classification: "available",
+					Components: []engine.ResumeComponent{{ID: "video", Kind: "video", CommittedBytes: 100}},
+				}, nil
+			}
+			discarded := make(chan string, 1)
+			manager.prepareResumeDiscard = func(_ context.Context, _ engine.OutputRootRef, sessionID string) (*engine.ResumeDiscardHandle, error) {
+				discarded <- sessionID
+				if test.discardErr != nil {
+					return nil, test.discardErr
+				}
+				return nil, nil
+			}
+			var logged strings.Builder
+			logRetiredSessionLeak = func(format string, args ...any) {
+				logged.WriteString(fmt.Sprintf(format, args...))
+			}
+			t.Cleanup(func() { logRetiredSessionLeak = log.Printf })
+			requests := make(chan engine.Request, 1)
+			manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+				requests <- request
+				return engine.Result{Filename: filepath.Join(root, "Demo [abc123] [1080p].mp4")}, nil
+			}
+			if test.failCommit {
+				store.mu.Lock()
+				store.failNext = errors.New("store unavailable")
+				store.mu.Unlock()
+			}
+
+			retryErr := manager.Retry("job-discard-order")
+			if test.failCommit {
+				if retryErr == nil {
+					t.Fatal("Retry() survived a failed escalation commit")
+				}
+				select {
+				case sessionID := <-discarded:
+					t.Fatalf("discard of session %q ran before the commit succeeded", sessionID)
+				default:
+				}
+				after := store.Snapshot().Jobs[0]
+				if after.Lifecycle != jobmodel.LifecycleFailed || after.SessionID != original.SessionID || after.SessionRestarts != 0 {
+					t.Fatalf("failed-commit row = %#v; want the untouched failed row and original session", after)
+				}
+				return
+			}
+			if retryErr != nil {
+				t.Fatalf("Retry() failed: %v", retryErr)
+			}
+			if test.wantDiscarded {
+				if sessionID := <-discarded; sessionID != original.SessionID {
+					t.Fatalf("discarded session = %q; want the retired session %q", sessionID, original.SessionID)
+				}
+			}
+			request := <-requests
+			if request.Filesystem.Resume.SessionID == original.SessionID || request.Filesystem.Resume.SessionID == "" {
+				t.Fatalf("fresh retry session = %q; want a fresh identity", request.Filesystem.Resume.SessionID)
+			}
+			completed := waitForV2Job(t, store, "job-discard-order", jobmodel.LifecycleCompleted)
+			if completed.SessionRestarts != 1 {
+				t.Fatalf("escalation restarts = %d; want 1", completed.SessionRestarts)
+			}
+			if test.wantLeakLog {
+				message := logged.String()
+				if !strings.Contains(message, "job-discard-order") {
+					t.Fatalf("leak log = %q; want the job ID", message)
+				}
+				if strings.Contains(message, root) {
+					t.Fatalf("leak log = %q; leaked the output root path", message)
+				}
+			} else if logged.Len() != 0 {
+				t.Fatalf("unexpected leak log = %q", logged.String())
+			}
+		})
 	}
 }
 
