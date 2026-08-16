@@ -22,15 +22,14 @@ and Apple-notarized.
 
 ## Artifact for v0.1.0-beta.1
 
-| Platform | Artifact | Contents |
+| Platform | Artifact | Purpose |
 | --- | --- | --- |
-| macOS Apple Silicon | `VidStow-0.1.0-beta.1-darwin-arm64.dmg` | `VidStow.app` at volume root plus an Applications symlink |
-| macOS Apple Silicon | `VidStow-0.1.0-beta.1-darwin-arm64.zip` | `VidStow.app` with embedded `ytdlp-js-helper` |
+| macOS Apple Silicon | `VidStow-0.1.0-beta.1-darwin-arm64.zip` | Checksum-pinned payload consumed by the Homebrew cask |
 
 The published [`v0.1.0-beta.1`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.1)
-prerelease includes both artifacts. The candidate workflow currently emits the
-zip, `SHA256SUMS`, and build metadata; the DMG for this tag was attached after
-review.
+prerelease includes the ZIP, `SHA256SUMS`, and build metadata. These are
+technical release inputs and verification evidence; the supported user
+installation path is the Homebrew cask.
 
 The release also includes `SHA256SUMS` and build metadata identifying the exact
 source revision and `youtube_dlp` module version. A checksum establishes file
@@ -61,8 +60,8 @@ candidate.
 
 The current macOS bundle is ad-hoc signed. An ad-hoc signature can detect some
 post-signing modifications, but it does not establish publisher identity or
-Apple notarization. The zip and DMG containers are unsigned; only the app
-bundle inside them carries the ad-hoc signature.
+Apple notarization. The ZIP container is unsigned; only the app bundle inside
+it carries the ad-hoc signature.
 
 Release notes must describe the exact artifact accurately and must not claim
 Apple verification. Any quarantine bypass must be explicit, checksum-pinned,
@@ -72,9 +71,9 @@ bypassed.
 ## FFmpeg
 
 FFmpeg and FFprobe are not bundled. The Homebrew cask installs FFmpeg as a
-formula dependency. For direct artifacts and source builds, the app detects the
-binaries on `PATH`, in Homebrew's default prefixes, or at paths selected by the
-user. The README and release notes must state this external requirement.
+formula dependency. Source builds detect the binaries on `PATH`, in Homebrew's
+default prefixes, or at paths selected by the user. The README and release
+notes must state this external requirement.
 
 ## Updates
 
