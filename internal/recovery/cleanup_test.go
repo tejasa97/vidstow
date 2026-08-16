@@ -114,10 +114,12 @@ func realTempDir(t *testing.T) string {
 	return path
 }
 
-// TestLiveRootsTrackOnlyReferencedSessions pins the reviewer-required
-// recovery property for retired retry sessions: once the durable row rotates
-// onto a fresh session, the retired session is absent from the live set, so
-// CollectResumeOrphans can reclaim its workspace after OrphanAge.
+// TestLiveRootsTrackOnlyReferencedSessions pins the discoverability half of
+// the retired-session recovery story: once the durable row rotates onto a
+// fresh session, the retired session is absent from the live set, so
+// CollectResumeOrphans may reclaim its workspace after OrphanAge — for as
+// long as the root itself stays referenced by a job, tombstone, or the
+// download-folder setting.
 func TestLiveRootsTrackOnlyReferencedSessions(t *testing.T) {
 	rootPath := realTempDir(t)
 	root, err := reservationfs.OpenRoot(rootPath)

@@ -1269,6 +1269,12 @@ func TestV2EscalationDiscardRunsOnlyAfterCommit(t *testing.T) {
 				if strings.Contains(message, root) {
 					t.Fatalf("leak log = %q; leaked the output root path", message)
 				}
+				// Reclamation is conditional on the root staying discoverable
+				// (live job, tombstone, or current download folder), so the log
+				// must not promise it unconditionally.
+				if strings.Contains(message, "will reclaim") {
+					t.Fatalf("leak log = %q; promised reclamation the orphan scan cannot guarantee", message)
+				}
 			} else if logged.Len() != 0 {
 				t.Fatalf("unexpected leak log = %q", logged.String())
 			}

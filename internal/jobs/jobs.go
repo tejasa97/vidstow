@@ -950,14 +950,17 @@ func (m *Manager) discardSession(state *jobState) (bool, string) {
 
 // discardRetiredSession best-effort deletes a session that Retry has already
 // rotated off the durable row. A failure never blocks or rolls back the fresh
-// retry: it is logged without paths or other sensitive data and the workspace
-// is left for the recovery orphan scanner, which reclaims unreferenced
-// sessions after OrphanAge. The production store cannot tombstone a retired
-// session of a still-live job.
+// retry. The workspace is reclaimed by the recovery orphan scan only while
+// its root stays discoverable — referenced by a live job, a cleanup
+// tombstone, or the current download folder. Removing the row or changing
+// the folder before OrphanAge can leave the workspace on disk permanently;
+// retaining retired roots durably requires the cleanup store-model follow-up,
+// because the store cannot tombstone a retired session of a still-live job.
+// The leak is logged without paths or other sensitive data.
 func (m *Manager) discardRetiredSession(state *jobState, sessionID string) {
 	cleanupPending, _ := m.discardKnownSession(state, sessionID)
 	if cleanupPending && state != nil {
-		logRetiredSessionLeak("vidstow: retry escalation could not discard the retired session for job %s; recovery will reclaim it as an orphan", state.snap.ID)
+		logRetiredSessionLeak("vidstow: retry escalation could not discard the retired session for job %s; its hidden workspace may remain on disk and is reclaimed only while the queue still references its download folder", state.snap.ID)
 	}
 }
 
