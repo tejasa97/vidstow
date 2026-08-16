@@ -22,7 +22,14 @@ Apple Silicon preview; a later stable `0.1.0` does not exist yet.
 
 ### Fixed
 
-- No entries yet.
+- Retrying a download that failed mid-transfer because its saved YouTube link
+  expired no longer reuses the dead link forever: the first retry still
+  resumes, and once a resume makes no progress (or the server rejects the link
+  with HTTP 403) the next retry discards the saved data and restarts with a
+  fresh link. After two such restarts the row explains that the item must be
+  removed and downloaded again from Home.
+- Mid-transfer failures now explain what Retry will do instead of surfacing
+  the raw engine error.
 
 ## [0.1.0-beta.1] - 2026-08-15
 

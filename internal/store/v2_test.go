@@ -415,6 +415,60 @@ func TestV2ReservationAndLifecycleAxesFollowStructuralRules(t *testing.T) {
 	}
 }
 
+func TestV2RetryEscalationCountersAreBounded(t *testing.T) {
+	valid := func() jobmodel.State {
+		state := defaultStateV2()
+		job := testJob()
+		job.LastFailureCommittedBytes = 3145728
+		job.ZeroProgressResumes = 1
+		job.SessionRestarts = 2
+		state.Jobs = []jobmodel.DurableJob{job}
+		state.NextQueueOrdinal = 2
+		return state
+	}
+	if err := validateState(valid()); err != nil {
+		t.Fatalf("in-range escalation counters rejected: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*jobmodel.DurableJob)
+	}{
+		{"negative committed bytes", func(job *jobmodel.DurableJob) { job.LastFailureCommittedBytes = -1 }},
+		{"negative zero-progress resumes", func(job *jobmodel.DurableJob) { job.ZeroProgressResumes = -1 }},
+		{"zero-progress resumes above bound", func(job *jobmodel.DurableJob) { job.ZeroProgressResumes = maxRetryEscalationCounter + 1 }},
+		{"negative session restarts", func(job *jobmodel.DurableJob) { job.SessionRestarts = -1 }},
+		{"session restarts above bound", func(job *jobmodel.DurableJob) { job.SessionRestarts = maxRetryEscalationCounter + 1 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := valid()
+			test.mutate(&state.Jobs[0])
+			if err := validateState(state); err == nil {
+				t.Fatal("out-of-range escalation counters were accepted")
+			}
+		})
+	}
+}
+
+func TestV2CleanupTombstoneCannotOverlapLivePendingJob(t *testing.T) {
+	now := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+	state := defaultStateV2()
+	job := testJob()
+	job.Lifecycle = jobmodel.LifecyclePending
+	job.Desired = jobmodel.DesiredRunning
+	retired := "fedcba9876543210fedcba9876543210"
+	tomb := jobmodel.CleanupTombstone{
+		JobID: job.ID, SessionID: retired, OutputRoot: job.OutputRoot, Reservation: job.Reservation,
+		State: jobmodel.CleanupPending, CreatedAt: now, UpdatedAt: now,
+	}
+	state.Jobs = []jobmodel.DurableJob{job}
+	state.Cleanup = []jobmodel.CleanupTombstone{tomb}
+	state.NextQueueOrdinal = 2
+	if err := validateState(state); err == nil {
+		t.Fatal("retired-session tombstone overlapping a live pending job was accepted")
+	}
+}
+
 func TestOpenV2MigratesV1AndBacksUpOriginal(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	legacy := map[string]any{

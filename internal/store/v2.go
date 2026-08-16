@@ -759,6 +759,9 @@ func validateState(state jobmodel.State) error {
 		if !validRequest(job.Request) || !validPlan(job.Plan) || !validText(job.ActionRequiredCode, maxShortText, job.Lifecycle == jobmodel.LifecycleActionRequired) || (job.Lifecycle != jobmodel.LifecycleActionRequired && job.ActionRequiredCode != "") || !validText(job.LastErrorCode, maxShortText, false) {
 			return errors.New("store: unsafe persisted request or plan")
 		}
+		if job.LastFailureCommittedBytes < 0 || job.ZeroProgressResumes < 0 || job.ZeroProgressResumes > maxRetryEscalationCounter || job.SessionRestarts < 0 || job.SessionRestarts > maxRetryEscalationCounter {
+			return errors.New("store: invalid retry escalation counters")
+		}
 		if job.Lifecycle == jobmodel.LifecycleActionRequired && (job.ActionRequiredCode == "migration-reanalysis-required" || job.ActionRequiredCode == "migration-private-plan-unverified") && job.Phase == jobmodel.PhasePreparing && job.OutputRoot == (jobmodel.OutputRootRef{}) && job.Reservation.GroupID == "" && job.Reservation.Directory == (jobmodel.OutputRootRef{}) && len(job.Reservation.Artifacts) == 0 {
 			// V1 has no engine-rendered artifact declaration. Preserve such rows
 			// for user repair rather than inventing an unsafe reservation.
@@ -930,25 +933,26 @@ func writeTempFile(target string, data []byte) (string, error) {
 }
 
 const (
-	maxStateBytes          = 8 << 20
-	maxJobs                = 10_000
-	maxCollections         = 2_000
-	maxCollectionChildren  = 500
-	maxHistory             = 10_000
-	maxCleanup             = 10_000
-	maxArtifacts           = 32
-	maxPreconditions       = 10_000
-	maxDurableCounter      = uint64(1<<63 - 1)
-	maxIDBytes             = 128
-	maxGroupIDBytes        = 128
-	maxKindBytes           = 64
-	maxIdentityBytes       = 256
-	maxCanonicalPathBytes  = 4096
-	maxVolumeIdentityBytes = 256
-	maxBasenameBytes       = 255
-	maxShortText           = 256
-	maxText                = 4096
-	maxPathBytes           = 32767
+	maxStateBytes             = 8 << 20
+	maxJobs                   = 10_000
+	maxCollections            = 2_000
+	maxCollectionChildren     = 500
+	maxHistory                = 10_000
+	maxCleanup                = 10_000
+	maxArtifacts              = 32
+	maxPreconditions          = 10_000
+	maxDurableCounter         = uint64(1<<63 - 1)
+	maxRetryEscalationCounter = 8
+	maxIDBytes                = 128
+	maxGroupIDBytes           = 128
+	maxKindBytes              = 64
+	maxIdentityBytes          = 256
+	maxCanonicalPathBytes     = 4096
+	maxVolumeIdentityBytes    = 256
+	maxBasenameBytes          = 255
+	maxShortText              = 256
+	maxText                   = 4096
+	maxPathBytes              = 32767
 )
 
 func validText(value string, max int, required bool) bool {

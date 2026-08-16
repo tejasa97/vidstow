@@ -128,8 +128,15 @@ type DurableJob struct {
 	RetryMode          RetryMode        `json:"retryMode"`
 	ActionRequiredCode string           `json:"actionRequiredCode,omitempty"`
 	LastErrorCode      string           `json:"lastErrorCode,omitempty"`
-	CreatedAt          time.Time        `json:"createdAt"`
-	UpdatedAt          time.Time        `json:"updatedAt"`
+	// Retry escalation bookkeeping for mid-transfer failures. Strict-schema
+	// readers that predate these fields reject rows containing them, while
+	// this build decodes older rows as zero values and simply disables
+	// escalation until a new failure records fresh evidence.
+	LastFailureCommittedBytes int64     `json:"lastFailureCommittedBytes,omitempty"`
+	ZeroProgressResumes       int       `json:"zeroProgressResumes,omitempty"`
+	SessionRestarts           int       `json:"sessionRestarts,omitempty"`
+	CreatedAt                 time.Time `json:"createdAt"`
+	UpdatedAt                 time.Time `json:"updatedAt"`
 }
 
 // PersistedRequest is deliberately limited to safe, user-originated metadata.
