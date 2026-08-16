@@ -17,9 +17,11 @@ A local desktop application built with Go, Wails, and Svelte.
 
 [Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Project status](#project-status) · [Run locally](#run-locally) · [How it works](#how-it-works) · [Contributing](CONTRIBUTING.md)
 
-</div>
+<video src="docs/assets/demo-walkthrough.mp4" width="800" autoplay muted loop playsinline controls>
+  VidStow playlist walkthrough: paste a link, review entries, and follow the local queue.
+</video>
 
-![VidStow analyzing Big Buck Bunny and showing video output choices](docs/assets/screenshots/video-options.png)
+</div>
 
 > [!IMPORTANT]
 > VidStow is beta software for public, on-demand YouTube video, Short, and playlist URLs.
