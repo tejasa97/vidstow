@@ -56,7 +56,7 @@ test('About page uses backend build info with legal copy and external links', as
   assert.match(about, /Copy Diagnostics/);
   assert.match(about, /license: 'Apache-2\.0'/);
   assert.match(about, /BrowserOpenURL\?\.\(url\)/);
-  assert.match(about, /github\.com\/tejasa97\/vidstow/);
+  assert.match(about, /github\.com\/vidstow\/vidstow/);
   assert.match(about, /yt-dlp/);
   assert.match(about, /not affiliated with, or endorsed by,/);
 });
