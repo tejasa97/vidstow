@@ -2,6 +2,7 @@ package jobs_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,12 +13,30 @@ import (
 	"github.com/tejasa97/youtube_dlp/engine"
 )
 
+func privateStoreTestDir(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp(home, ".vidstow-jobs-store-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		_ = os.RemoveAll(dir)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 // TestV2ZeroProgressRestartCommitsOnRealStore proves the escalated retry
 // rotation is valid under V2Store.Transaction: no mid-life tombstone is
 // written, so validateState cannot reject the commit the way a retired-session
 // tombstone overlapping a live job would.
 func TestV2ZeroProgressRestartCommitsOnRealStore(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
+	path := filepath.Join(privateStoreTestDir(t), "state.json")
 	durable, status, err := store.OpenV2(path)
 	if err != nil || !status.Healthy() {
 		t.Fatalf("OpenV2: %v %#v", err, status)
