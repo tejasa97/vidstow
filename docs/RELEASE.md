@@ -4,6 +4,22 @@ The current packaged release scope is a macOS Apple Silicon beta. VidStow's
 Apache-2.0 source and self-build instructions remain available for users who
 prefer to build it themselves.
 
+## Homebrew installation
+
+The recommended beta installation uses the project-owned
+[`vidstow/tap`](https://github.com/vidstow/homebrew-tap) cask:
+
+```sh
+brew tap vidstow/tap
+brew install --cask vidstow
+```
+
+The cask pins and verifies the published ZIP checksum, installs FFmpeg as a
+Homebrew dependency, places `VidStow.app` in Applications, and explicitly
+removes its quarantine attribute. This bypass is disclosed in both the cask
+output and tap README. It is temporary until releases can be Developer ID signed
+and Apple-notarized.
+
 ## Artifact for v0.1.0-beta.1
 
 | Platform | Artifact | Contents |
@@ -49,14 +65,16 @@ Apple notarization. The zip and DMG containers are unsigned; only the app
 bundle inside them carries the ad-hoc signature.
 
 Release notes must describe the exact artifact accurately and must not claim
-Apple verification or instruct users to disable or bypass operating-system
-security controls.
+Apple verification. Any quarantine bypass must be explicit, checksum-pinned,
+and accompanied by a warning that normal Gatekeeper verification is being
+bypassed.
 
 ## FFmpeg
 
-FFmpeg and FFprobe are not bundled. The app detects them on `PATH` and lets the
-user select custom binaries. The README and release notes must state this
-external requirement.
+FFmpeg and FFprobe are not bundled. The Homebrew cask installs FFmpeg as a
+formula dependency. For direct artifacts and source builds, the app detects the
+binaries on `PATH`, in Homebrew's default prefixes, or at paths selected by the
+user. The README and release notes must state this external requirement.
 
 ## Updates
 
