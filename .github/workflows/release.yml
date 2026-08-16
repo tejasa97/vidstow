@@ -106,9 +106,16 @@ jobs:
           ./scripts/package-release-archives.sh \
             "$APP_VERSION" darwin arm64 build/bin/VidStow.app
           archive="dist/VidStow-${APP_VERSION}-darwin-arm64.zip"
+          dmg="dist/VidStow-${APP_VERSION}-darwin-arm64.dmg"
           test -f "$archive"
+          test -f "$dmg"
           verify_dir=$(mktemp -d)
-          trap 'rm -rf "$verify_dir"' EXIT
+          mount_dir=$(mktemp -d)
+          cleanup() {
+            hdiutil detach "$mount_dir" >/dev/null 2>&1 || true
+            rm -rf "$verify_dir" "$mount_dir"
+          }
+          trap cleanup EXIT
           ditto -x -k "$archive" "$verify_dir"
           archived_app="$verify_dir/VidStow/VidStow.app"
           test -d "$archived_app"
@@ -117,6 +124,12 @@ jobs:
           test "$(lipo -archs "$archived_app/Contents/MacOS/ytdlp-js-helper")" = "arm64"
           codesign --verify --deep --strict --verbose=2 "$archived_app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :VidStowReleaseVersion' "$archived_app/Contents/Info.plist")" = "$APP_VERSION"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$dmg"
+          test -d "$mount_dir/VidStow.app"
+          test -L "$mount_dir/Applications"
+          test "$(readlink "$mount_dir/Applications")" = "/Applications"
+          codesign --verify --deep --strict --verbose=2 "$mount_dir/VidStow.app"
+          hdiutil detach "$mount_dir"
           engine_version=$(go list -m -f '{{.Version}}' github.com/tejasa97/youtube_dlp)
           {
             echo "VidStow version: $APP_VERSION"
@@ -147,7 +160,9 @@ jobs:
       - name: Attest candidate provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/VidStow-${{ env.APP_VERSION }}-darwin-arm64.zip
+          subject-path: |
+            dist/VidStow-${{ env.APP_VERSION }}-darwin-arm64.zip
+            dist/VidStow-${{ env.APP_VERSION }}-darwin-arm64.dmg
 
   draft:
     needs: build

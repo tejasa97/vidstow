@@ -17,6 +17,7 @@ Apple Silicon preview; a later stable `0.1.0` does not exist yet.
 
 ### Changed
 
+- Candidate packaging now writes a drag-to-Applications DMG alongside the zip.
 - README and release packaging now describe the published `v0.1.0-beta.1`
   macOS Apple Silicon DMG and zip.
 

@@ -34,20 +34,25 @@ if [[ ! -f "$archives_dir/RELEASE-METADATA.txt" ]]; then
 fi
 version=${tag#v}
 archive_name="VidStow-${version}-darwin-arm64.zip"
+dmg_name="VidStow-${version}-darwin-arm64.dmg"
 if [[ ! -f "$archives_dir/$archive_name" ]]; then
   echo "create-github-release: missing candidate archive: $archive_name" >&2
+  exit 1
+fi
+if [[ ! -f "$archives_dir/$dmg_name" ]]; then
+  echo "create-github-release: missing candidate disk image: $dmg_name" >&2
   exit 1
 fi
 
 shopt -s nullglob
 assets=("$archives_dir"/*)
-if [[ ${#assets[@]} -ne 3 ]]; then
-  echo "create-github-release: expected exactly archive, metadata, and checksums" >&2
+if [[ ${#assets[@]} -ne 4 ]]; then
+  echo "create-github-release: expected exactly zip, dmg, metadata, and checksums" >&2
   exit 1
 fi
 for asset in "${assets[@]}"; do
   case "$(basename "$asset")" in
-    "$archive_name"|RELEASE-METADATA.txt|SHA256SUMS) ;;
+    "$archive_name"|"$dmg_name"|RELEASE-METADATA.txt|SHA256SUMS) ;;
     *)
       echo "create-github-release: unexpected candidate asset: $(basename "$asset")" >&2
       exit 1
@@ -55,7 +60,7 @@ for asset in "${assets[@]}"; do
   esac
 done
 checksum_names=$(awk '{print $2}' "$archives_dir/SHA256SUMS" | LC_ALL=C sort)
-expected_names=$(printf '%s\n' "$archive_name" RELEASE-METADATA.txt | LC_ALL=C sort)
+expected_names=$(printf '%s\n' "$archive_name" "$dmg_name" RELEASE-METADATA.txt | LC_ALL=C sort)
 if [[ "$checksum_names" != "$expected_names" ]]; then
   echo "create-github-release: checksum manifest does not name the exact candidate files" >&2
   exit 1
@@ -88,7 +93,8 @@ This beta preview targets **macOS on Apple Silicon only**.
 
 ### Download
 
-- \`VidStow-${tag#v}-darwin-arm64.zip\`
+- \`VidStow-${tag#v}-darwin-arm64.dmg\` — open the disk image and drag VidStow to Applications.
+- \`VidStow-${tag#v}-darwin-arm64.zip\` — alternate archive of the same app bundle.
 - External FFmpeg and FFprobe are required.
 - Updates are installed manually from this project's releases.
 - \`SHA256SUMS\` verifies the downloaded candidate files.

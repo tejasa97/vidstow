@@ -56,6 +56,7 @@ case "$os_name" in
       rm -f "$stage_dir/ytdlp-js-helper"
     fi
     archive_name="VidStow-${version}-darwin-${arch}.zip"
+    dmg_name="VidStow-${version}-darwin-${arch}.dmg"
     (
       cd "$staging_root"
       if command -v ditto >/dev/null 2>&1; then
@@ -64,6 +65,42 @@ case "$os_name" in
         COPYFILE_DISABLE=1 zip -qry -X "$dist_dir/$archive_name" VidStow
       fi
     )
+    if ! command -v hdiutil >/dev/null 2>&1; then
+      echo "package-release-archives: hdiutil is required to create a darwin DMG" >&2
+      exit 1
+    fi
+    # Mount a writable image and add the Applications symlink there.
+    # hdiutil -srcfolder can dereference /Applications and copy the host folder.
+    dmg_work="$staging_root/dmgwork"
+    rw_dmg="$dmg_work/rw.dmg"
+    mount_point="$dmg_work/mnt"
+    mkdir -p "$mount_point"
+    app_kb=$(du -sk "$stage_dir/VidStow.app" | awk '{print $1}')
+    size_mb=$(( (app_kb + 20480 + 1023) / 1024 ))
+    if [ "$size_mb" -lt 32 ]; then
+      size_mb=32
+    fi
+    hdiutil create -size "${size_mb}m" -fs HFS+ -volname "VidStow" -ov "$rw_dmg" >/dev/null
+    hdiutil attach -readwrite -nobrowse -noverify -mountpoint "$mount_point" "$rw_dmg" >/dev/null
+    dmg_detach() {
+      hdiutil detach "$mount_point" >/dev/null 2>&1 || true
+    }
+    trap 'dmg_detach; rm -rf "$staging_root"' EXIT HUP INT TERM
+    if command -v ditto >/dev/null 2>&1; then
+      COPYFILE_DISABLE=1 ditto --norsrc "$stage_dir/VidStow.app" "$mount_point/VidStow.app"
+    else
+      COPYFILE_DISABLE=1 cp -R "$stage_dir/VidStow.app" "$mount_point/VidStow.app"
+    fi
+    ln -s /Applications "$mount_point/Applications"
+    sync
+    trap 'rm -rf "$staging_root"' EXIT HUP INT TERM
+    hdiutil detach "$mount_point" >/dev/null
+    hdiutil convert \
+      "$rw_dmg" \
+      -format UDZO \
+      -imagekey zlib-level=9 \
+      -ov \
+      -o "$dist_dir/$dmg_name" >/dev/null
     ;;
   windows)
     if [ ! -f "$artifact_abs" ]; then
@@ -137,3 +174,6 @@ esac
 )
 
 printf '%s\n' "package-release-archives: wrote $dist_dir/$archive_name"
+if [ -n "${dmg_name:-}" ]; then
+  printf '%s\n' "package-release-archives: wrote $dist_dir/$dmg_name"
+fi
