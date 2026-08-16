@@ -639,6 +639,338 @@ func TestV2RetryPreservesUncertainSessionAsActionRequired(t *testing.T) {
 	}
 }
 
+// TestV2ZeroProgressResumeEscalatesToFreshSession reproduces the stale signed
+// URL trap end to end: a mid-transfer failure resumes once, and when that
+// resume commits no new bytes the next retry discards the dead session and
+// restarts with a fresh one instead of pinning the same URL forever.
+func TestV2ZeroProgressResumeEscalatesToFreshSession(t *testing.T) {
+	store, root, plan := newV2TestStore(t, "job-zero-progress")
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	var committed int64 = 100
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{
+			HasManifest: true, Classification: "available",
+			Components: []engine.ResumeComponent{{ID: "video", Kind: "video", CommittedBytes: committed}},
+		}, nil
+	}
+	sessions := make(chan string, 3)
+	runs := 0
+	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		runs++
+		sessions <- request.Filesystem.Resume.SessionID
+		if runs <= 2 {
+			return engine.Result{}, errors.New("connection reset by peer")
+		}
+		return engine.Result{Filename: filepath.Join(root, "Demo [abc123] [1080p].mp4")}, nil
+	}
+	if _, err := manager.SubmitAdmitted("job-zero-progress", Request{URL: "https://www.youtube.com/watch?v=abc123", VideoID: "abc123", Title: "Demo", PlanID: plan.ID, OutputDir: root}, &plan, AdmittedOutput{Basename: "Demo [abc123] [1080p].mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	firstSession := <-sessions
+	first := waitForV2Job(t, store, "job-zero-progress", jobmodel.LifecycleFailed)
+	if first.LastFailureCommittedBytes != committed || first.ZeroProgressResumes != 0 {
+		t.Fatalf("first failure bookkeeping = %d/%d; want committed %d and no zero-progress mark", first.LastFailureCommittedBytes, first.ZeroProgressResumes, committed)
+	}
+	if first.SessionID != firstSession {
+		t.Fatalf("first failure session = %q; want runner session %q", first.SessionID, firstSession)
+	}
+
+	// The first retry of a mid-transfer failure still resumes: the saved URL
+	// may still serve ranges.
+	if err := manager.Retry("job-zero-progress"); err != nil {
+		t.Fatal(err)
+	}
+	if resumed := <-sessions; resumed != firstSession {
+		t.Fatalf("resume attempt session = %q; want validated session %q", resumed, firstSession)
+	}
+	second := waitForV2Job(t, store, "job-zero-progress", jobmodel.LifecycleFailed)
+	if second.RetryMode != jobmodel.RetryModeResumeValidated {
+		t.Fatalf("resume attempt retry mode = %s; want resume-validated", second.RetryMode)
+	}
+	if second.ZeroProgressResumes != 1 || second.LastFailureCommittedBytes != committed {
+		t.Fatalf("zero-progress bookkeeping after stuck resume = %d/%d; want 1/%d", second.ZeroProgressResumes, second.LastFailureCommittedBytes, committed)
+	}
+
+	// The checkpoint never moved, so the next retry must not resume the dead
+	// session again.
+	if err := manager.Retry("job-zero-progress"); err != nil {
+		t.Fatal(err)
+	}
+	restarted := <-sessions
+	if restarted == firstSession || restarted == "" {
+		t.Fatalf("escalated retry session = %q; want fresh identity distinct from %q", restarted, firstSession)
+	}
+	completed := waitForV2Job(t, store, "job-zero-progress", jobmodel.LifecycleCompleted)
+	if completed.SessionID != restarted || completed.RetryMode != jobmodel.RetryModeRestartNewSession {
+		t.Fatalf("escalated retry identity/mode = %q/%s; want fresh session and restart-new-session", completed.SessionID, completed.RetryMode)
+	}
+	if completed.SessionRestarts != 1 || completed.ZeroProgressResumes != 0 || completed.LastFailureCommittedBytes != 0 {
+		t.Fatalf("escalation bookkeeping = restarts %d, zero-progress %d, committed %d; want 1/0/0", completed.SessionRestarts, completed.ZeroProgressResumes, completed.LastFailureCommittedBytes)
+	}
+}
+
+// TestV2ProgressMakingResumeStillResumes pins the flip side of escalation: a
+// resume attempt that committed new bytes before failing again must keep
+// resuming, because the saved link demonstrably still serves ranges.
+func TestV2ProgressMakingResumeStillResumes(t *testing.T) {
+	store, root, _ := newV2TestStore(t, "job-progress")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleFailed
+	store.state.Jobs[0].Desired = jobmodel.DesiredRunning
+	store.state.Jobs[0].LastFailureCommittedBytes = 100
+	store.state.Jobs[0].ZeroProgressResumes = 0
+	original := store.state.Jobs[0]
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{
+			HasManifest: true, Classification: "available",
+			Components: []engine.ResumeComponent{{ID: "video", Kind: "video", CommittedBytes: 150}},
+		}, nil
+	}
+	requests := make(chan engine.Request, 1)
+	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		requests <- request
+		return engine.Result{Filename: filepath.Join(root, "Demo [abc123] [1080p].mp4")}, nil
+	}
+
+	if err := manager.Retry("job-progress"); err != nil {
+		t.Fatal(err)
+	}
+	request := <-requests
+	if request.Filesystem.Resume.SessionID != original.SessionID {
+		t.Fatalf("progress-making retry session = %q; want validated session %q", request.Filesystem.Resume.SessionID, original.SessionID)
+	}
+	completed := waitForV2Job(t, store, "job-progress", jobmodel.LifecycleCompleted)
+	if completed.RetryMode != jobmodel.RetryModeResumeValidated || completed.SessionRestarts != 0 {
+		t.Fatalf("progress-making retry mode/restarts = %s/%d; want resume-validated and no restarts", completed.RetryMode, completed.SessionRestarts)
+	}
+}
+
+// TestV2ExpiredMediaLinkFailureRestartsImmediately covers the deterministic
+// signal: a download-phase HTTP 403 means the captured signed URL is dead, so
+// retry must not spend an attempt resuming it.
+func TestV2ExpiredMediaLinkFailureRestartsImmediately(t *testing.T) {
+	store, root, _ := newV2TestStore(t, "job-expired-link")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleFailed
+	store.state.Jobs[0].Desired = jobmodel.DesiredRunning
+	store.state.Jobs[0].LastErrorCode = retryCodeMediaLinkExpired
+	original := store.state.Jobs[0]
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{
+			HasManifest: true, Classification: "available",
+			Components: []engine.ResumeComponent{{ID: "video", Kind: "video", CommittedBytes: 3145728}},
+		}, nil
+	}
+	requests := make(chan engine.Request, 1)
+	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		requests <- request
+		return engine.Result{Filename: filepath.Join(root, "Demo [abc123] [1080p].mp4")}, nil
+	}
+
+	if err := manager.Retry("job-expired-link"); err != nil {
+		t.Fatal(err)
+	}
+	request := <-requests
+	if request.Filesystem.Resume.SessionID == original.SessionID || request.Filesystem.Resume.SessionID == "" {
+		t.Fatalf("expired-link retry session = %q; want fresh identity distinct from %q", request.Filesystem.Resume.SessionID, original.SessionID)
+	}
+	completed := waitForV2Job(t, store, "job-expired-link", jobmodel.LifecycleCompleted)
+	if completed.RetryMode != jobmodel.RetryModeRestartNewSession || completed.SessionRestarts != 1 {
+		t.Fatalf("expired-link retry mode/restarts = %s/%d; want restart-new-session and 1 restart", completed.RetryMode, completed.SessionRestarts)
+	}
+}
+
+// TestV2ZeroProgressEscalationIsBounded verifies retry stops auto-escalating
+// after the restart budget is spent and tells the user to download the item
+// again from Home instead of looping through dead sessions forever.
+func TestV2ZeroProgressEscalationIsBounded(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "job-escalation-spent")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleFailed
+	store.state.Jobs[0].Desired = jobmodel.DesiredRunning
+	store.state.Jobs[0].LastErrorCode = retryCodeMediaLinkExpired
+	store.state.Jobs[0].LastFailureCommittedBytes = 3145728
+	store.state.Jobs[0].ZeroProgressResumes = 1
+	store.state.Jobs[0].SessionRestarts = maxZeroProgressRestarts
+	original := store.state.Jobs[0]
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{
+			HasManifest: true, Classification: "available",
+			Components: []engine.ResumeComponent{{ID: "video", Kind: "video", CommittedBytes: 3145728}},
+		}, nil
+	}
+	runs := 0
+	manager.runDownload = func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error) {
+		runs++
+		return engine.Result{}, nil
+	}
+
+	if err := manager.Retry("job-escalation-spent"); err == nil {
+		t.Fatal("Retry() beyond the restart budget succeeded; want decline")
+	}
+	if runs != 0 {
+		t.Fatalf("declined retry started %d runners; want 0", runs)
+	}
+	after := store.Snapshot().Jobs[0]
+	if after.Lifecycle != jobmodel.LifecycleFailed || after.SessionID != original.SessionID || after.LastErrorCode != retryCodeFreshDownloadRequired {
+		t.Fatalf("declined retry durable result = %#v; want failed row with fresh-download guidance", after)
+	}
+	snapshot, ok := manager.Find("job-escalation-spent")
+	if !ok || snapshot.Status != StatusFailed || snapshot.Message != freshDownloadRequiredNotice || snapshot.ErrorReason != retryCodeFreshDownloadRequired {
+		t.Fatalf("declined retry runtime result = %#v, %v; want guidance copy on the failed row", snapshot, ok)
+	}
+
+	// Restoring the declined row must keep the guidance copy.
+	restored := New(nil, nil)
+	defer restored.Close()
+	if err := restored.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot, ok := restored.Find("job-escalation-spent"); !ok || snapshot.Message != freshDownloadRequiredNotice {
+		t.Fatalf("restored declined row message = %q, %v; want persisted guidance copy", snapshot.Message, ok)
+	}
+}
+
+func TestShouldRestartZeroProgressFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*jobState)
+		summary engine.ResumeSummary
+		want    bool
+	}{
+		{name: "expired media link", mutate: func(state *jobState) { state.durable.LastErrorCode = retryCodeMediaLinkExpired }, want: true},
+		{
+			name:    "zero progress resume with committed bytes",
+			mutate:  func(state *jobState) { state.durable.ZeroProgressResumes = zeroProgressResumeThreshold },
+			summary: engine.ResumeSummary{Components: []engine.ResumeComponent{{CommittedBytes: 3145728}}},
+			want:    true,
+		},
+		{name: "progress making failure", mutate: func(state *jobState) {}, summary: engine.ResumeSummary{Components: []engine.ResumeComponent{{CommittedBytes: 150}}}, want: false},
+		{
+			name:    "zero progress without committed bytes",
+			mutate:  func(state *jobState) { state.durable.ZeroProgressResumes = zeroProgressResumeThreshold },
+			summary: engine.ResumeSummary{HasManifest: true},
+			want:    false,
+		},
+		{name: "challenge timeout is not escalation", mutate: func(state *jobState) { state.durable.LastErrorCode = retryCodeYouTubeChallengePreTransfer }, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := &jobState{snap: JobSnapshot{}, durable: jobmodel.DurableJob{}}
+			if test.mutate != nil {
+				test.mutate(state)
+			}
+			if got := shouldRestartZeroProgressFailure(state, test.summary); got != test.want {
+				t.Fatalf("shouldRestartZeroProgressFailure() = %t; want %t", got, test.want)
+			}
+		})
+	}
+	if shouldRestartZeroProgressFailure(nil, engine.ResumeSummary{}) {
+		t.Fatal("nil state was restartable")
+	}
+}
+
+func TestExpiredMediaLinkFailureCopy(t *testing.T) {
+	expired := errors.New("multi-track transfer: download HTTP status 403")
+	if got := failureMessage(expired, 0, false); got != mediaLinkExpiredMessage {
+		t.Fatalf("expired-link copy = %q; want %q", got, mediaLinkExpiredMessage)
+	}
+	if got := failureMessage(expired, 3145728, false); got != mediaLinkExpiredMessage {
+		t.Fatalf("expired-link copy with bytes = %q; want %q", got, mediaLinkExpiredMessage)
+	}
+	if got := errorReason(expired); got != retryCodeMediaLinkExpired {
+		t.Fatalf("expired-link reason = %q; want %q", got, retryCodeMediaLinkExpired)
+	}
+	if got := failureMessage(errors.New("connection reset by peer"), 100, false); got != downloadStoppedMidMessage {
+		t.Fatalf("mid-transfer copy = %q; want %q", got, downloadStoppedMidMessage)
+	}
+	// Post-processing failures have complete bytes and keep their own copy.
+	network := &engine.Error{Category: engine.ErrorNetwork, Err: errors.New("transport closed")}
+	if got := failureMessage(network, 5000, true); got != "Network error" {
+		t.Fatalf("post-processing copy = %q; want Network error", got)
+	}
+	// Unknown checkpoint evidence keeps the generic copy.
+	if got := failureMessage(errors.New("connection reset by peer"), -1, false); got != "connection reset by peer" {
+		t.Fatalf("unknown-evidence copy = %q; want raw message", got)
+	}
+	if got := errorReason(errors.New("connection reset by peer")); got != "internal" {
+		t.Fatalf("generic reason = %q; want internal", got)
+	}
+}
+
+// TestV2DownloadAgainResetsEscalationBookkeeping ensures the documented escape
+// hatch starts from a clean slate: a re-downloaded item must not inherit the
+// canceled row's restart budget.
+func TestV2DownloadAgainResetsEscalationBookkeeping(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "job-canceled-counters")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleCanceled
+	store.state.Jobs[0].Desired = jobmodel.DesiredCanceled
+	store.state.Jobs[0].LastErrorCode = retryCodeMediaLinkExpired
+	store.state.Jobs[0].LastFailureCommittedBytes = 3145728
+	store.state.Jobs[0].ZeroProgressResumes = 1
+	store.state.Jobs[0].SessionRestarts = maxZeroProgressRestarts
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.runDownload = func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error) {
+		return engine.Result{}, nil
+	}
+	newID, err := manager.DownloadAgain("job-canceled-counters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range store.Snapshot().Jobs {
+		if job.ID != newID {
+			continue
+		}
+		if job.LastFailureCommittedBytes != 0 || job.ZeroProgressResumes != 0 || job.SessionRestarts != 0 || job.LastErrorCode != "" {
+			t.Fatalf("replacement escalation bookkeeping = %#v; want zeroed fields", job)
+		}
+		if job.RetryMode != jobmodel.RetryModeNone {
+			t.Fatalf("replacement retry mode = %s; want none", job.RetryMode)
+		}
+		return
+	}
+	t.Fatalf("replacement job %q missing from state", newID)
+}
+
 func TestV2DownloadAgainKeepsCanceledRowAndFreshReservationGroup(t *testing.T) {
 	store, root, plan := newV2TestStore(t, "job-canceled", "job-blocker")
 	store.mu.Lock()
@@ -910,7 +1242,7 @@ func TestV2CompletionHistoryAndStaleAttemptEventAreIdempotent(t *testing.T) {
 	store.mu.Lock()
 	callsBefore := store.calls
 	store.mu.Unlock()
-	if err := manager.settleDurable(state, jobmodel.LifecycleCompleted, jobmodel.DesiredRunning, jobmodel.PhaseReadyToPublish, after, "", false); err != nil {
+	if err := manager.settleDurable(state, jobmodel.LifecycleCompleted, jobmodel.DesiredRunning, jobmodel.PhaseReadyToPublish, after, "", false, -1); err != nil {
 		t.Fatal(err)
 	}
 	store.mu.Lock()
