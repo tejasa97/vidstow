@@ -132,7 +132,7 @@ application and engine versions and by artifact-specific validation.
 | Package | `v0.1.0-beta.1` will provide a macOS Apple Silicon preview when published |
 | Source | Apache-2.0 source and self-build instructions |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
-| Engine | `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.1` |
+| Engine | `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.2` |
 | Resume | Session reuse is evidence-dependent; no universal transfer continuation or guaranteed byte reuse |
 | Updates | Manual downloads from GitHub Releases |
 

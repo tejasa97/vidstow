@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -3870,11 +3871,12 @@ func isYouTubeChallengeTimeout(err error) bool {
 		strings.Contains(message, "JavaScript execution timed out")
 }
 
-// isExpiredMediaLinkError matches the downloader's own HTTP status wording, so
-// it cannot fire for extraction, API, or post-processing failures. A 403 from
-// the signed googlevideo URL means the captured link is dead.
+// isExpiredMediaLinkError matches only a typed 403 from the media downloader,
+// so it cannot fire for extraction, API, post-processing, or coincidental error
+// text. A 403 from the signed googlevideo URL means the captured link is dead.
 func isExpiredMediaLinkError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "download HTTP status 403")
+	code, ok := engine.DownloadHTTPStatusCode(err)
+	return ok && code == http.StatusForbidden
 }
 
 // failureMessage humanizes a failed download attempt. Mid-transfer failures

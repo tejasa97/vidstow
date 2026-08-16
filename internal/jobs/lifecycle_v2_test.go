@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -962,7 +963,7 @@ func TestV2ExpiredMediaLinkAtRestartCapSettlesGuidance(t *testing.T) {
 		if request.Filesystem.Resume.SessionID == original.SessionID {
 			t.Error("at-cap restart reused the retired session")
 		}
-		return engine.Result{}, errors.New("multi-track transfer: download HTTP status 403")
+		return engine.Result{}, fmt.Errorf("multi-track transfer: %w", &engine.DownloadHTTPStatusError{Code: http.StatusForbidden})
 	}
 
 	if err := manager.Retry("job-cap-copy"); err != nil {
@@ -1069,7 +1070,7 @@ func TestV2MidTransferAtRestartCapSettlesGuidance(t *testing.T) {
 }
 
 func TestShouldSettleFreshDownloadRequired(t *testing.T) {
-	expired := errors.New("multi-track transfer: download HTTP status 403")
+	expired := fmt.Errorf("multi-track transfer: %w", &engine.DownloadHTTPStatusError{Code: http.StatusForbidden})
 	reset := errors.New("connection reset by peer")
 	tests := []struct {
 		name      string
@@ -1137,8 +1138,30 @@ func TestShouldRestartZeroProgressFailure(t *testing.T) {
 	}
 }
 
+func TestIsExpiredMediaLinkErrorUsesTypedDownloadStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil"},
+		{name: "download 403", err: &engine.DownloadHTTPStatusError{Code: http.StatusForbidden}, want: true},
+		{name: "wrapped download 403", err: fmt.Errorf("multi-track transfer: %w", &engine.DownloadHTTPStatusError{Code: http.StatusForbidden}), want: true},
+		{name: "download 401", err: &engine.DownloadHTTPStatusError{Code: http.StatusUnauthorized}},
+		{name: "extractor 403", err: &engine.HTTPStatusError{Code: http.StatusForbidden}},
+		{name: "coincidental text", err: errors.New("multi-track transfer: download HTTP status 403")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isExpiredMediaLinkError(test.err); got != test.want {
+				t.Fatalf("isExpiredMediaLinkError(%v) = %t; want %t", test.err, got, test.want)
+			}
+		})
+	}
+}
+
 func TestExpiredMediaLinkFailureCopy(t *testing.T) {
-	expired := errors.New("multi-track transfer: download HTTP status 403")
+	expired := fmt.Errorf("multi-track transfer: %w", &engine.DownloadHTTPStatusError{Code: http.StatusForbidden})
 	if got := failureMessage(expired, 0, false); got != mediaLinkExpiredMessage {
 		t.Fatalf("expired-link copy = %q; want %q", got, mediaLinkExpiredMessage)
 	}
