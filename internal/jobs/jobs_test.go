@@ -165,6 +165,60 @@ func TestAnalyzePlaylistRejectsMetadataIdentityMismatch(t *testing.T) {
 	}
 }
 
+func TestAnalyzePlaylistAcceptsChannelHandleResolvedToUCID(t *testing.T) {
+	manager := New(nil, nil)
+	channelURL := "https://www.youtube.com/@veritasium/videos"
+	manager.runAnalyze = func(_ context.Context, req engine.Request) (engine.Result, error) {
+		if req.URL != channelURL {
+			t.Fatalf("analyzed URL = %q", req.URL)
+		}
+		return engine.Result{
+			InfoJSON: json.RawMessage(`{"id":"UCabcdefghijklmnopqrstuv","title":"Veritasium","channel":"Veritasium"}`),
+			Entries: []engine.Result{
+				{InfoJSON: json.RawMessage(`{"id":"aaaaaaaaaaa","title":"One","url":"https://www.youtube.com/watch?v=aaaaaaaaaaa"}`)},
+				{InfoJSON: json.RawMessage(`{"id":"bbbbbbbbbbb","title":"Short","url":"https://www.youtube.com/shorts/bbbbbbbbbbb"}`)},
+			},
+		}, nil
+	}
+	summary, err := manager.AnalyzePlaylist(context.Background(), channelURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Kind != "channel" || summary.Tab != "videos" || summary.ID != "UCabcdefghijklmnopqrstuv" || summary.Available != 2 {
+		t.Fatalf("summary=%#v", summary)
+	}
+	if summary.Entries[1].URL != "https://www.youtube.com/watch?v=bbbbbbbbbbb" || !summary.Entries[1].Available {
+		t.Fatalf("shorts child was not canonicalized: %#v", summary.Entries[1])
+	}
+}
+
+func TestAnalyzePlaylistRejectsChannelPlaylistIdentityMismatch(t *testing.T) {
+	manager := New(nil, nil)
+	manager.runAnalyze = func(context.Context, engine.Request) (engine.Result, error) {
+		return engine.Result{
+			InfoJSON: json.RawMessage(`{"id":"PLunexpected","title":"Not a channel"}`),
+			Entries:  []engine.Result{{InfoJSON: json.RawMessage(`{"id":"aaaaaaaaaaa","title":"One","url":"https://www.youtube.com/watch?v=aaaaaaaaaaa"}`)}},
+		}, nil
+	}
+	_, err := manager.AnalyzePlaylist(context.Background(), "https://www.youtube.com/@veritasium/videos")
+	if err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+		t.Fatalf("AnalyzePlaylist() error = %v, want identity mismatch", err)
+	}
+}
+
+func TestSummarizePlaylistCanonicalizesShortsChildren(t *testing.T) {
+	summary, err := summarizePlaylist(engine.Result{
+		InfoJSON: json.RawMessage(`{"id":"UCabcdefghijklmnopqrstuv","title":"Channel"}`),
+		Entries:  []engine.Result{{InfoJSON: json.RawMessage(`{"id":"bbbbbbbbbbb","title":"Short","url":"https://www.youtube.com/shorts/bbbbbbbbbbb","playlist_index":1}`)}},
+	}, "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv/shorts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Kind != "channel" || summary.Tab != "shorts" || !summary.Entries[0].Available || summary.Entries[0].URL != "https://www.youtube.com/watch?v=bbbbbbbbbbb" {
+		t.Fatalf("summary=%#v", summary)
+	}
+}
+
 func TestAnalyzePlaylistPrunesAndCapsPreviewCache(t *testing.T) {
 	manager := New(nil, nil)
 	now := time.Now()

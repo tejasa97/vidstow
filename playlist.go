@@ -42,6 +42,7 @@ type analyzedPlaylistChild struct {
 // StartPlaylistDownload resolves the renderer's bounded index selection
 // through the trusted preview, analyzes every canonical child on the backend,
 // chooses curated plans, then delegates one atomic collection to State v2.
+// Public channel Videos and Shorts tabs use the same collection admission path.
 func (a *App) StartPlaylistDownload(req StartPlaylistRequest) (string, error) {
 	if err := a.requireReady(); err != nil {
 		return "", err
@@ -55,7 +56,10 @@ func (a *App) StartPlaylistDownload(req StartPlaylistRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if validated.Kind != urlcheck.KindPlaylist || validated.PlaylistID == "" || validated.PlaylistID != req.PlaylistID {
+	if !urlcheck.IsCollection(validated.Kind) {
+		return "", errors.New("choose a playlist or channel from this link first")
+	}
+	if validated.Kind == urlcheck.KindPlaylist && (validated.PlaylistID == "" || validated.PlaylistID != req.PlaylistID) {
 		return "", errors.New("playlist identity does not match the analyzed preview")
 	}
 	policy, err := validatePlaylistPolicy(req.Quality, req.AudioBitrate)
@@ -65,12 +69,22 @@ func (a *App) StartPlaylistDownload(req StartPlaylistRequest) (string, error) {
 	if req.Quality == jobs.QualityAudioOnly && req.AudioBitrate != 0 && !a.ffmpegStatus().Available {
 		return "", errors.New("MP3 conversion needs FFmpeg; choose original audio or configure FFmpeg")
 	}
-	preview, entries, err := a.jobs.ResolvePlaylistSelection(validated.PlaylistID, req.SelectedItems)
+	preview, entries, err := a.jobs.ResolvePlaylistSelection(req.PlaylistID, req.SelectedItems)
 	if err != nil {
 		return "", err
 	}
-	if preview.ID != validated.PlaylistID || preview.URL != validated.PlaylistURL {
+	collectionURL := validated.PlaylistURL
+	if collectionURL == "" {
+		collectionURL = validated.URL
+	}
+	if preview.URL != collectionURL {
 		return "", errors.New("playlist preview identity is no longer valid")
+	}
+	if validated.Kind == urlcheck.KindPlaylist && preview.ID != validated.PlaylistID {
+		return "", errors.New("playlist preview identity is no longer valid")
+	}
+	if validated.Kind == urlcheck.KindChannel && !urlcheck.IdentityMatches(collectionURL, preview.ID) {
+		return "", errors.New("channel preview identity is no longer valid")
 	}
 
 	ctx, cancel := context.WithCancel(a.ctx)
@@ -251,7 +265,13 @@ func choosePlaylistPlan(plans []outputplan.Plan, quality jobs.Quality, bitrate i
 }
 
 func playlistSubfolder(title, playlistID string) string {
-	idRunes := []rune(strings.TrimSpace(playlistID))
+	id := strings.Map(func(r rune) rune {
+		if r < 32 || strings.ContainsRune(`<>:"/\|?*`, r) {
+			return '-'
+		}
+		return r
+	}, strings.TrimSpace(playlistID))
+	idRunes := []rune(id)
 	if len(idRunes) > 64 {
 		idRunes = idRunes[:64]
 	}

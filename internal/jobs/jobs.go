@@ -28,6 +28,7 @@ import (
 	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/vidstow/internal/reservation"
+	"github.com/tejasa97/vidstow/internal/urlcheck"
 	"github.com/tejasa97/youtube_dlp/engine"
 	provideryoutube "github.com/tejasa97/youtube_dlp/providers/youtube"
 )
@@ -264,6 +265,7 @@ type QueueCollectionCapabilities struct {
 type QueueCollection struct {
 	ID            string                      `json:"id"`
 	Title         string                      `json:"title"`
+	Kind          string                      `json:"kind,omitempty"`
 	Metadata      string                      `json:"metadata,omitempty"`
 	ThumbnailURL  string                      `json:"thumbnailUrl,omitempty"`
 	Policy        string                      `json:"policy"`
@@ -1704,11 +1706,15 @@ func (m *Manager) queueCollectionsLocked(rows []QueueRow) []QueueCollection {
 	liveAuthority := make(map[string]struct{}, len(durable.Collections))
 	for _, parent := range durable.Collections {
 		collection := QueueCollection{
-			ID: parent.ID, Title: parent.Title, ThumbnailURL: parent.Thumbnail, Policy: parent.Policy,
+			ID: parent.ID, Title: parent.Title, Kind: collectionKindFromURL(parent.SourceURL), ThumbnailURL: parent.Thumbnail, Policy: parent.Policy,
 			ChildJobIDs: append([]string(nil), parent.ChildJobIDs...), Total: len(parent.ChildJobIDs),
 		}
+		if collection.Kind == "" {
+			collection.Kind = urlcheck.KindPlaylist
+		}
+		collection.Metadata = collectionKindLabel(collection.Kind)
 		if parent.Channel != "" {
-			collection.Metadata = parent.Channel
+			collection.Metadata += " · " + parent.Channel
 		}
 		removeAll := len(parent.ChildJobIDs) > 0
 		progress := 0.0
@@ -3939,11 +3945,13 @@ func isKnownQuality(quality Quality) bool {
 	return false
 }
 
-// PlaylistSummary is a lightweight flat-playlist preview. Child formats are
-// deliberately not extracted until their individual queue jobs run.
+// PlaylistSummary is a lightweight flat-playlist or channel preview. Child
+// formats are deliberately not extracted until their individual queue jobs run.
 type PlaylistSummary struct {
 	ID          string                 `json:"id"`
 	URL         string                 `json:"url"`
+	Kind        string                 `json:"kind,omitempty"`
+	Tab         string                 `json:"tab,omitempty"`
 	Title       string                 `json:"title"`
 	Channel     string                 `json:"channel"`
 	Thumbnail   string                 `json:"thumbnail"`
@@ -4020,8 +4028,7 @@ func (m *Manager) AnalyzePlaylist(ctx context.Context, rawURL string) (PlaylistS
 	if err != nil {
 		return PlaylistSummary{}, err
 	}
-	expectedID := playlistIDFromURL(rawURL)
-	if expectedID == "" || summary.ID != expectedID {
+	if !urlcheck.IdentityMatches(rawURL, summary.ID) {
 		return PlaylistSummary{}, errors.New("analyze playlist: playlist identity mismatch")
 	}
 	if len(summary.Entries) == 0 {
@@ -4107,6 +4114,12 @@ func summarizePlaylist(result engine.Result, rawURL string) (PlaylistSummary, er
 		return PlaylistSummary{}, errors.New("analyze playlist: invalid metadata")
 	}
 	summary := PlaylistSummary{URL: rawURL, ID: metadataText(parent, "id"), Title: metadataText(parent, "title"), Channel: metadataText(parent, "channel"), Thumbnail: metadataText(parent, "thumbnail")}
+	if classified, err := urlcheck.Validate(rawURL); err == nil && classified.Kind == urlcheck.KindChannel {
+		summary.Kind = urlcheck.KindChannel
+		summary.Tab = classified.ChannelTab
+	} else {
+		summary.Kind = urlcheck.KindPlaylist
+	}
 	if summary.Channel == "" {
 		summary.Channel = metadataText(parent, "uploader")
 	}
@@ -4155,19 +4168,37 @@ func summarizePlaylist(result engine.Result, rawURL string) (PlaylistSummary, er
 		return PlaylistSummary{}, errors.New("analyze playlist: missing playlist identity")
 	}
 	if summary.Title == "" {
-		summary.Title = "Untitled playlist"
+		if summary.Kind == urlcheck.KindChannel {
+			summary.Title = "Untitled channel"
+		} else {
+			summary.Title = "Untitled playlist"
+		}
 	}
 	return summary, nil
 }
 
 var videoIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
 
-func playlistIDFromURL(rawURL string) string {
+func collectionKindFromURL(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return ""
+		return urlcheck.KindPlaylist
 	}
-	return parsed.Query().Get("list")
+	if isChannelSourcePath(parsed.Path) {
+		return urlcheck.KindChannel
+	}
+	return urlcheck.KindPlaylist
+}
+
+func collectionKindLabel(kind string) string {
+	if kind == urlcheck.KindChannel {
+		return "Channel"
+	}
+	return "Playlist"
+}
+
+func isChannelSourcePath(path string) bool {
+	return strings.HasPrefix(path, "/@") || strings.HasPrefix(path, "/channel/") || strings.HasPrefix(path, "/c/") || strings.HasPrefix(path, "/user/")
 }
 
 func canonicalPlaylistChildURL(videoID, reportedURL string) (string, bool) {
@@ -4175,7 +4206,7 @@ func canonicalPlaylistChildURL(videoID, reportedURL string) (string, bool) {
 		return "", false
 	}
 	parsed, err := url.Parse(reportedURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Path != "/watch" || parsed.Query().Get("v") != videoID {
+	if err != nil || parsed.Scheme != "https" {
 		return "", false
 	}
 	host := strings.ToLower(parsed.Hostname())
@@ -4184,7 +4215,16 @@ func canonicalPlaylistChildURL(videoID, reportedURL string) (string, bool) {
 	if host != "youtube.com" {
 		return "", false
 	}
-	return "https://www.youtube.com/watch?v=" + url.QueryEscape(videoID), true
+	switch {
+	case parsed.Path == "/watch" && parsed.Query().Get("v") == videoID:
+		return "https://www.youtube.com/watch?v=" + url.QueryEscape(videoID), true
+	case strings.HasPrefix(parsed.Path, "/shorts/"):
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if len(parts) >= 2 && parts[1] == videoID {
+			return "https://www.youtube.com/watch?v=" + url.QueryEscape(videoID), true
+		}
+	}
+	return "", false
 }
 
 // Analyze calls engine.Run with Simulate=true to extract metadata for

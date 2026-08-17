@@ -22,23 +22,26 @@ test('page titles and controls match the approved redesign', async () => {
     read('../src/pages/Downloads.svelte'), read('../src/pages/Settings.svelte'),
   ]);
   assert.match(home, /<h1 id="home-title">Download from YouTube<\/h1>/);
-  assert.match(home, /Paste a public YouTube video, Short, or playlist URL to analyze it and choose your download\./);
+  assert.match(home, /Paste a public YouTube video, Short, playlist, or channel URL to analyze it and choose your download\./);
   assert.match(home, /This link includes a playlist/);
   assert.match(home, /Review the playlist instead/);
   assert.match(home, /Every selected video uses this format/);
   assert.match(home, /PLAYLIST_ADMIT_CAP = 500/);
-  assert.match(home, /VidStow can review up to \{PLAYLIST_ADMIT_CAP\} videos from a playlist\./);
+  assert.match(home, /VidStow can review up to \{PLAYLIST_ADMIT_CAP\} videos from a \{collectionNoun\}\./);
   assert.doesNotMatch(home, /Admit another batch/);
   assert.match(home, /All available/);
   assert.match(home, /Search playlist…/);
+  assert.match(home, /Search videos…/);
+  assert.match(home, />Videos</);
+  assert.match(home, />Shorts</);
   assert.match(home, />Choose Download</);
   assert.match(home, />Add to Queue</);
   assert.match(home, /'Analyze'/);
   assert.match(queue, /<QueueOverview/);
   assert.match(queue, /api\.queue\.pauseAll/);
   assert.match(queue, /api\.queue\.clearCompleted/);
-  assert.match(queue, /Cancel this playlist\?/);
-  assert.match(queue, /Remove this playlist from the queue\?/);
+  assert.match(queue, /Cancel this \$\{noun\}\?/);
+  assert.match(queue, /Remove this \$\{noun\} from the queue\?/);
   assert.match(queue, /Jobs are saved automatically\./);
   assert.match(downloads, /View your recently downloaded items\./);
   assert.match(downloads, /placeholder="Search downloads…"/);
@@ -62,7 +65,7 @@ test('unsupported and FFmpeg-required states retain accurate product copy', asyn
   const [home, modal] = await Promise.all([
     read('../src/pages/Home.svelte'), read('../src/lib/components/Modal.svelte'),
   ]);
-  assert.match(home, /valid, publicly accessible YouTube video, Short, or playlist/);
+  assert.match(home, /valid, publicly accessible YouTube video, Short, playlist, or channel/);
   assert.doesNotMatch(home, /supports YouTube videos and playlists/);
   assert.match(home, /title: 'FFmpeg Required'/);
   assert.match(home, /choose an original audio option/);

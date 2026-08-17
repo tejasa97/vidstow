@@ -22,6 +22,12 @@ describe('youtubeUrlFromText', () => {
       'https://www.youtube.com/shorts/dQw4w9WgXcQ',
     );
   });
+
+  test('extracts channel URLs from pasted text', () => {
+    expect(youtubeUrlFromText('see https://www.youtube.com/@veritasium/videos later')).toBe(
+      'https://www.youtube.com/@veritasium/videos',
+    );
+  });
 });
 
 describe('formatEngineVersion', () => {

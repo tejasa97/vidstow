@@ -62,7 +62,7 @@
       </div>
     </div>
 
-    <div class="actions" aria-label="Playlist actions">
+    <div class="actions" aria-label={collection.kind === 'channel' ? 'Channel actions' : 'Playlist actions'}>
       {#if collection.capabilities?.resume}
         <button type="button" class="app-btn primary" disabled={!enabled('resume')} onclick={() => trigger('resume')}>Resume</button>
       {:else if collection.capabilities?.pause}

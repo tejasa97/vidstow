@@ -117,7 +117,7 @@ export function formatEngineVersion(version: string): string {
 export function youtubeUrlFromText(text: string): string {
   if (!text) return '';
   const match = text.match(
-    /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?[^\s]*v=[\w-]{6,}|playlist\?list=[\w-]+|shorts\/[\w-]{6,})|youtu\.be\/[\w-]{6,})[^\s]*/i,
+    /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?[^\s]*v=[\w-]{6,}|playlist\?list=[\w-]+|shorts\/[\w-]{6,}|@[^\s/]+(?:\/(?:videos|shorts))?|channel\/UC[\w-]{22}(?:\/(?:videos|shorts))?|(?:c|user)\/[^\s/]+(?:\/(?:videos|shorts))?)|youtu\.be\/[\w-]{6,})[^\s]*/i,
   );
   return match?.[0] ?? '';
 }
