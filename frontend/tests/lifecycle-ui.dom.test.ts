@@ -203,6 +203,21 @@ describe('backend-authored capabilities', () => {
     expect(screen.queryByRole('button', { name: 'Remove download' })).not.toBeInTheDocument();
   });
 
+  test('cleanup-phase terminal rows expose Remove after backend cleanup settles', () => {
+    render(LifecycleJobRow, {
+      props: {
+        job: {
+          id: 'cleanup-settled', title: 'Settled cleanup', lifecycle: 'canceled', phase: 'cleaning-up', occupiesSlot: false,
+          capabilities: { review: false, remove: true }, commandToken: 'cleanup-settled-token',
+        },
+      },
+    });
+    expect(screen.getByRole('button', { name: 'Remove download' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Canceled')).toBeInTheDocument();
+    expect(screen.getByText('Canceled. Resumable data was removed.')).toBeInTheDocument();
+  });
+
   test('persistence-revoked queue data can render but cannot authorize controls', () => {
     render(QueueOverview, {
       props: { model: queueModel({ commandToken: undefined, canPauseAll: false, canClearCompleted: false, jobs: [{ id: 'active-1', title: 'Active', lifecycle: 'active', occupiesSlot: true, capabilities: {}, commandToken: undefined }] }) },

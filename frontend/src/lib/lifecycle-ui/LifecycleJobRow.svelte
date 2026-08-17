@@ -38,7 +38,8 @@
   const progress = $derived(
     job.progress === undefined ? undefined : Math.max(0, Math.min(100, Math.round(job.progress * 100))),
   );
-  const message = $derived(lifecycleMessage(job));
+  const displayPhase = $derived(job.phase === 'cleaning-up' && enabled('remove') ? undefined : job.phase);
+  const message = $derived(lifecycleMessage({ ...job, phase: displayPhase }));
   const queueLabel = $derived(job.queueLabel ?? queuePositionLabel(job.queuePosition));
   const hasProgress = $derived(
     progress !== undefined && job.phase !== 'cleaning-up' && !['failed', 'canceled', 'action-required'].includes(job.lifecycle),
@@ -47,7 +48,7 @@
     job.phase !== 'cleaning-up' && ['pending', 'active', 'pausing', 'canceling', 'paused'].includes(job.lifecycle),
   );
   const isTerminal = $derived(
-    job.phase !== 'cleaning-up' && ['failed', 'canceled', 'completed', 'action-required'].includes(job.lifecycle),
+    ['failed', 'canceled', 'completed', 'action-required'].includes(job.lifecycle),
   );
 
   function enabled(action: LifecycleJobAction): boolean {
@@ -90,7 +91,7 @@
         {#if job.metadata}<p>{job.metadata}</p>{/if}
       </div>
 
-      <LifecycleBadge lifecycle={job.lifecycle} phase={job.phase} occupiesSlot={job.occupiesSlot} compact />
+      <LifecycleBadge lifecycle={job.lifecycle} phase={displayPhase} occupiesSlot={job.occupiesSlot} compact />
 
       <div class="actions" aria-label="Job actions">
         {#if hasTransitionControls}
