@@ -22,7 +22,7 @@ does not exist yet.
 
 ### Fixed
 
-- No entries yet.
+- Deleting a file from Downloads also removes the matching completed item from the queue.
 
 ## [0.1.0-beta.2] - 2026-08-17
 
