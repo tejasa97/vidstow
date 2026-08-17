@@ -78,7 +78,7 @@ func TestStartupRecoveryRequiredFailsClosedWithoutRuntimeFallback(t *testing.T) 
 			defer restore()
 			openStateV2 = func(string) (*store.V2Store, store.StartupStatus, error) { return nil, status, nil }
 			cleanupStarts := 0
-			startStartupCleanup = func(context.Context, recovery.StateStore, time.Duration) <-chan struct{} {
+			startStartupCleanup = func(context.Context, recovery.StateStore, time.Duration, func(recovery.CleanupPass)) <-chan struct{} {
 				cleanupStarts++
 				done := make(chan struct{})
 				close(done)
@@ -116,7 +116,7 @@ func TestHealthyStartupReconcilesBeforeRestoringManager(t *testing.T) {
 		sequence = append(sequence, "restore")
 		return manager.RestoreStateV2(snapshot)
 	}
-	startStartupCleanup = func(ctx context.Context, _ recovery.StateStore, _ time.Duration) <-chan struct{} {
+	startStartupCleanup = func(ctx context.Context, _ recovery.StateStore, _ time.Duration, _ func(recovery.CleanupPass)) <-chan struct{} {
 		sequence = append(sequence, "cleanup")
 		done := make(chan struct{})
 		go func() {

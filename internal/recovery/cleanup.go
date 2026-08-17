@@ -23,6 +23,7 @@ const (
 // CleanupPass reports bounded, path-free maintenance outcomes. A pass never
 // treats an unsafe or indeterminate session as collected.
 type CleanupPass struct {
+	DurableChanges        int
 	RemovedTombstones     int
 	RetriedTombstones     int
 	QuarantinedTombstones int
@@ -68,6 +69,7 @@ func RunCleanupOnce(ctx context.Context, stateStore StateStore) (CleanupPass, er
 				if markErr := markTombstone(stateStore, tombstone, update.code, update.state); markErr != nil {
 					return pass, fmt.Errorf("recovery: record tombstone outcome %q: %w", tombstone.JobID, markErr)
 				}
+				pass.DurableChanges++
 				if update.state == jobmodel.CleanupQuarantined {
 					pass.QuarantinedTombstones++
 				} else {
@@ -83,6 +85,7 @@ func RunCleanupOnce(ctx context.Context, stateStore StateStore) (CleanupPass, er
 				return pass, err
 			}
 			pass.RemovedTombstones++
+			pass.DurableChanges++
 		case tombstoneRetried:
 			pass.RetriedTombstones++
 		case tombstoneQuarantined:
@@ -334,6 +337,13 @@ func engineRootRef(root jobmodel.OutputRootRef, observedReservationIdentity stri
 // The returned channel closes when the supplied context is canceled. The
 // worker never starts until the caller has completed startup reconciliation.
 func StartCleanupWorker(ctx context.Context, stateStore StateStore, interval time.Duration) <-chan struct{} {
+	return StartCleanupWorkerWithReport(ctx, stateStore, interval, nil)
+}
+
+// StartCleanupWorkerWithReport is StartCleanupWorker with a bounded outcome
+// callback. The callback lets the desktop refresh its backend-authored queue
+// after maintenance changes durable cleanup authority.
+func StartCleanupWorkerWithReport(ctx context.Context, stateStore StateStore, interval time.Duration, report func(CleanupPass)) <-chan struct{} {
 	done := make(chan struct{})
 	if ctx == nil {
 		ctx = context.Background()
@@ -343,7 +353,13 @@ func StartCleanupWorker(ctx context.Context, stateStore StateStore, interval tim
 	}
 	go func() {
 		defer close(done)
-		_, _ = RunCleanupOnce(ctx, stateStore)
+		run := func() {
+			pass, err := RunCleanupOnce(ctx, stateStore)
+			if err == nil && report != nil {
+				report(pass)
+			}
+		}
+		run()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -351,7 +367,7 @@ func StartCleanupWorker(ctx context.Context, stateStore StateStore, interval tim
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_, _ = RunCleanupOnce(ctx, stateStore)
+				run()
 			}
 		}
 	}()

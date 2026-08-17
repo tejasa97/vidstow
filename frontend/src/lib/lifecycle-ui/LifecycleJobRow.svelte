@@ -136,6 +136,8 @@
               onclick={() => trigger('remove')}
             >Remove</button>
           {/if}
+        {:else if enabled('review')}
+          <button type="button" class="app-btn primary" onclick={() => trigger('review')}>Review</button>
         {/if}
       </div>
     </div>

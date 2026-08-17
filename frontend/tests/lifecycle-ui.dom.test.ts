@@ -186,6 +186,23 @@ describe('backend-authored capabilities', () => {
     expect(onResume.mock.calls[0][0].detail).toEqual({ jobId: 'paused-1', commandToken: 'backend-command-token' });
   });
 
+  test('cleanup-phase terminal rows can expose backend-authorized Review without Remove', async () => {
+    const onReview = vi.fn<(event: CustomEvent<LifecycleJobEventDetail>) => void>();
+    const user = userEvent.setup();
+    render(LifecycleJobRow, {
+      props: {
+        job: {
+          id: 'cleanup-1', title: 'Preserved cleanup', lifecycle: 'canceled', phase: 'cleaning-up', occupiesSlot: false,
+          capabilities: { review: true, remove: false }, commandToken: 'cleanup-command-token',
+        },
+      },
+      events: { review: onReview },
+    });
+    await user.click(screen.getByRole('button', { name: 'Review' }));
+    expect(onReview.mock.calls[0][0].detail).toEqual({ jobId: 'cleanup-1', commandToken: 'cleanup-command-token' });
+    expect(screen.queryByRole('button', { name: 'Remove download' })).not.toBeInTheDocument();
+  });
+
   test('persistence-revoked queue data can render but cannot authorize controls', () => {
     render(QueueOverview, {
       props: { model: queueModel({ commandToken: undefined, canPauseAll: false, canClearCompleted: false, jobs: [{ id: 'active-1', title: 'Active', lifecycle: 'active', occupiesSlot: true, capabilities: {}, commandToken: undefined }] }) },
@@ -202,6 +219,7 @@ describe('action-required recovery', () => {
     jobId: 'action-1', title: 'Saved video', heading: 'This download needs your decision',
     message: 'The saved session could not be inspected safely.',
     preservationNotice: 'The original row and saved data stay in place.', canStartOver: true,
+    canRetryRecovery: true, canRetryFreshLink: true, canDiscard: true, canRetryCleanup: false,
   };
 
   test('offers a fresh Home analysis while clearly preserving the original row', async () => {
@@ -221,6 +239,26 @@ describe('action-required recovery', () => {
     render(ActionRequiredReviewDialog, { props: { open: true, review: { ...review, canStartOver: false } } });
     expect(screen.queryByRole('button', { name: 'Start over from Home' })).not.toBeInTheDocument();
     expect(screen.getByText(/Starting over is unavailable/)).toBeInTheDocument();
+  });
+
+  test('offers explicit recovery, discard, and quarantined-cleanup actions only when authorized', async () => {
+    const onRetryRecovery = vi.fn();
+    const onRetryFreshLink = vi.fn();
+    const onDiscard = vi.fn();
+    const onRetryCleanup = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(ActionRequiredReviewDialog, { props: { open: true, review, onRetryRecovery, onRetryFreshLink, onDiscard, onRetryCleanup } });
+    await user.click(screen.getByRole('button', { name: 'Try recovery again' }));
+    await user.click(screen.getByRole('button', { name: 'Retry with fresh link' }));
+    await user.click(screen.getByRole('button', { name: 'Discard saved data' }));
+    expect(onRetryRecovery).toHaveBeenCalledOnce();
+    expect(onRetryFreshLink).toHaveBeenCalledOnce();
+    expect(onDiscard).toHaveBeenCalledOnce();
+
+    await rerender({ open: true, review: { ...review, canStartOver: false, canRetryRecovery: false, canRetryFreshLink: false, canDiscard: false, canRetryCleanup: true }, onRetryRecovery, onRetryFreshLink, onDiscard, onRetryCleanup });
+    await user.click(screen.getByRole('button', { name: 'Retry cleanup' }));
+    expect(onRetryCleanup).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: 'Discard saved data' })).not.toBeInTheDocument();
   });
 });
 

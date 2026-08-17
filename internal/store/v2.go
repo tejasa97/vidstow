@@ -716,7 +716,7 @@ func validateState(state jobmodel.State) error {
 	if len(state.Jobs) > maxJobs || len(state.Collections) > maxCollections || len(state.History) > maxHistory || len(state.Cleanup) > maxCleanup {
 		return errors.New("store: state collection exceeds limit")
 	}
-	seen, attempts, sessions, ordinals, cleanupJobs := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[uint64]struct{}{}, map[string]struct{}{}
+	seen, attempts, sessions, ordinals, cleanupSessions := map[string]struct{}{}, map[string]struct{}{}, map[string]string{}, map[uint64]struct{}{}, map[string]struct{}{}
 	jobsByID := map[string]jobmodel.DurableJob{}
 	collectionJobs := map[string]map[int]string{}
 	reservationClaims := map[string]string{}
@@ -752,7 +752,7 @@ func validateState(state jobmodel.State) error {
 			}
 			members[job.CollectionIndex] = job.ID
 		}
-		attempts[job.AttemptID], sessions[job.SessionID], ordinals[job.QueueOrdinal] = struct{}{}, struct{}{}, struct{}{}
+		attempts[job.AttemptID], sessions[job.SessionID], ordinals[job.QueueOrdinal] = struct{}{}, job.ID, struct{}{}
 		if !validLifecycle(job.Lifecycle) || !validPhase(job.Phase) || !validDesired(job.Desired) || !validRetryMode(job.RetryMode) {
 			return errors.New("store: invalid durable job enum")
 		}
@@ -829,21 +829,25 @@ func validateState(state jobmodel.State) error {
 			return errors.New("store: cleanup group does not match job")
 		}
 		if live, liveExists := jobsByID[tombstone.JobID]; liveExists {
-			if live.Lifecycle != jobmodel.LifecycleCanceled || live.SessionID != tombstone.SessionID || live.OutputRoot != tombstone.OutputRoot || !reflect.DeepEqual(live.Reservation, tombstone.Reservation) {
+			// A cleanup record may describe either the live row's canceled
+			// session or an older session retired by a fresh-link retry. Both
+			// must retain the exact root and reservation owned by that row.
+			if live.OutputRoot != tombstone.OutputRoot || !reflect.DeepEqual(live.Reservation, tombstone.Reservation) {
 				return errors.New("store: cleanup tombstone overlaps incompatible live job")
 			}
 		}
-		if _, duplicate := cleanupJobs[tombstone.JobID]; duplicate {
-			return errors.New("store: duplicate cleanup job")
-		}
-		cleanupJobs[tombstone.JobID] = struct{}{}
-		if _, duplicate := sessions[tombstone.SessionID]; duplicate && jobsByID[tombstone.JobID].Lifecycle != jobmodel.LifecycleCanceled {
+		cleanupKey := tombstone.JobID + "\x00" + tombstone.SessionID
+		if _, duplicate := cleanupSessions[cleanupKey]; duplicate {
 			return errors.New("store: duplicate cleanup session")
 		}
-		sessions[tombstone.SessionID] = struct{}{}
+		cleanupSessions[cleanupKey] = struct{}{}
+		if owner, duplicate := sessions[tombstone.SessionID]; duplicate && owner != tombstone.JobID {
+			return errors.New("store: duplicate cleanup session")
+		}
+		sessions[tombstone.SessionID] = tombstone.JobID
 		for _, artifact := range tombstone.Reservation.Artifacts {
 			key := reservationKey(tombstone.OutputRoot, artifact.Basename)
-			if _, exists := reservationClaims[key]; exists {
+			if owner, exists := reservationClaims[key]; exists && owner != tombstone.JobID {
 				return errors.New("store: duplicate cleanup reservation claim")
 			}
 			reservationClaims[key] = tombstone.JobID
