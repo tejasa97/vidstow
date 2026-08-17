@@ -128,13 +128,14 @@
           {:else if enabled('open')}
             <button type="button" class="app-btn primary" onclick={() => trigger('open')}>Open</button>
           {/if}
-          <button
-            type="button"
-            class="app-btn"
-            aria-label="Remove download"
-            disabled={!enabled('remove')}
-            onclick={() => trigger('remove')}
-          >Remove</button>
+          {#if enabled('remove')}
+            <button
+              type="button"
+              class="app-btn"
+              aria-label="Remove download"
+              onclick={() => trigger('remove')}
+            >Remove</button>
+          {/if}
         {/if}
       </div>
     </div>

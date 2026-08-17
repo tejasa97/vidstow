@@ -159,6 +159,15 @@ export interface DestinationConflictViewModel {
   proposedNameAvailable: boolean;
 }
 
+export interface ActionRequiredReviewViewModel {
+  jobId: string;
+  title: string;
+  heading: string;
+  message: string;
+  preservationNotice: string;
+  canStartOver: boolean;
+}
+
 /** Mirrors the bridge queue contract without importing legacy JobSnapshot. */
 export interface QueueView {
   revision: number;

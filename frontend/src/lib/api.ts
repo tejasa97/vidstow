@@ -19,7 +19,7 @@ import type {
   StartupStatus,
   UrlCheckResult,
 } from './types';
-import type { QueueView } from './lifecycle-ui/types.js';
+import type { ActionRequiredReviewViewModel, QueueView } from './lifecycle-ui/types.js';
 
 declare global {
   interface Window {
@@ -118,6 +118,8 @@ export const api = {
     cancel: (id: string, token: string) => call<void>('CancelQueueJob', id, token),
     resume: (id: string, token: string) => call<void>('ResumeQueueJob', id, token),
     retry: (id: string, token: string) => call<void>('RetryQueueJob', id, token),
+    reviewActionRequired: (id: string, token: string) => call<ActionRequiredReviewViewModel>('ReviewActionRequiredQueueJob', id, token),
+    startOverActionRequired: (id: string, token: string) => call<string>('StartOverActionRequiredQueueJob', id, token),
     open: (id: string, token: string) => call<void>('OpenQueueJob', id, token),
     remove: (id: string, token: string) => call<void>('RemoveQueueJob', id, token),
     pauseCollection: (id: string, token: string) => call<number>('PauseQueueCollection', id, token),

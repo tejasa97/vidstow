@@ -298,6 +298,18 @@ type QueueCapabilities struct {
 	CommandToken   string `json:"commandToken,omitempty"`
 }
 
+// ActionRequiredReview is presentation-safe, backend-authored guidance for an
+// evidence-bearing row. It deliberately excludes paths, engine details, and
+// the source URL; the latter is released only by a second authorized command.
+type ActionRequiredReview struct {
+	JobID              string `json:"jobId"`
+	Title              string `json:"title"`
+	Heading            string `json:"heading"`
+	Message            string `json:"message"`
+	PreservationNotice string `json:"preservationNotice"`
+	CanStartOver       bool   `json:"canStartOver"`
+}
+
 // QueueView is the only live queue contract consumed by the V4 frontend.
 // It includes all aggregate facts so Svelte does not infer authority or
 // occupancy from a legacy status string.
@@ -1915,9 +1927,10 @@ func queueCapabilitiesFor(state *jobState, snap JobSnapshot) QueueJobCapabilitie
 	case StatusComplete:
 		return QueueJobCapabilities{Open: snap.AbsolutePath != "", Remove: true}
 	case StatusActionRequired:
-		// The pinned engine lacks the public inspection/re-reservation facade
-		// required for an authoritative Review command, so this fails closed.
-		return QueueJobCapabilities{}
+		// Review is read-only and preserves the evidence-bearing row. Any next
+		// step is separately authorized; the frontend never derives recovery
+		// authority from the action-required reason or presentation copy.
+		return QueueJobCapabilities{Review: true}
 	default:
 		return QueueJobCapabilities{}
 	}
@@ -1970,6 +1983,66 @@ func (m *Manager) QueueRemove(id, token string) error {
 		return err
 	}
 	return m.Remove(id)
+}
+
+// QueueActionRequiredReview returns bounded recovery guidance for the exact row
+// authorized by token. Opening Review does not mutate, discard, or reinterpret
+// retained engine evidence.
+func (m *Manager) QueueActionRequiredReview(id, token string) (ActionRequiredReview, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshQueueAuthorityLocked()
+	state := m.all[id]
+	if state == nil || token == "" || token != state.commandToken || !m.queueCapabilitiesLocked(state, state.snap).Review {
+		return ActionRequiredReview{}, errors.New("jobs: queue action is no longer available")
+	}
+	return actionRequiredReview(state), nil
+}
+
+// QueueActionRequiredStartOverURL releases only the persisted source URL after
+// rechecking the same backend authority. The caller must perform normal Home
+// analysis and admission, which creates fresh job, attempt, session, and
+// reservation identities; this command never reuses or deletes old evidence.
+func (m *Manager) QueueActionRequiredStartOverURL(id, token string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshQueueAuthorityLocked()
+	state := m.all[id]
+	if state == nil || token == "" || token != state.commandToken || !m.queueCapabilitiesLocked(state, state.snap).Review {
+		return "", errors.New("jobs: queue action is no longer available")
+	}
+	review := actionRequiredReview(state)
+	if !review.CanStartOver {
+		return "", errors.New("jobs: starting over is not available for this item")
+	}
+	return strings.TrimSpace(state.snap.URL), nil
+}
+
+func actionRequiredReview(state *jobState) ActionRequiredReview {
+	code := strings.TrimSpace(state.snap.ErrorReason)
+	if state.fromStateV2 && state.durable.ActionRequiredCode != "" {
+		code = state.durable.ActionRequiredCode
+	}
+	message := "VidStow cannot safely continue this saved download automatically."
+	switch code {
+	case "session-lease-contended":
+		message = "Another VidStow process may still be using this download’s saved data. Close the other process before starting over from Home."
+	case "publication-reconciliation-required":
+		message = "VidStow cannot prove whether the final file was published. Check your download folder before starting another copy."
+	case "session-manifest-corrupt", "session-version-unknown", "session-path-unsafe":
+		message = "The saved download data could not be validated, so VidStow will not resume or delete it automatically."
+	case "recovery-session-unavailable", "session-reconciliation-required":
+		message = "The saved download session could not be inspected safely, so VidStow has preserved it for review."
+	case "migration-reanalysis-required", "migration-private-plan-unverified":
+		message = "This item came from an older VidStow version and must be analyzed again before it can download."
+	}
+	url := strings.TrimSpace(state.snap.URL)
+	return ActionRequiredReview{
+		JobID: state.snap.ID, Title: state.snap.Title,
+		Heading: "This download needs your decision", Message: message,
+		PreservationNotice: "The original queue item and its saved temporary data will stay in place. Starting over will not reuse or delete that uncertain data.",
+		CanStartOver:       url != "",
+	}
 }
 
 func (m *Manager) authorizeCollectionCommand(id, token string, allowed func(QueueCollectionCapabilities) bool, childAllowed func(QueueJobCapabilities) bool) ([]string, error) {

@@ -69,11 +69,49 @@ func TestQueueViewLifecycleCapabilitiesAndAggregates(t *testing.T) {
 	if !rows["completed"].Capabilities.Open || !rows["completed"].Capabilities.Remove {
 		t.Fatal("completed row capability incorrect")
 	}
-	if rows["action"].Capabilities != (QueueJobCapabilities{}) {
-		t.Fatal("action-required row must fail closed without destination review facade")
+	if !rows["action"].Capabilities.Review || rows["action"].Capabilities.Remove || rows["action"].Capabilities.Retry {
+		t.Fatal("action-required row must expose only the evidence-preserving Review action")
 	}
 	if !view.Capabilities.PauseAll || !view.Capabilities.ClearCompleted {
 		t.Fatal("queue-wide capabilities not backend authored")
+	}
+}
+
+func TestQueueActionRequiredReviewIsAuthorizedAndPreservesEvidence(t *testing.T) {
+	m := New(nil, nil)
+	defer m.Close()
+	state := &jobState{
+		snap:         JobSnapshot{ID: "action", URL: "https://www.youtube.com/watch?v=abc12345678", Title: "Saved video", Status: StatusActionRequired, Lifecycle: jobmodel.LifecycleActionRequired, ErrorReason: "session-manifest-corrupt"},
+		durable:      jobmodel.DurableJob{ID: "action", Lifecycle: jobmodel.LifecycleActionRequired, ActionRequiredCode: "session-manifest-corrupt"},
+		fromStateV2:  true,
+		commandToken: "review-token",
+		done:         make(chan struct{}),
+	}
+	m.mu.Lock()
+	m.all["action"] = state
+	view := m.queueViewLocked()
+	token := view.Rows[0].CommandToken
+	m.mu.Unlock()
+
+	review, err := m.QueueActionRequiredReview("action", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.JobID != "action" || review.Title != "Saved video" || !review.CanStartOver || review.Message == "" || review.PreservationNotice == "" {
+		t.Fatalf("review = %#v", review)
+	}
+	url, err := m.QueueActionRequiredStartOverURL("action", token)
+	if err != nil || url != state.snap.URL {
+		t.Fatalf("start-over URL = %q, %v", url, err)
+	}
+	if state.snap.Status != StatusActionRequired || state.durable.ActionRequiredCode != "session-manifest-corrupt" {
+		t.Fatalf("review mutated evidence-bearing row: snap=%#v durable=%#v", state.snap, state.durable)
+	}
+	if _, err := m.QueueActionRequiredReview("action", "stale-token"); err == nil {
+		t.Fatal("stale review authority was accepted")
+	}
+	if _, err := m.QueueActionRequiredStartOverURL("action", "stale-token"); err == nil {
+		t.Fatal("stale start-over authority was accepted")
 	}
 }
 
