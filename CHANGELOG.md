@@ -6,8 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow semantic versioning where practical for a desktop
 application.
 
-`v0.1.0-beta.1` is the first public VidStow prerelease. It packages a macOS
-Apple Silicon preview; a later stable `0.1.0` does not exist yet.
+`v0.1.0-beta.1` is the first public VidStow prerelease. The current packaged
+preview is `v0.1.0-beta.2` for macOS Apple Silicon; a later stable `0.1.0`
+does not exist yet.
 
 ## [Unreleased]
 
@@ -17,8 +18,22 @@ Apple Silicon preview; a later stable `0.1.0` does not exist yet.
 
 ### Changed
 
-- README and release packaging now describe the published `v0.1.0-beta.1`
-  macOS Apple Silicon DMG and zip.
+- No entries yet.
+
+### Fixed
+
+- No entries yet.
+
+## [0.1.0-beta.2] - 2026-08-17
+
+### Changed
+
+- README and release packaging recommend the
+  [`vidstow/tap`](https://github.com/vidstow/homebrew-tap) Homebrew cask as the
+  supported install path. The GitHub ZIP remains a checksum-pinned technical
+  artifact.
+- The packaged application version is `0.1.0-beta.2`.
+- The desktop engine pin is `github.com/tejasa97/youtube_dlp v0.2.2`.
 
 ### Fixed
 
@@ -59,5 +74,6 @@ Apple Silicon preview; a later stable `0.1.0` does not exist yet.
 - Release automation creates a draft prerelease and cannot publish it.
 - The desktop engine pin is `github.com/tejasa97/youtube_dlp v0.2.1`.
 
-[Unreleased]: https://github.com/vidstow/vidstow/compare/v0.1.0-beta.1...HEAD
+[Unreleased]: https://github.com/vidstow/vidstow/compare/v0.1.0-beta.2...HEAD
+[0.1.0-beta.2]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.2
 [0.1.0-beta.1]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.1
