@@ -40,7 +40,7 @@ describe('Home analysis authority', () => {
     const user = userEvent.setup();
     render(Home);
 
-    const input = screen.getByLabelText('YouTube video, Short, playlist, or channel URL');
+    const input = screen.getByLabelText('YouTube video, Short, or playlist URL');
     await user.type(input, firstURL);
     await user.click(screen.getByRole('button', { name: 'Analyze' }));
     expect(await screen.findByText('Fixture video')).toBeInTheDocument();
@@ -55,7 +55,7 @@ describe('Home analysis authority', () => {
     const { AnalyzeURL } = installBindings();
     render(Home);
 
-    const input = screen.getByLabelText('YouTube video, Short, playlist, or channel URL');
+    const input = screen.getByLabelText('YouTube video, Short, or playlist URL');
     await userEvent.setup().type(input, firstURL);
     pendingUrl.set(firstURL);
 
@@ -71,7 +71,7 @@ describe('Home analysis authority', () => {
     (window as any).go.main.App.AnalyzeURL = AnalyzeURL;
     render(Home);
 
-    const input = screen.getByLabelText('YouTube video, Short, playlist, or channel URL');
+    const input = screen.getByLabelText('YouTube video, Short, or playlist URL');
     await user.type(input, firstURL);
     await user.click(screen.getByRole('button', { name: 'Analyze' }));
     await waitFor(() => expect(AnalyzeURL).toHaveBeenCalledOnce());
@@ -100,7 +100,7 @@ describe('Home analysis authority', () => {
     }));
     render(Home);
 
-    await user.type(screen.getByLabelText('YouTube video, Short, playlist, or channel URL'), playlistURL);
+    await user.type(screen.getByLabelText('YouTube video, Short, or playlist URL'), playlistURL);
     await user.click(screen.getByRole('button', { name: 'Analyze' }));
 
     expect(await screen.findByText('Fixture playlist')).toBeInTheDocument();
@@ -113,7 +113,7 @@ describe('Home analysis authority', () => {
     AnalyzeURL.mockImplementation(async (raw: string) => ({ ...videoSummary(raw), mediaType: 'short' }));
     render(Home);
 
-    await user.type(screen.getByLabelText('YouTube video, Short, playlist, or channel URL'), firstURL);
+    await user.type(screen.getByLabelText('YouTube video, Short, or playlist URL'), firstURL);
     await user.click(screen.getByRole('button', { name: 'Analyze' }));
 
     expect(await screen.findByText('Fixture video')).toBeInTheDocument();
@@ -130,7 +130,7 @@ describe('Home analysis authority', () => {
     }));
     render(Home);
 
-    await user.type(screen.getByLabelText('YouTube video, Short, playlist, or channel URL'), shortsURL);
+    await user.type(screen.getByLabelText('YouTube video, Short, or playlist URL'), shortsURL);
     await user.click(screen.getByRole('button', { name: 'Analyze' }));
 
     expect(await screen.findByText('Fixture video')).toBeInTheDocument();
@@ -141,7 +141,7 @@ describe('Home analysis authority', () => {
     const user = userEvent.setup();
     render(Home);
 
-    await user.type(screen.getByLabelText('YouTube video, Short, playlist, or channel URL'), firstURL);
+    await user.type(screen.getByLabelText('YouTube video, Short, or playlist URL'), firstURL);
     await user.click(screen.getByRole('button', { name: 'Analyze' }));
     expect(await screen.findByText('Video plan')).toBeInTheDocument();
 
@@ -149,42 +149,5 @@ describe('Home analysis authority', () => {
     expect(screen.getByText('Audio plan')).toBeInTheDocument();
     expect(screen.queryByText('Video plan')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add to Queue' })).toBeEnabled();
-  });
-
-  test('reviews a channel as a selectable collection with Videos and Shorts tabs', async () => {
-    const user = userEvent.setup();
-    const channelURL = 'https://www.youtube.com/@BlenderFoundation/videos';
-    const shortsURL = 'https://www.youtube.com/@BlenderFoundation/shorts';
-    const ValidateURL = vi.fn(async (raw: string) => {
-      if (raw.includes('/shorts')) {
-        return { kind: 'channel', url: shortsURL, playlistUrl: shortsURL, channelTab: 'shorts' };
-      }
-      return { kind: 'channel', url: channelURL, playlistUrl: channelURL, channelTab: 'videos' };
-    });
-    const AnalyzePlaylist = vi.fn(async (raw: string) => {
-      const shorts = raw.includes('/shorts');
-      return {
-        id: 'UCabcdefghijklmnopqrstuv', url: raw, kind: 'channel', tab: shorts ? 'shorts' : 'videos',
-        title: 'Blender Foundation', channel: 'Blender Foundation', thumbnail: '',
-        entryCount: 1, available: 1, unavailable: 0,
-        entries: [{ index: 1, videoId: 'fixture0001', url: firstURL, title: shorts ? 'Spring' : 'Big Buck Bunny', available: true }],
-      };
-    });
-    (window as any).go.main.App.ValidateURL = ValidateURL;
-    (window as any).go.main.App.AnalyzePlaylist = AnalyzePlaylist;
-    render(Home);
-
-    await user.type(screen.getByLabelText('YouTube video, Short, playlist, or channel URL'), 'https://www.youtube.com/@BlenderFoundation');
-    await user.click(screen.getByRole('button', { name: 'Analyze' }));
-
-    expect(await screen.findByText('Blender Foundation')).toBeInTheDocument();
-    expect(screen.getByText((content, el) => el?.tagName === 'EM' && content === 'Channel')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Videos' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText('Big Buck Bunny')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Shorts' }));
-    expect(await screen.findByText('Spring')).toBeInTheDocument();
-    expect(AnalyzePlaylist).toHaveBeenCalledWith(shortsURL);
-    expect(screen.getByText((content, el) => el?.tagName === 'EM' && content === 'Channel · Shorts')).toBeInTheDocument();
   });
 });

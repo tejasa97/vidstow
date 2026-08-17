@@ -127,7 +127,5 @@ successful pause.
 
 VidStow's durable desktop session boundary covers direct HTTP media,
 separate-track processing, finite HLS VOD, and static DASH when the selected
-engine release provides the required validation. Public YouTube channel Videos
-and Shorts tabs are admitted as bounded collections. Live workflows, channel
-search, subscriptions, and experimental SABR/UMP behavior are outside the
-current VidStow product scope.
+engine release provides the required validation. Live workflows and
+experimental SABR/UMP behavior are outside the current VidStow product scope.

@@ -117,10 +117,9 @@ export interface UrlCheckResult {
   url: string;
   videoId?: string;
   playlistId?: string;
-  kind: 'single_video' | 'playlist' | 'video_playlist' | 'channel';
+  kind: 'single_video' | 'playlist' | 'video_playlist';
   videoUrl?: string;
   playlistUrl?: string;
-  channelTab?: 'videos' | 'shorts';
 }
 
 export interface PlaylistEntrySummary {
@@ -136,8 +135,6 @@ export interface PlaylistEntrySummary {
 export interface PlaylistSummary {
   id: string;
   url: string;
-  kind?: 'playlist' | 'channel';
-  tab?: 'videos' | 'shorts' | '';
   title: string;
   channel: string;
   thumbnail: string;

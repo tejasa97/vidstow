@@ -48,29 +48,24 @@
       retry: api.queue.retryCollection,
       remove: api.queue.removeCollection,
     };
-    const collection = model.collections?.find((candidate) => candidate.id === detail.collectionId);
-    const noun = collectionNoun(collection);
     const execute = async () => {
       try {
         const count = await operations[detail.action](detail.collectionId, detail.commandToken);
         await refresh();
-        showBanner('info', `${detail.action === 'remove' ? 'Removed' : 'Updated'} ${count} ${noun} item${count === 1 ? '' : 's'}.`);
-      } catch (err) { showError(err, `Could not ${detail.action} the ${noun}`); }
+        showBanner('info', `${detail.action === 'remove' ? 'Removed' : 'Updated'} ${count} playlist item${count === 1 ? '' : 's'}.`);
+      } catch (err) { showError(err, `Could not ${detail.action} the playlist`); }
     };
     if (detail.action === 'cancel' || detail.action === 'remove') {
+      const collection = model.collections?.find((candidate) => candidate.id === detail.collectionId);
       modal.set({
         kind: 'confirm',
-        title: detail.action === 'cancel' ? `Cancel this ${noun}?` : `Remove this ${noun} from the queue?`,
-        message: `${collection?.title ?? `This ${noun}`} contains ${collection?.total ?? 0} queue item${collection?.total === 1 ? '' : 's'}.`,
-        actions: [{ label: detail.action === 'cancel' ? `Cancel ${noun === 'channel' ? 'Channel' : 'Playlist'}` : `Remove ${noun === 'channel' ? 'Channel' : 'Playlist'}`, primary: true, action: execute }],
+        title: detail.action === 'cancel' ? 'Cancel this playlist?' : 'Remove this playlist from the queue?',
+        message: `${collection?.title ?? 'This playlist'} contains ${collection?.total ?? 0} queue item${collection?.total === 1 ? '' : 's'}.`,
+        actions: [{ label: detail.action === 'cancel' ? 'Cancel Playlist' : 'Remove Playlist', primary: true, action: execute }],
       });
       return;
     }
     await execute();
-  }
-
-  function collectionNoun(collection?: { kind?: string } | null): 'channel' | 'playlist' {
-    return collection?.kind === 'channel' ? 'channel' : 'playlist';
   }
 
   async function pauseAll() {

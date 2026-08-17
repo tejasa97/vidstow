@@ -24,9 +24,9 @@ A local desktop application built with Go, Wails, and Svelte.
 </div>
 
 > [!IMPORTANT]
-> VidStow is beta software for public, on-demand YouTube video, Short, playlist, and channel URLs.
-> Search, live streams, authenticated downloads, and other sites are outside
-> the supported application scope.
+> VidStow is beta software for public, on-demand YouTube video, Short, and playlist URLs.
+> Channels, search, live streams, authenticated downloads, and other
+> sites are outside the supported application scope.
 
 ## Download
 
@@ -61,12 +61,11 @@ verification details.
 - **Analyze before downloading** — inspect the title, thumbnail, duration,
   channel, and available output choices.
 - **Flexible link input** — paste, type, or drag and drop a public YouTube video,
-  Short, playlist, or channel URL. Links containing both a video and a playlist can be
-  reviewed as either. Channel pages open the public Videos tab by default, with
-  Shorts available from the same review card.
+  Short, or playlist URL. Links containing both a video and a playlist can be
+  reviewed as either.
 - **Focused output choices** — choose best available video, capped resolutions,
   original audio, or MP3 when the analyzed media supports those choices.
-- **Playlist and channel review** — select up to 500 available entries, apply a bounded
+- **Playlist review** — select up to 500 available entries, apply a bounded
   range, and admit the collection as one expandable parent with individual jobs.
 - **FIFO queue** — configure 1–10 concurrent downloads; the default is 2.
 - **Explicit lifecycle controls** — each queue row presents only the Pause,
@@ -271,7 +270,7 @@ intentionally not tracked.
 
 VidStow does not support:
 
-- search, live streams, or authenticated workflows;
+- channels, search, live streams, or authenticated workflows;
 - sites other than YouTube;
 - DRM decryption or access-control circumvention;
 - universal resumability or byte reuse when media equivalence is unproved;
