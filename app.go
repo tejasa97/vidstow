@@ -540,6 +540,20 @@ func (a *App) RemoveQueueJob(id, token string) error {
 	return a.jobs.QueueRemove(id, token)
 }
 
+func (a *App) ReviewActionRequiredQueueJob(id, token string) (jobs.ActionRequiredReview, error) {
+	if err := a.requireReady(); err != nil {
+		return jobs.ActionRequiredReview{}, err
+	}
+	return a.jobs.QueueActionRequiredReview(id, token)
+}
+
+func (a *App) StartOverActionRequiredQueueJob(id, token string) (string, error) {
+	if err := a.requireReady(); err != nil {
+		return "", err
+	}
+	return a.jobs.QueueActionRequiredStartOverURL(id, token)
+}
+
 func (a *App) OpenQueueJob(id, token string) error {
 	if err := a.requireReady(); err != nil {
 		return err

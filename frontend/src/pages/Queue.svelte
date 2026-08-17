@@ -1,8 +1,9 @@
 <script lang="ts">
   import { api } from '../lib/api.js';
-  import { modal, queueView, showBanner, showError } from '../lib/stores.js';
+  import { modal, pendingUrl, queueView, route, showBanner, showError } from '../lib/stores.js';
+  import ActionRequiredReviewDialog from '../lib/lifecycle-ui/ActionRequiredReviewDialog.svelte';
   import QueueOverview from '../lib/lifecycle-ui/QueueOverview.svelte';
-  import type { LifecycleJobEventDetail, QueueCollectionActionEvent, QueueOverviewViewModel, QueueView } from '../lib/lifecycle-ui/types.js';
+  import type { ActionRequiredReviewViewModel, LifecycleJobEventDetail, QueueCollectionActionEvent, QueueOverviewViewModel, QueueView } from '../lib/lifecycle-ui/types.js';
   import { newestQueueView } from '../lib/queue-view.js';
 
   function modelFrom(view: QueueView | null): QueueOverviewViewModel {
@@ -26,6 +27,9 @@
   }
 
   $: model = modelFrom($queueView);
+  let actionRequiredReview: ActionRequiredReviewViewModel | null = null;
+  let actionRequiredAuthority: LifecycleJobEventDetail | null = null;
+  let startingOver = false;
 
   async function refresh(): Promise<void> {
     const next = await api.queue.get();
@@ -38,6 +42,43 @@
       await refresh();
       if (success) showBanner('info', success);
     } catch (err) { showError(err, fallback); }
+  }
+
+  async function reviewActionRequired(detail: LifecycleJobEventDetail) {
+    try {
+      const review = await api.queue.reviewActionRequired(detail.jobId, detail.commandToken);
+      actionRequiredAuthority = detail;
+      actionRequiredReview = review;
+    } catch (err) {
+      await refresh().catch(() => undefined);
+      showError(err, 'Could not review this download');
+    }
+  }
+
+  function closeActionRequiredReview() {
+    if (startingOver) return;
+    actionRequiredReview = null;
+    actionRequiredAuthority = null;
+  }
+
+  async function startOverActionRequired() {
+    if (!actionRequiredAuthority || startingOver) return;
+    startingOver = true;
+    try {
+      const url = await api.queue.startOverActionRequired(actionRequiredAuthority.jobId, actionRequiredAuthority.commandToken);
+      actionRequiredReview = null;
+      actionRequiredAuthority = null;
+      pendingUrl.set(url);
+      route.set('home');
+      showBanner('info', 'Analyze the video again to start a fresh download. The original saved data was preserved.');
+    } catch (err) {
+      actionRequiredReview = null;
+      actionRequiredAuthority = null;
+      await refresh().catch(() => undefined);
+      showError(err, 'Could not start over from this download');
+    } finally {
+      startingOver = false;
+    }
   }
 
   async function collectionAction(detail: QueueCollectionActionEvent) {
@@ -92,7 +133,16 @@
     else if (event.action === 'cancel') action(event, api.queue.cancel, 'Could not cancel the download');
     else if (event.action === 'resume') action(event, api.queue.resume, 'Could not resume the download', 'Download resumed.');
     else if (event.action === 'retry') action(event, api.queue.retry, 'Could not retry the download', 'Retry added to the queue.');
+    else if (event.action === 'review') reviewActionRequired(event);
     else if (event.action === 'open') action(event, api.queue.open, 'Could not open the downloaded file');
     else if (event.action === 'remove') action(event, api.queue.remove, 'Could not remove the download');
   }}
+/>
+
+<ActionRequiredReviewDialog
+  open={actionRequiredReview !== null}
+  review={actionRequiredReview}
+  busy={startingOver}
+  onClose={closeActionRequiredReview}
+  onStartOver={startOverActionRequired}
 />

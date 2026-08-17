@@ -3,11 +3,13 @@ import '@testing-library/jest-dom/vitest';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi } from 'vitest';
 
+import ActionRequiredReviewDialog from '../src/lib/lifecycle-ui/ActionRequiredReviewDialog.svelte';
 import DestinationConflictDialog from '../src/lib/lifecycle-ui/DestinationConflictDialog.svelte';
 import LifecycleJobRow from '../src/lib/lifecycle-ui/LifecycleJobRow.svelte';
 import QueueOverview from '../src/lib/lifecycle-ui/QueueOverview.svelte';
 import QuitConfirmationDialog from '../src/lib/lifecycle-ui/QuitConfirmationDialog.svelte';
 import type {
+  ActionRequiredReviewViewModel,
   DestinationConflictEventDetail,
   DestinationConflictViewModel,
   LifecycleJobEventDetail,
@@ -192,6 +194,33 @@ describe('backend-authored capabilities', () => {
     expect(screen.getByRole('button', { name: 'Clear Completed' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Pause download' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Cancel download' })).toBeDisabled();
+  });
+});
+
+describe('action-required recovery', () => {
+  const review: ActionRequiredReviewViewModel = {
+    jobId: 'action-1', title: 'Saved video', heading: 'This download needs your decision',
+    message: 'The saved session could not be inspected safely.',
+    preservationNotice: 'The original row and saved data stay in place.', canStartOver: true,
+  };
+
+  test('offers a fresh Home analysis while clearly preserving the original row', async () => {
+    const onStartOver = vi.fn();
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(ActionRequiredReviewDialog, { props: { open: true, review, onStartOver, onClose } });
+
+    expect(screen.getByRole('dialog', { name: review.heading })).toBeInTheDocument();
+    expect(screen.getByText(review.preservationNotice)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Start over from Home' }));
+    expect(onStartOver).toHaveBeenCalledOnce();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  test('does not advertise start-over when the backend withholds it', () => {
+    render(ActionRequiredReviewDialog, { props: { open: true, review: { ...review, canStartOver: false } } });
+    expect(screen.queryByRole('button', { name: 'Start over from Home' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Starting over is unavailable/)).toBeInTheDocument();
   });
 });
 
