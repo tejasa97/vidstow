@@ -30,6 +30,8 @@ Apple Silicon preview; a later stable `0.1.0` does not exist yet.
   removed and downloaded again from Home.
 - Mid-transfer failures now explain what Retry will do instead of surfacing
   the raw engine error.
+- The macOS app icon uses Apple's 824/1024 icon grid with transparent
+  padding so the Dock draws it at the same size as neighboring icons.
 
 ## [0.1.0-beta.1] - 2026-08-15
 
