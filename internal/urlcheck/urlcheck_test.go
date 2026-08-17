@@ -36,45 +36,13 @@ func TestValidateAcceptsVideosAndPlaylists(t *testing.T) {
 	}
 }
 
-func TestValidateAcceptsPublicChannelPages(t *testing.T) {
-	ucid := "UCabcdefghijklmnopqrstuv"
-	cases := []struct {
-		name, input, wantURL, tab string
-	}{
-		{"handle", "https://www.youtube.com/@veritasium", "https://www.youtube.com/@veritasium/videos", ChannelTabVideos},
-		{"handle videos", "https://youtube.com/@veritasium/videos?view=0", "https://www.youtube.com/@veritasium/videos", ChannelTabVideos},
-		{"handle shorts", "https://m.youtube.com/@veritasium/shorts/", "https://www.youtube.com/@veritasium/shorts", ChannelTabShorts},
-		{"channel id", "http://youtube.com/channel/" + ucid, "https://www.youtube.com/channel/" + ucid + "/videos", ChannelTabVideos},
-		{"channel shorts", "https://www.youtube.com/channel/" + ucid + "/shorts", "https://www.youtube.com/channel/" + ucid + "/shorts", ChannelTabShorts},
-		{"legacy c", "https://www.youtube.com/c/Veritasium", "https://www.youtube.com/c/Veritasium/videos", ChannelTabVideos},
-		{"legacy user shorts", "https://www.youtube.com/user/1veritasium/shorts", "https://www.youtube.com/user/1veritasium/shorts", ChannelTabShorts},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := Validate(tc.input)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Kind != KindChannel || got.URL != tc.wantURL || got.PlaylistURL != tc.wantURL || got.ChannelTab != tc.tab {
-				t.Fatalf("got %#v, want url=%q tab=%q", got, tc.wantURL, tc.tab)
-			}
-		})
-	}
-}
-
 func TestValidateRejectsUnsupportedRoutes(t *testing.T) {
 	cases := []struct {
 		name, input string
 		reason      Reason
 	}{
 		{"empty", "", ReasonEmpty}, {"not youtube", "https://example.com/watch?v=abcd", ReasonNotYouTube},
-		{"search", "https://www.youtube.com/results?search_query=hello", ReasonSearch},
-		{"channel search", "https://www.youtube.com/@veritasium/search?query=hello", ReasonSearch},
-		{"channel streams", "https://www.youtube.com/@veritasium/streams", ReasonLive},
-		{"channel live", "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv/live", ReasonLive},
-		{"channel playlists", "https://www.youtube.com/@veritasium/playlists", ReasonChannel},
-		{"channel community", "https://www.youtube.com/@veritasium/community", ReasonChannel},
-		{"invalid handle", "https://www.youtube.com/@ab", ReasonChannel},
+		{"search", "https://www.youtube.com/results?search_query=hello", ReasonSearch}, {"channel", "https://www.youtube.com/@veritasium", ReasonChannel},
 		{"live", "https://www.youtube.com/live/abcdefghijk", ReasonLive},
 		{"shorts missing id", "https://www.youtube.com/shorts/", ReasonMissingVideoID},
 		{"missing", "https://www.youtube.com/", ReasonMissingVideoID}, {"ftp", "ftp://youtube.com/watch?v=abc", ReasonInvalidScheme}, {"malformed", "ht!tp://nope", ReasonMalformed},
@@ -89,28 +57,5 @@ func TestValidateRejectsUnsupportedRoutes(t *testing.T) {
 				t.Fatalf("internal details: %q", err)
 			}
 		})
-	}
-}
-
-func TestIdentityMatchesChannelHandlesAndUCIDs(t *testing.T) {
-	handleURL := "https://www.youtube.com/@veritasium/videos"
-	if got := CollectionIdentity(handleURL); got != "handle:@veritasium" {
-		t.Fatalf("handle identity = %q", got)
-	}
-	if !IdentityMatches(handleURL, "handle:@veritasium") {
-		t.Fatal("handle identity should match itself")
-	}
-	if !IdentityMatches(handleURL, "UCabcdefghijklmnopqrstuv") {
-		t.Fatal("handle identity should accept a resolved UCID")
-	}
-	if IdentityMatches(handleURL, "PLunexpected") {
-		t.Fatal("handle identity must not match a playlist id")
-	}
-	channelURL := "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv/shorts"
-	if !IdentityMatches(channelURL, "UCabcdefghijklmnopqrstuv") {
-		t.Fatal("UCID channel should match extracted id")
-	}
-	if IdentityMatches(channelURL, "UCzzzzzzzzzzzzzzzzzzzzzz") {
-		t.Fatal("UCID channel must not match a different channel")
 	}
 }

@@ -156,7 +156,7 @@
     const text = event.dataTransfer?.getData('text/uri-list') || event.dataTransfer?.getData('text/plain') || '';
     const found = youtubeUrlFromText(text);
     if (!found) {
-      showBanner('warning', 'Drop a public YouTube video, Short, playlist, or channel link to analyze it.');
+      showBanner('warning', 'Drop a public YouTube video, Short, or playlist link to analyze it.');
       return;
     }
     pendingUrl.set(found);

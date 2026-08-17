@@ -14,8 +14,7 @@ does not exist yet.
 
 ### Added
 
-- Analysis and downloading of public YouTube channel pages, including Videos
-  and Shorts tabs, through the existing playlist collection workflow.
+- No entries yet.
 
 ### Changed
 

@@ -401,7 +401,7 @@ func (a *App) AnalyzeURL(raw string) (jobs.InfoSummary, error) {
 }
 
 // AnalyzePlaylist fetches a bounded flat preview without resolving every
-// child's formats. Playlist and channel format selection happens per child at admission.
+// child's formats. Playlist format selection happens per child at admission.
 func (a *App) AnalyzePlaylist(raw string) (jobs.PlaylistSummary, error) {
 	if err := a.requireReady(); err != nil {
 		return jobs.PlaylistSummary{}, err
@@ -410,8 +410,8 @@ func (a *App) AnalyzePlaylist(raw string) (jobs.PlaylistSummary, error) {
 	if err != nil {
 		return jobs.PlaylistSummary{}, err
 	}
-	if !urlcheck.IsCollection(res.Kind) {
-		return jobs.PlaylistSummary{}, errors.New("choose a playlist or channel from this link first")
+	if res.Kind != urlcheck.KindPlaylist {
+		return jobs.PlaylistSummary{}, errors.New("choose the playlist from this link first")
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 75*time.Second)
 	defer cancel()

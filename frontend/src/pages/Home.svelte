@@ -37,10 +37,6 @@
   $: playlistLastIndex = playlist?.entries.at(-1)?.index ?? playlist?.entryCount ?? 1;
   $: allAvailableSelected = availableCount > 0 && selectedItems.size === availableCount;
   $: playlistAtCap = (playlist?.entries.length ?? 0) >= PLAYLIST_ADMIT_CAP;
-  $: collectionIsChannel = playlist?.kind === 'channel';
-  $: collectionNoun = collectionIsChannel ? 'channel' : 'playlist';
-  $: collectionLabel = collectionIsChannel ? (playlist?.tab === 'shorts' ? 'Channel · Shorts' : 'Channel') : 'Playlist';
-  $: channelTab = playlist?.tab === 'shorts' ? 'shorts' : 'videos';
   $: if (selectAllBox && playlist) {
     selectAllBox.indeterminate = selectedItems.size > 0 && selectedItems.size < availableCount;
   }
@@ -78,8 +74,8 @@
   async function analyzeTarget(target: UrlCheckResult, requestGeneration: number) {
     if (requestGeneration !== analysisGeneration) return;
     clearAnalysis();
-    if (target.kind === 'playlist' || target.kind === 'channel') {
-      const canonicalURL = target.playlistUrl || target.url;
+    if (target.kind === 'playlist') {
+      const canonicalURL = target.playlistUrl!;
       const summary = await api.analyse.playlist(canonicalURL);
       if (requestGeneration !== analysisGeneration) return;
       url = canonicalURL;
@@ -127,7 +123,7 @@
       modal.set({
         kind: 'error',
         title: 'Unsupported URL',
-        message: errorMessage(err, 'VidStow could not extract information from this URL. Make sure it is a valid, publicly accessible YouTube video, Short, playlist, or channel.'),
+        message: errorMessage(err, 'VidStow could not extract information from this URL. Make sure it is a valid, publicly accessible YouTube video, Short, or playlist.'),
       });
     } finally {
       if (requestGeneration === analysisGeneration) busy = false;
@@ -214,35 +210,6 @@
     );
   }
 
-  function channelTabURL(raw: string, tab: 'videos' | 'shorts'): string {
-    try {
-      const next = new URL(raw);
-      const parts = next.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
-      if (parts[parts.length - 1] === 'videos' || parts[parts.length - 1] === 'shorts') {
-        parts[parts.length - 1] = tab;
-      } else {
-        parts.push(tab);
-      }
-      next.pathname = '/' + parts.join('/');
-      next.search = '';
-      next.hash = '';
-      return next.toString();
-    } catch {
-      return raw;
-    }
-  }
-
-  function switchChannelTab(tab: 'videos' | 'shorts') {
-    if (!playlist || playlist.kind !== 'channel' || channelTab === tab || busy) return;
-    const nextURL = channelTabURL(playlist.url, tab);
-    url = nextURL;
-    const requestGeneration = ++analysisGeneration;
-    withBusy(
-      () => analyzeTarget({ kind: 'channel', url: nextURL, playlistUrl: nextURL, channelTab: tab }, requestGeneration),
-      requestGeneration,
-    );
-  }
-
   function reviewLinkedPlaylist() {
     if (!linkedPlaylist?.playlistUrl) return;
     const requestGeneration = ++analysisGeneration;
@@ -299,7 +266,7 @@
   async function enqueuePlaylist() {
     if (!playlist || !selectedItems.size) return;
     if (!folder) {
-      showBanner('warning', `Choose a download folder before adding this ${collectionNoun}.`);
+      showBanner('warning', 'Choose a download folder before adding this playlist.');
       return;
     }
     const quality: Quality = playlistTab === 'audio' ? 'audio' : playlistQuality;
@@ -319,13 +286,13 @@
         });
         showBanner('success', `Added ${selectedItems.size} videos to queue`);
       } catch (err) {
-        modal.set({ kind: 'error', title: collectionIsChannel ? 'Channel could not start' : 'Playlist could not start', message: errorMessage(err, `Could not add this ${collectionNoun} to the queue.`) });
+        modal.set({ kind: 'error', title: 'Playlist could not start', message: errorMessage(err, 'Could not add this playlist to the queue.') });
       }
     };
     if (selectedItems.size > 100 || $settings.confirmBeforeDownload) {
       modal.set({
         kind: 'confirm',
-        title: collectionIsChannel ? 'Add this channel?' : 'Add this playlist?',
+        title: 'Add this playlist?',
         message: `${selectedItems.size} videos will be added to the queue.`,
         actions: [{ label: 'Add to Queue', primary: true, action: start }],
       });
@@ -339,18 +306,18 @@
   <header class="page-header">
     <h1 id="home-title">Download from YouTube</h1>
     {#if !playlist && !preview}
-      <p>Paste a public YouTube video, Short, playlist, or channel URL to analyze it and choose your download.</p>
+      <p>Paste a public YouTube video, Short, or playlist URL to analyze it and choose your download.</p>
     {/if}
   </header>
 
   <form class="analyze-bar" on:submit|preventDefault={analyze}>
-    <label class="visually-hidden" for="video-url">YouTube video, Short, playlist, or channel URL</label>
-    <input id="video-url" type="url" value={url} on:input={updateURL} placeholder="https://www.youtube.com/watch?v=…, @channel, or playlist?list=…" autocomplete="off" />
+    <label class="visually-hidden" for="video-url">YouTube video, Short, or playlist URL</label>
+    <input id="video-url" type="url" value={url} on:input={updateURL} placeholder="https://www.youtube.com/watch?v=…, shorts/…, or playlist?list=…" autocomplete="off" />
     <button class="app-btn primary" type="submit" disabled={busy || !url.trim()}>{busy ? 'Analyzing…' : 'Analyze'}</button>
   </form>
 
   {#if playlist}
-    <section class="workspace" aria-label={collectionLabel}>
+    <section class="workspace" aria-label="Playlist">
       <header class="identity">
         <div class="thumb">
           {#if playlist.thumbnail}<img src={playlist.thumbnail} alt="" referrerpolicy="no-referrer" on:error={hideBrokenImage} />{/if}
@@ -358,20 +325,14 @@
         <div class="identity-copy">
           <strong title={playlist.title}>{playlist.title}</strong>
           <span>
-            <em>{collectionLabel}</em>
+            <em>Playlist</em>
             {#if playlist.channel} · {playlist.channel}{/if}
             · {playlist.entryCount} videos
             {#if playlist.unavailable} · {playlist.unavailable} unavailable{/if}
           </span>
-          {#if collectionIsChannel}
-            <div class="segment compact" aria-label="Channel tab">
-              <button type="button" aria-pressed={channelTab === 'videos'} class:active={channelTab === 'videos'} on:click={() => switchChannelTab('videos')}>Videos</button>
-              <button type="button" aria-pressed={channelTab === 'shorts'} class:active={channelTab === 'shorts'} on:click={() => switchChannelTab('shorts')}>Shorts</button>
-            </div>
-          {/if}
           <small aria-live="polite">{selectedItems.size} of {availableCount} selected</small>
           {#if playlistAtCap}
-            <small class="cap-note">VidStow can review up to {PLAYLIST_ADMIT_CAP} videos from a {collectionNoun}.</small>
+            <small class="cap-note">VidStow can review up to {PLAYLIST_ADMIT_CAP} videos from a playlist.</small>
           {/if}
         </div>
         <div class="policy">
@@ -415,7 +376,7 @@
           <input type="number" min={playlistFirstIndex} max={playlistLastIndex} step="1" inputmode="numeric" bind:value={rangeEnd} aria-label="Range end" />
           <button type="submit" class="ghost">Apply</button>
         </form>
-        <input type="search" bind:value={search} placeholder={collectionIsChannel ? 'Search videos…' : 'Search playlist…'} aria-label={collectionIsChannel ? 'Search videos' : 'Search playlist'} />
+        <input type="search" bind:value={search} placeholder="Search playlist…" aria-label="Search playlist" />
       </div>
 
       <div class="entry-list" role="list">
@@ -436,7 +397,7 @@
             {/if}
           </label>
         {:else}
-          <div class="empty-list">{query ? 'No videos match that search.' : `No videos in this ${collectionNoun}.`}</div>
+          <div class="empty-list">{query ? 'No videos match that search.' : 'No videos in this playlist.'}</div>
         {/each}
       </div>
 
@@ -444,7 +405,7 @@
         <div class="destination">
           <span>Save to</span>
           <strong title={folder}>{folder}</strong>
-          <small title={`${playlist.title} [${playlist.id}]`}>{collectionIsChannel ? 'Channel folder' : 'Playlist folder'} · {shortTitle(playlist.title, 48)}</small>
+          <small title={`${playlist.title} [${playlist.id}]`}>Playlist folder · {shortTitle(playlist.title, 48)}</small>
         </div>
         <button type="button" class="app-btn" on:click={pickFolder}>Change…</button>
         <button type="button" class="app-btn primary queue" on:click={enqueuePlaylist} disabled={!selectedItems.size || !folder}>
@@ -516,7 +477,7 @@
         </svg>
       </div>
       <h2>Add a YouTube link</h2>
-      <p>VidStow reviews a public video, Short, playlist, or channel, then shows the files you’ll get before anything downloads.</p>
+      <p>VidStow reviews a public video, Short, or playlist, then shows the files you’ll get before anything downloads.</p>
     </section>
   {/if}
 </section>
@@ -661,11 +622,6 @@
     background: var(--surface-base);
     box-shadow: var(--shadow-card);
   }
-  .segment.compact {
-    width: fit-content;
-    margin: 4px 0 2px;
-  }
-  .segment.compact button { min-width: 72px; min-height: 26px; }
   .policy select { height: 34px; padding: 0 10px; font-size: var(--fs-xs); }
 
   .toolbar {

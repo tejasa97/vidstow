@@ -1,12 +1,8 @@
 # Playlist collections in State v2
 
-A playlist or public channel tab is a durable collection of ordinary download jobs, not a second scheduler.
+A playlist is a durable collection of ordinary download jobs, not a second scheduler.
 Each selected video remains an independent State v2 job and therefore retains the
 existing lifecycle, attempt, session, reservation, recovery, and history rules.
-
-Public channel Videos and Shorts URLs use this same collection path. Live
-streams, channel search, and other channel tabs remain outside the product
-boundary.
 
 ## Durable ownership
 
