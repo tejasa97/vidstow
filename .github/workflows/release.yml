@@ -6,7 +6,7 @@ on:
       tag:
         description: "Draft prerelease tag"
         required: true
-        default: "v0.1.0-beta.1"
+        default: "v0.1.0-beta.2"
         type: string
 
 permissions:
@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  APP_VERSION: "0.1.0-beta.1"
+  APP_VERSION: "0.1.0-beta.2"
   GO_VERSION: "1.25.12"
   WAILS_VERSION: "v2.13.0"
   NODE_VERSION: "22"
