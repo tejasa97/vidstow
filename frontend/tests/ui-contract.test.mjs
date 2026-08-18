@@ -47,7 +47,9 @@ test('page titles and controls match the approved redesign', async () => {
   assert.match(settings, />FFmpeg path</);
   assert.match(settings, />Diagnostics</);
   assert.match(settings, />Copy Diagnostics</);
+  assert.match(settings, />Clear history</);
   assert.match(settings, /await api\.diagnostics\.copy\(\)/);
+  assert.match(settings, /await api\.diagnostics\.clear\(\)/);
 });
 
 test('analysis failures use the redesigned error modal', async () => {

@@ -228,7 +228,14 @@ configuration directory. State v2 can include:
 - canonical public YouTube watch URLs and video IDs;
 - display metadata such as title, channel, duration, and selected quality;
 - job, attempt, session, queue, lifecycle, reservation, and cleanup records;
-- completed-download history, including output paths and media metadata.
+- completed-download history, including output paths and media metadata; and
+- a separate owner-only diagnostic history, bounded to seven days, 200 typed
+  events, and 1 MiB. It contains sanitized failure categories and no YouTube
+  URLs, media URLs, arbitrary error text, or absolute paths.
+
+The diagnostic history stays on the device, can be cleared from Settings, and
+is included in **Copy Diagnostics** only as a bounded list of sanitized problem
+events. This release does not transmit diagnostic history automatically.
 
 Engine session work is stored beneath an engine-owned hidden directory in the
 selected output root.

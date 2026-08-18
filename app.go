@@ -10,11 +10,13 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/tejasa97/vidstow/internal/admission"
+	localdiagnostics "github.com/tejasa97/vidstow/internal/diagnostics"
 	"github.com/tejasa97/vidstow/internal/ffmpegdetect"
 	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/jobs"
@@ -44,28 +46,33 @@ var (
 	startStartupCleanup   = recovery.StartCleanupWorker
 	logAppErrorf          = wailsruntime.LogErrorf
 	emitAppEvent          = wailsruntime.EventsEmit
+	openDiagnostics       = localdiagnostics.Open
+	newDiagnosticID       = localdiagnostics.NewUUID
+	clipboardSetText      = wailsruntime.ClipboardSetText
 )
 
 // App is the Wails-bound root. Every exported method is reachable from
 // the frontend via the generated bindings in wailsjs/go/main/App.js.
 type App struct {
-	ctx             context.Context
-	store           *store.V2Store
-	jobs            *jobs.Manager
-	coordinator     *admission.Coordinator
-	statePath       string
-	startupStatus   store.StartupStatus
-	cleanupCancel   context.CancelFunc
-	cleanupDone     <-chan struct{}
-	shutdownManager shutdownLifecycle
-	closeState      func() error
-	mu              sync.Mutex
-	lastFFmpeg      ffmpegdetect.Status
-	quitMu          sync.Mutex
-	playlistMu      sync.Mutex
-	quitPermit      bool
-	quitRequestOpen bool
-	quitDeadline    time.Time
+	ctx               context.Context
+	store             *store.V2Store
+	jobs              *jobs.Manager
+	coordinator       *admission.Coordinator
+	statePath         string
+	startupStatus     store.StartupStatus
+	diagnostics       *localdiagnostics.Recorder
+	diagnosticSession string
+	cleanupCancel     context.CancelFunc
+	cleanupDone       <-chan struct{}
+	shutdownManager   shutdownLifecycle
+	closeState        func() error
+	mu                sync.Mutex
+	lastFFmpeg        ffmpegdetect.Status
+	quitMu            sync.Mutex
+	playlistMu        sync.Mutex
+	quitPermit        bool
+	quitRequestOpen   bool
+	quitDeadline      time.Time
 }
 
 // NewApp constructs the App. The Wails bind() call wires every public
@@ -91,7 +98,26 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 	a.ctx = ctx
 	a.statePath = statePath
 	st, status, openErr := openStateV2(statePath)
+	if openErr == nil && status.Reason != store.RecoveryUnsafePermissions {
+		a.openLocalDiagnostics(filepath.Dir(statePath))
+	}
 	if openErr != nil || !status.Healthy() || status.Warning != "" || st == nil {
+		if a.diagnostics != nil {
+			category := "state_unavailable"
+			switch {
+			case status.Warning != "":
+				category = "state_indeterminate"
+			case status.Reason == store.RecoveryCorruptState || status.Reason == store.RecoveryMigrationFailed:
+				category = "state_corrupt"
+			case status.Reason == store.RecoveryUnsupportedVersion:
+				category = "state_unsupported"
+			case status.Reason == store.RecoveryIndeterminate:
+				category = "state_indeterminate"
+			}
+			a.recordDiagnosticProblem("", localdiagnostics.Problem{
+				Stage: "startup", Category: category, Outcome: "degraded", RetryBucket: "none",
+			}, nil)
+		}
 		if openErr != nil {
 			logAppErrorf(ctx, "desktop: open State v2: %v", openErr)
 		}
@@ -108,6 +134,7 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 	a.setStartupStatus(status)
 
 	if err := prepareStartupStateRoots(st.Snapshot()); err != nil {
+		a.recordDiagnosticProblem("", classifyStartupRootProblem(err), nil)
 		logAppErrorf(ctx, "desktop: validate output roots: %v", err)
 		_ = st.Close()
 		a.store = nil
@@ -116,6 +143,9 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 	}
 	committed, err := reconcileStartupState(ctx, st)
 	if err != nil {
+		a.recordDiagnosticProblem("", localdiagnostics.Problem{
+			Stage: "persistence", Category: "state_indeterminate", Outcome: "degraded", RetryBucket: "none",
+		}, nil)
 		logAppErrorf(ctx, "desktop: reconcile startup state: %v", err)
 		_ = st.Close()
 		a.store = nil
@@ -758,8 +788,7 @@ func (a *App) RevealInFinder(path string) error {
 }
 
 // CopyDiagnostics writes a small, sanitised diagnostic report to the
-// clipboard. It never includes the URL or any file path beyond the
-// folder basename.
+// clipboard. It never includes a URL, file path, or path component.
 func (a *App) CopyDiagnostics() (string, error) {
 	status := a.ffmpegStatus()
 	build := currentBuildInfo()
@@ -768,30 +797,121 @@ func (a *App) CopyDiagnostics() (string, error) {
 	report.WriteString("App: VidStow v" + build.Version + " (" + build.OS + "/" + build.Architecture + ", " + build.GoVersion + ")\n")
 	report.WriteString("Engine: youtube_dlp " + build.EngineVersion + "\n")
 	if a.store != nil {
-		report.WriteString("Download folder: " + filepath.Base(a.store.Settings().DownloadFolder) + "\n")
+		report.WriteString("Download folder: configured\n")
 	} else {
 		report.WriteString("Startup: recovery required (" + string(a.startupStatusSnapshot().Reason) + ")\n")
 	}
-	// Privacy: do not include the absolute FFmpeg path. The basename
-	// tells support which binary the user picked without disclosing
-	// home-directory layout. If no configured path is present we still
-	// note whether detection succeeded.
-	if status.Path != "" {
-		report.WriteString("FFmpeg: " + status.Message + " (" + filepath.Base(status.Path) + ")")
-	} else {
-		report.WriteString("FFmpeg: " + status.Message)
-	}
-	report.WriteString("\n")
+	// FFmpeg status messages are closed application-authored values. Never
+	// include the configured path or any of its components.
+	report.WriteString("FFmpeg: " + status.Message + "\n")
 	if a.jobs != nil {
 		report.WriteString(fmt.Sprintf("Queue depth: %d\n", len(a.jobs.List())))
 	} else {
 		report.WriteString("Queue depth: unavailable until recovery completes\n")
 	}
+	if a.diagnostics != nil {
+		events, err := a.diagnostics.Recent()
+		if err != nil {
+			logAppErrorf(a.ctx, "desktop: read local diagnostics: %v", err)
+		} else if len(events) > 0 {
+			start := 0
+			if len(events) > 20 {
+				start = len(events) - 20
+			}
+			lines := strings.Builder{}
+			for _, event := range events[start:] {
+				if event.Problem == nil {
+					continue
+				}
+				lines.WriteString(fmt.Sprintf("- %s %s/%s (%s, retry %s)\n",
+					event.OccurredAt.UTC().Format(time.RFC3339), event.Problem.Stage,
+					event.Problem.Category, event.Problem.Outcome, event.Problem.RetryBucket))
+			}
+			if lines.Len() > 0 {
+				report.WriteString("Recent diagnostic events:\n")
+				report.WriteString(lines.String())
+			}
+		}
+	}
 	text := report.String()
-	if err := wailsruntime.ClipboardSetText(a.ctx, text); err != nil {
+	if err := clipboardSetText(a.ctx, text); err != nil {
 		return "", err
 	}
 	return text, nil
+}
+
+// ClearDiagnostics removes the bounded local diagnostic history. It is
+// intentionally separate from the future automatic-transmission preference.
+func (a *App) ClearDiagnostics() error {
+	if a.diagnostics == nil {
+		return nil
+	}
+	return a.diagnostics.Clear()
+}
+
+func (a *App) openLocalDiagnostics(dataDirectory string) {
+	if strings.TrimSpace(dataDirectory) == "" {
+		return
+	}
+	if resolved, err := filepath.EvalSymlinks(dataDirectory); err == nil {
+		dataDirectory = resolved
+	}
+	sessionID, err := newDiagnosticID()
+	if err != nil {
+		logAppErrorf(a.ctx, "desktop: create diagnostic session: %v", err)
+		return
+	}
+	recorder, err := openDiagnostics(filepath.Join(dataDirectory, "diagnostics", "history-v1.json"))
+	if err != nil {
+		logAppErrorf(a.ctx, "desktop: open local diagnostics: %v", err)
+		return
+	}
+	a.diagnostics = recorder
+	a.diagnosticSession = sessionID
+}
+
+func (a *App) recordDiagnosticProblem(operationID string, problem localdiagnostics.Problem, resource *localdiagnostics.Resource) {
+	if a.diagnostics == nil || a.diagnosticSession == "" {
+		return
+	}
+	eventID, err := newDiagnosticID()
+	if err != nil {
+		return
+	}
+	build := currentBuildInfo()
+	event := localdiagnostics.Event{
+		SchemaVersion: localdiagnostics.SchemaVersion,
+		EventID:       eventID,
+		SessionID:     a.diagnosticSession,
+		OperationID:   operationID,
+		OccurredAt:    time.Now().UTC(),
+		AppVersion:    build.Version,
+		EngineVersion: build.EngineVersion,
+		Platform:      localdiagnostics.CurrentPlatform(),
+		Type:          localdiagnostics.TypeProblemObserved,
+		Problem:       &problem,
+		Resource:      resource,
+	}
+	if err := a.diagnostics.Record(event); err != nil {
+		logAppErrorf(a.ctx, "desktop: record local diagnostic event: %v", err)
+	}
+}
+
+func classifyStartupRootProblem(err error) localdiagnostics.Problem {
+	category := "path_unavailable"
+	switch {
+	case errors.Is(err, os.ErrPermission):
+		category = "permission_denied"
+	case errors.Is(err, syscall.ENOSPC):
+		category = "disk_full"
+	case reservationfs.IsUnsafe(err):
+		category = "unsafe_path"
+	case reservationfs.IsUnsupported(err), errors.Is(err, os.ErrNotExist):
+		category = "path_unavailable"
+	}
+	return localdiagnostics.Problem{
+		Stage: "filesystem", Category: category, Outcome: "degraded", RetryBucket: "none",
+	}
 }
 
 func (a *App) requireReady() error {
@@ -877,12 +997,12 @@ func prepareStartupRoots(state jobmodel.State) error {
 			return closeErr
 		}
 		if ref.Identity != "" && (facts.Volume.CanonicalPath != ref.CanonicalPath || facts.Volume.Identity != ref.Identity) {
-			return errors.New("output root identity changed")
+			return fmt.Errorf("%w: output root identity changed", reservationfs.ErrUnsafe)
 		}
 		if ref.EngineIdentity != "" {
 			engineFacts, engineErr := engine.ValidateOutputRoot(ref.CanonicalPath)
 			if engineErr != nil || engineFacts.Identity != ref.EngineIdentity {
-				return errors.New("engine output root identity changed")
+				return fmt.Errorf("%w: engine output root identity changed", reservationfs.ErrUnsafe)
 			}
 		}
 	}

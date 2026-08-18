@@ -63,6 +63,11 @@
     catch (err) { showError(err, 'Could not copy diagnostics'); }
   }
 
+  async function clearDiagnostics() {
+    try { await api.diagnostics.clear(); showBanner('info', 'Diagnostic history cleared'); }
+    catch (err) { showError(err, 'Could not clear diagnostic history'); }
+  }
+
   async function changeConcurrency(value: number) {
     await update({ ...$settings, downloadConcurrency: value });
   }
@@ -156,9 +161,10 @@
     <div class="setting">
       <div class="copy">
         <strong>Support report</strong>
-        <span>Includes app version and FFmpeg status. Paths stay private.</span>
+        <span>Includes app and FFmpeg status plus recent sanitized failures. URLs and paths stay private.</span>
       </div>
       <div class="actions">
+        <button type="button" class="app-btn" on:click={clearDiagnostics}>Clear history</button>
         <button type="button" class="app-btn primary" on:click={copyDiagnostics}>Copy Diagnostics</button>
       </div>
     </div>

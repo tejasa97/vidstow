@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/tejasa97/vidstow/internal/ffmpegdetect"
 	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/jobs"
 	"github.com/tejasa97/vidstow/internal/recovery"
+	"github.com/tejasa97/vidstow/internal/reservationfs"
 	"github.com/tejasa97/vidstow/internal/store"
 	"github.com/tejasa97/youtube_dlp/engine"
 )
@@ -100,6 +104,26 @@ func TestStartupRecoveryRequiredFailsClosedWithoutRuntimeFallback(t *testing.T) 
 	}
 }
 
+func TestStartupDurabilityWarningRecordsIndeterminateState(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	warning := store.StartupStatus{Mode: store.StartupHealthy, Warning: store.WarningDurabilityUncertain}
+	openStateV2 = func(string) (*store.V2Store, store.StartupStatus, error) { return nil, warning, nil }
+
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if got := app.GetStartupStatus(); got.Reason != store.RecoveryIndeterminate {
+		t.Fatalf("startup status = %#v, want indeterminate recovery", got)
+	}
+	events, err := app.diagnostics.Recent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Problem == nil || events[0].Problem.Category != "state_indeterminate" {
+		t.Fatalf("warning diagnostic = %#v", events)
+	}
+}
+
 func TestHealthyStartupReconcilesBeforeRestoringManager(t *testing.T) {
 	restore := installAppTestSeams(t)
 	defer restore()
@@ -147,6 +171,113 @@ func TestHealthyStartupReconcilesBeforeRestoringManager(t *testing.T) {
 	if err := app.store.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestLocalDiagnosticsRecordsStartupFailureAndCopiesSanitizedEvent(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	privateRoot := secureAppTempDir(t)
+	privateValue := filepath.Join(privateRoot, "must-not-appear")
+	prepareStartupStateRoots = func(jobmodel.State) error {
+		return fmt.Errorf("%s: %w", privateValue, reservationfs.ErrUnsafe)
+	}
+	var clipboard string
+	clipboardSetText = func(_ context.Context, text string) error {
+		clipboard = text
+		return nil
+	}
+
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(privateRoot, "state.json"))
+	if app.diagnostics == nil || !localdiagnosticsTestUUID(app.diagnosticSession) {
+		t.Fatalf("local diagnostics not initialized: recorder=%v session=%q", app.diagnostics, app.diagnosticSession)
+	}
+	events, err := app.diagnostics.Recent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Problem == nil || events[0].Problem.Stage != "filesystem" || events[0].Problem.Category != "unsafe_path" {
+		t.Fatalf("diagnostic events = %#v", events)
+	}
+	if _, err := app.CopyDiagnostics(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(clipboard, "filesystem/unsafe_path") {
+		t.Fatalf("clipboard lacks sanitized event: %q", clipboard)
+	}
+	if strings.Contains(clipboard, privateRoot) || strings.Contains(clipboard, "must-not-appear") {
+		t.Fatalf("clipboard leaked private error/path: %q", clipboard)
+	}
+	if err := app.ClearDiagnostics(); err != nil {
+		t.Fatal(err)
+	}
+	if events, err := app.diagnostics.Recent(); err != nil || len(events) != 0 {
+		t.Fatalf("events after clear = %#v, %v", events, err)
+	}
+}
+
+func TestStartupRootDiagnosticClassificationUsesTypedErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		category string
+	}{
+		{name: "permission", err: os.ErrPermission, category: "permission_denied"},
+		{name: "disk full", err: syscall.ENOSPC, category: "disk_full"},
+		{name: "unsafe", err: reservationfs.ErrUnsafe, category: "unsafe_path"},
+		{name: "unsupported", err: reservationfs.ErrUnsupported, category: "path_unavailable"},
+		{name: "missing", err: os.ErrNotExist, category: "path_unavailable"},
+		{name: "unknown", err: errors.New("closed unknown failure"), category: "path_unavailable"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			problem := classifyStartupRootProblem(test.err)
+			if problem.Stage != "filesystem" || problem.Category != test.category {
+				t.Fatalf("classification = %#v, want filesystem/%s", problem, test.category)
+			}
+		})
+	}
+}
+
+func TestCopyDiagnosticsOmitsConfiguredPathComponents(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	privateRoot := secureAppTempDir(t)
+	state, status, err := store.OpenV2(filepath.Join(privateRoot, "state.json"))
+	if err != nil || !status.Healthy() {
+		t.Fatalf("OpenV2 = %#v, %v", status, err)
+	}
+	defer state.Close()
+	settings := state.Settings()
+	settings.DownloadFolder = filepath.Join(privateRoot, "private-download-name")
+	settings.FFmpegPath = filepath.Join(privateRoot, "private-tools", "private-ffmpeg-name")
+	if err := state.SetSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	var clipboard string
+	clipboardSetText = func(_ context.Context, text string) error {
+		clipboard = text
+		return nil
+	}
+	app := NewApp()
+	app.ctx = context.Background()
+	app.store = state
+	app.lastFFmpeg = ffmpegdetect.Status{Path: settings.FFmpegPath, Message: "ffmpeg configured"}
+	if _, err := app.CopyDiagnostics(); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{privateRoot, "private-download-name", "private-tools", "private-ffmpeg-name"} {
+		if strings.Contains(clipboard, forbidden) {
+			t.Fatalf("diagnostics leaked path component %q: %q", forbidden, clipboard)
+		}
+	}
+	if !strings.Contains(clipboard, "Download folder: configured") || !strings.Contains(clipboard, "FFmpeg: ffmpeg configured") {
+		t.Fatalf("diagnostics omitted safe configuration status: %q", clipboard)
+	}
+}
+
+func localdiagnosticsTestUUID(value string) bool {
+	return len(value) == 36 && value[14] == '4'
 }
 
 func secureAppTempDir(t *testing.T) string {
@@ -255,6 +386,9 @@ func installAppTestSeams(t *testing.T) func() {
 	oldCleanup := startStartupCleanup
 	oldLog := logAppErrorf
 	oldEmit := emitAppEvent
+	oldOpenDiagnostics := openDiagnostics
+	oldDiagnosticID := newDiagnosticID
+	oldClipboard := clipboardSetText
 	logAppErrorf = func(context.Context, string, ...interface{}) {}
 	emitAppEvent = func(context.Context, string, ...interface{}) {}
 	return func() {
@@ -265,5 +399,8 @@ func installAppTestSeams(t *testing.T) func() {
 		startStartupCleanup = oldCleanup
 		logAppErrorf = oldLog
 		emitAppEvent = oldEmit
+		openDiagnostics = oldOpenDiagnostics
+		newDiagnosticID = oldDiagnosticID
+		clipboardSetText = oldClipboard
 	}
 }
