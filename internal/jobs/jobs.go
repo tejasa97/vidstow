@@ -490,8 +490,12 @@ type jobState struct {
 
 // New creates a Manager. listener may be nil for headless tests.
 func New(client *engine.Client, listener Listener) *Manager {
+	// One composition owns the bounded in-memory EJS preprocessing cache used
+	// by every short-lived download client created by this manager. Individual
+	// helpers remain isolated and are still closed when their job finishes.
+	composition := provideryoutube.NewComposition()
 	if client == nil {
-		client = newFocusedClient()
+		client = newFocusedClientWithComposition(composition)
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancelCause(context.Background())
 	manager := &Manager{
@@ -501,7 +505,7 @@ func New(client *engine.Client, listener Listener) *Manager {
 		eventDone:            make(chan struct{}),
 		lifecycleCtx:         lifecycleCtx,
 		lifecycleCancel:      lifecycleCancel,
-		runDownload:          defaultDownloadRunner,
+		runDownload:          downloadRunnerForComposition(composition),
 		runAnalyze:           client.Run,
 		inspectResume:        engine.InspectResumeState,
 		prepareResumeDiscard: engine.PrepareResumeDiscard,
@@ -1023,17 +1027,24 @@ func engineRootRef(root jobmodel.OutputRootRef) engine.OutputRootRef {
 	return engine.OutputRootRef{CanonicalPath: root.CanonicalPath, Identity: identity}
 }
 
-func defaultDownloadRunner(ctx context.Context, req engine.Request, handler engine.EventHandler) (engine.Result, error) {
-	client := newFocusedClient(engine.WithEventHandler(handler))
-	defer client.Close()
-	return client.Run(ctx, req)
+func downloadRunnerForComposition(composition engine.Composition) downloadRunner {
+	return func(ctx context.Context, req engine.Request, handler engine.EventHandler) (engine.Result, error) {
+		client := newFocusedClientWithComposition(composition, engine.WithEventHandler(handler))
+		defer client.Close()
+		return client.Run(ctx, req)
+	}
 }
 
-// newFocusedClient is the single Desktop composition factory. Analysis keeps
-// one instance and each download creates one with only its event handler
-// differing, so both paths receive the complete YouTube provider family.
+// newFocusedClient is the standalone Desktop composition factory used by
+// tests and one-off callers. When Manager owns its analysis client, it uses
+// newFocusedClientWithComposition so analysis and per-download clients share
+// one bounded in-memory EJS cache.
 func newFocusedClient(options ...engine.Option) *engine.Client {
-	return engine.NewClient(provideryoutube.NewComposition(), options...)
+	return newFocusedClientWithComposition(provideryoutube.NewComposition(), options...)
+}
+
+func newFocusedClientWithComposition(composition engine.Composition, options ...engine.Option) *engine.Client {
+	return engine.NewClient(composition, options...)
 }
 
 // Close stops new manager activity and joins manager-owned work only until
@@ -3798,6 +3809,9 @@ func (m *Manager) handleEventAttempt(state *jobState, worker *worker, ev engine.
 	case engine.EventDownloadCancelled:
 		state.snap.Message = "Canceled"
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	case engine.EventJavaScriptChallenge:
+		// Secret-free engine diagnostics are available to dedicated event
+		// consumers, but must not replace the job's user-facing status text.
 	default:
 		if ev.Message != "" {
 			state.snap.Message = humanMessage(ev.Message)
