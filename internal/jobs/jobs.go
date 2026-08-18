@@ -28,6 +28,7 @@ import (
 	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/vidstow/internal/reservation"
+	"github.com/tejasa97/vidstow/internal/reservationfs"
 	"github.com/tejasa97/youtube_dlp/engine"
 	provideryoutube "github.com/tejasa97/youtube_dlp/providers/youtube"
 )
@@ -308,6 +309,10 @@ type ActionRequiredReview struct {
 	Message            string `json:"message"`
 	PreservationNotice string `json:"preservationNotice"`
 	CanStartOver       bool   `json:"canStartOver"`
+	CanRetryRecovery   bool   `json:"canRetryRecovery"`
+	CanRetryFreshLink  bool   `json:"canRetryFreshLink"`
+	CanDiscard         bool   `json:"canDiscard"`
+	CanRetryCleanup    bool   `json:"canRetryCleanup"`
 }
 
 // QueueView is the only live queue contract consumed by the V4 frontend.
@@ -965,20 +970,34 @@ func (m *Manager) discardSession(state *jobState) (bool, string) {
 	return m.discardKnownSession(state, state.durable.SessionID)
 }
 
-// discardRetiredSession best-effort deletes a session that Retry has already
-// rotated off the durable row. A failure never blocks or rolls back the fresh
-// retry. The workspace is reclaimed by the recovery orphan scan only while
-// its root stays discoverable — referenced by a live job, a cleanup
-// tombstone, or the current download folder. Removing the row or changing
-// the folder before OrphanAge can leave the workspace on disk permanently;
-// retaining retired roots durably requires the cleanup store-model follow-up,
-// because the store cannot tombstone a retired session of a still-live job.
-// The leak is logged without paths or other sensitive data.
+// discardRetiredSession attempts immediate cleanup after Retry has atomically
+// rotated the durable row and recorded the old session as cleanup-pending.
+// Failure leaves that tombstone for the startup/periodic cleanup worker; only
+// a proven discard removes it.
 func (m *Manager) discardRetiredSession(state *jobState, sessionID string) {
 	cleanupPending, _ := m.discardKnownSession(state, sessionID)
-	if cleanupPending && state != nil {
-		logRetiredSessionLeak("vidstow: retry escalation could not discard the retired session for job %s; its hidden workspace may remain on disk and is reclaimed only while the queue still references its download folder", state.snap.ID)
+	if cleanupPending {
+		if state != nil {
+			logRetiredSessionLeak("vidstow: retired session cleanup remains pending for job %s and will be retried from durable state", state.snap.ID)
+		}
+		return
 	}
+	if state == nil || !state.fromStateV2 {
+		return
+	}
+	store := m.stateStoreSnapshot()
+	if store == nil {
+		return
+	}
+	_ = m.transaction(store, nil, func(document *jobmodel.State) error {
+		for index, tombstone := range document.Cleanup {
+			if tombstone.JobID == state.snap.ID && tombstone.SessionID == sessionID {
+				document.Cleanup = append(document.Cleanup[:index], document.Cleanup[index+1:]...)
+				break
+			}
+		}
+		return nil
+	})
 }
 
 func (m *Manager) discardKnownSession(state *jobState, sessionID string) (bool, string) {
@@ -1643,6 +1662,17 @@ func (m *Manager) QueueView() QueueView {
 	return m.queueViewLocked()
 }
 
+// RefreshDurableMaintenance emits a fresh QueueView after the recovery worker
+// changes cleanup tombstones outside the manager's lifecycle transactions.
+func (m *Manager) RefreshDurableMaintenance() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closing || m.closed {
+		return
+	}
+	m.emitQueueLocked()
+}
+
 func (m *Manager) queueViewLocked() QueueView {
 	m.refreshQueueAuthorityLocked()
 	view := QueueView{
@@ -1676,6 +1706,16 @@ func (m *Manager) queueViewLocked() QueueView {
 			OccupiesSlot: m.active[snap.ID] != nil, QueuePosition: positions[snap.ID],
 			Progress: snap.Progress, Message: snap.Message,
 			Capabilities: m.queueCapabilitiesLocked(state, snap),
+		}
+		if present, quarantined := m.cleanupStatusLocked(snap.ID); present {
+			switch snap.Status {
+			case StatusCanceled, StatusFailed, StatusComplete:
+				if quarantined {
+					row.Message = "Temporary data needs attention and was preserved."
+				} else {
+					row.Message = "Cleaning up saved temporary data automatically…"
+				}
+			}
 		}
 		if row.Capabilities != (QueueJobCapabilities{}) {
 			row.CommandToken = state.commandToken
@@ -1815,14 +1855,15 @@ func (m *Manager) refreshQueueAuthorityLocked() {
 			continue
 		}
 		caps := m.queueCapabilitiesLocked(state, state.snap)
+		cleanupPresent, cleanupQuarantined := m.cleanupStatusLocked(id)
 		sig := fmt.Sprintf("%s|%s|%s|%s|%d|%t|%d|%t%t|%t%t%t%t%t%t%t%t",
 			state.snap.Status, state.snap.Lifecycle, state.snap.Phase, state.snap.Desired,
 			state.authorityRevision, m.active[id] != nil, positions[id], m.closing, m.closed,
 			caps.Pause, caps.Cancel, caps.Resume, caps.Retry, caps.DownloadAgain, caps.Review, caps.Open, caps.Remove,
 		)
-		// Attempt identity is an authority boundary even when the presentation
-		// lifecycle happens to be unchanged.
-		sig += "|" + state.authorityAttemptID
+		// Attempt identity and cleanup disposition are authority boundaries even
+		// when the presentation lifecycle happens to be unchanged.
+		sig += fmt.Sprintf("|%s|%t|%t", state.authorityAttemptID, cleanupPresent, cleanupQuarantined)
 		if state.authoritySig != sig {
 			state.commandToken = uuid.NewString()
 			state.authoritySig = sig
@@ -1951,7 +1992,33 @@ func (m *Manager) queueCapabilitiesLocked(state *jobState, snap JobSnapshot) Que
 	if m.persistStatus.Available && !m.persistStatus.Healthy || !m.persistStatus.Available && m.stateStore != nil {
 		return QueueJobCapabilities{}
 	}
-	return queueCapabilitiesFor(state, snap)
+	capabilities := queueCapabilitiesFor(state, snap)
+	pendingCleanup, _ := m.cleanupStatusLocked(snap.ID)
+	if pendingCleanup {
+		// A retained row remains the visible owner of cleanup evidence. It can
+		// only be removed after the durable tombstones have settled. Terminal
+		// rows expose Review so a quarantined cleanup can be retried explicitly.
+		capabilities.Remove = false
+		switch snap.Status {
+		case StatusCanceled, StatusFailed, StatusComplete:
+			capabilities.Review = true
+		}
+	}
+	return capabilities
+}
+
+func (m *Manager) cleanupStatusLocked(jobID string) (present, quarantined bool) {
+	if m.stateStore == nil || jobID == "" {
+		return false, false
+	}
+	for _, tombstone := range m.stateStore.Snapshot().Cleanup {
+		if tombstone.JobID != jobID {
+			continue
+		}
+		present = true
+		quarantined = quarantined || tombstone.State == jobmodel.CleanupQuarantined
+	}
+	return present, quarantined
 }
 
 func (m *Manager) authorizeQueueCommand(id, token string, allowed func(QueueJobCapabilities) bool) (*jobState, error) {
@@ -2007,7 +2074,8 @@ func (m *Manager) QueueActionRequiredReview(id, token string) (ActionRequiredRev
 	if state == nil || token == "" || token != state.commandToken || !m.queueCapabilitiesLocked(state, state.snap).Review {
 		return ActionRequiredReview{}, errors.New("jobs: queue action is no longer available")
 	}
-	return actionRequiredReview(state), nil
+	_, quarantined := m.cleanupStatusLocked(id)
+	return actionRequiredReview(state, quarantined), nil
 }
 
 // QueueActionRequiredStartOverURL releases only the persisted source URL after
@@ -2022,14 +2090,205 @@ func (m *Manager) QueueActionRequiredStartOverURL(id, token string) (string, err
 	if state == nil || token == "" || token != state.commandToken || !m.queueCapabilitiesLocked(state, state.snap).Review {
 		return "", errors.New("jobs: queue action is no longer available")
 	}
-	review := actionRequiredReview(state)
+	if state.snap.Status != StatusActionRequired {
+		return "", errors.New("jobs: starting over is not available for this item")
+	}
+	_, quarantined := m.cleanupStatusLocked(id)
+	review := actionRequiredReview(state, quarantined)
 	if !review.CanStartOver {
 		return "", errors.New("jobs: starting over is not available for this item")
 	}
 	return strings.TrimSpace(state.snap.URL), nil
 }
 
-func actionRequiredReview(state *jobState) ActionRequiredReview {
+// QueueActionRequiredDiscard uses the existing prepare-then-commit Cancel
+// protocol. Unsafe or indeterminate engine evidence therefore leaves the row
+// untouched; cleanup-pending outcomes remain durable and visible.
+func (m *Manager) QueueActionRequiredDiscard(id, token string) error {
+	state, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Review })
+	if err != nil || state.snap.Status != StatusActionRequired {
+		return errors.New("jobs: discarding saved data is no longer available")
+	}
+	m.mu.Lock()
+	if m.all[id] != state || state.commanding || state.settling || m.active[id] != nil {
+		m.mu.Unlock()
+		return errors.New("jobs: discarding saved data is no longer available")
+	}
+	state.commanding = true
+	m.mu.Unlock()
+	return m.cancelIdle(state)
+}
+
+// QueueActionRequiredRetryFreshLink rotates away from uncertain session
+// evidence atomically, retains it for durable cleanup, and starts the same row
+// with a fresh engine session so media URLs are resolved again.
+func (m *Manager) QueueActionRequiredRetryFreshLink(id, token string) error {
+	state, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Review })
+	if err != nil || state.snap.Status != StatusActionRequired || !canRetryActionRequiredFresh(state) {
+		return errors.New("jobs: fresh-link retry is no longer available")
+	}
+	m.mu.Lock()
+	if m.all[id] != state || state.commanding || state.settling {
+		m.mu.Unlock()
+		return errors.New("jobs: fresh-link retry is no longer available")
+	}
+	state.commanding = true
+	m.mu.Unlock()
+	if !freshRetryDestinationAvailable(state.durable) {
+		m.mu.Lock()
+		state.commanding = false
+		m.emitQueueLocked()
+		m.mu.Unlock()
+		return errors.New("jobs: the reserved destination is no longer available; start over from Home to choose a new name")
+	}
+
+	previousSessionID := state.durable.SessionID
+	freshSessionID := newSessionID()
+	if err := m.commitDurable(state, func(job *jobmodel.DurableJob, document *jobmodel.State) error {
+		upsertJobCleanupTombstone(document, job.ID, previousSessionID, job.OutputRoot, job.Reservation, "cleanup", time.Now().UTC())
+		if document.NextQueueOrdinal == ^uint64(0) {
+			return errors.New("jobs: queue ordinal exhausted")
+		}
+		job.Lifecycle = jobmodel.LifecyclePending
+		job.Desired = jobmodel.DesiredRunning
+		job.Phase = jobmodel.PhasePreparing
+		job.AttemptID = uuid.NewString()
+		job.SessionID = freshSessionID
+		job.RetryMode = jobmodel.RetryModeRestartNewSession
+		job.ActionRequiredCode = ""
+		job.LastErrorCode = ""
+		job.LastFailureCommittedBytes = 0
+		job.ZeroProgressResumes = 0
+		job.SessionRestarts++
+		job.QueueOrdinal = document.NextQueueOrdinal
+		document.NextQueueOrdinal++
+		return nil
+	}); err != nil {
+		m.mu.Lock()
+		state.commanding = false
+		m.mu.Unlock()
+		return err
+	}
+	m.discardRetiredSession(state, previousSessionID)
+
+	m.mu.Lock()
+	if m.closing || m.closed || m.all[id] != state || !state.commanding {
+		state.commanding = false
+		m.mu.Unlock()
+		return errors.New("jobs: stale fresh-link retry")
+	}
+	state.snap.Status = StatusPending
+	state.snap.Progress = 0
+	state.snap.Bytes = 0
+	state.snap.Total = 0
+	state.snap.SpeedBps = 0
+	state.snap.ETASeconds = 0
+	state.snap.Message = "Queued with a fresh media link"
+	state.snap.ErrorReason = ""
+	state.snap.StartedAt = ""
+	state.snap.CompletedAt = ""
+	state.commanding = false
+	m.order = append(m.order, id)
+	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	m.maybeStartNextLocked()
+	m.emitQueueLocked()
+	m.mu.Unlock()
+	return nil
+}
+
+// QueueActionRequiredRetryRecovery re-inspects preserved evidence. Only a
+// session the engine now classifies as reusable may re-enter ordinary Retry;
+// uncertainty remains action-required and no identity is changed.
+func (m *Manager) QueueActionRequiredRetryRecovery(id, token string) error {
+	state, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Review })
+	if err != nil || state.snap.Status != StatusActionRequired || !canRetryActionRequiredRecovery(state) {
+		return errors.New("jobs: recovery retry is no longer available")
+	}
+	m.mu.Lock()
+	if m.all[id] != state || state.commanding || state.settling {
+		m.mu.Unlock()
+		return errors.New("jobs: recovery retry is no longer available")
+	}
+	state.commanding = true
+	m.mu.Unlock()
+	clearCommand := func() {
+		m.mu.Lock()
+		if m.all[id] == state {
+			state.commanding = false
+			m.emitQueueLocked()
+		}
+		m.mu.Unlock()
+	}
+	summary, inspectErr := m.inspectResume(context.Background(), engineRootRef(state.durable.OutputRoot), state.durable.SessionID)
+	if inspectErr != nil {
+		clearCommand()
+		return errors.New("jobs: saved data is still unavailable; it was preserved")
+	}
+	decision, _ := classifyRetryResume(summary)
+	if decision != retryResumeReuse {
+		clearCommand()
+		return errors.New("jobs: saved data is still not safe to retry; it was preserved")
+	}
+	if err := m.commitDurable(state, func(job *jobmodel.DurableJob, _ *jobmodel.State) error {
+		job.Lifecycle = jobmodel.LifecycleFailed
+		job.Desired = jobmodel.DesiredPaused
+		job.ActionRequiredCode = ""
+		job.LastErrorCode = ""
+		return nil
+	}); err != nil {
+		clearCommand()
+		return err
+	}
+	m.mu.Lock()
+	if m.all[id] != state {
+		m.mu.Unlock()
+		return errors.New("jobs: stale recovery retry")
+	}
+	state.snap.Status = StatusFailed
+	state.snap.ErrorReason = ""
+	state.snap.Message = "Ready to retry"
+	state.commanding = false
+	m.mu.Unlock()
+	return m.Retry(id)
+}
+
+// QueueRetryCleanup re-enables explicitly reviewed quarantined tombstones.
+// The periodic worker performs the actual engine inspection and discard.
+func (m *Manager) QueueRetryCleanup(id, token string) error {
+	state, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Review })
+	if err != nil || state.snap.Status == StatusActionRequired {
+		return errors.New("jobs: cleanup retry is no longer available")
+	}
+	store := m.stateStoreSnapshot()
+	if store == nil {
+		return errors.New("jobs: State v2 store is not configured")
+	}
+	now := time.Now().UTC()
+	changed := false
+	if err := m.transaction(store, nil, func(document *jobmodel.State) error {
+		for index := range document.Cleanup {
+			tombstone := &document.Cleanup[index]
+			if tombstone.JobID == id && tombstone.State == jobmodel.CleanupQuarantined {
+				tombstone.State = jobmodel.CleanupPending
+				tombstone.LastErrorCode = "cleanup"
+				tombstone.UpdatedAt = now
+				changed = true
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if !changed {
+		return errors.New("jobs: cleanup retry is no longer available")
+	}
+	m.mu.Lock()
+	m.emitQueueLocked()
+	m.mu.Unlock()
+	return nil
+}
+
+func actionRequiredReview(state *jobState, cleanupQuarantined bool) ActionRequiredReview {
 	code := strings.TrimSpace(state.snap.ErrorReason)
 	if state.fromStateV2 && state.durable.ActionRequiredCode != "" {
 		code = state.durable.ActionRequiredCode
@@ -2048,11 +2307,68 @@ func actionRequiredReview(state *jobState) ActionRequiredReview {
 		message = "This item came from an older VidStow version and must be analyzed again before it can download."
 	}
 	url := strings.TrimSpace(state.snap.URL)
+	if state.snap.Status != StatusActionRequired {
+		message = "VidStow could not finish removing an older download session’s saved temporary data. The queue item remains visible so cleanup is never silently forgotten."
+		return ActionRequiredReview{
+			JobID: state.snap.ID, Title: state.snap.Title,
+			Heading: "Temporary data is still preserved", Message: message,
+			PreservationNotice: "Removing this queue item stays unavailable until cleanup succeeds. VidStow retries pending cleanup automatically after restart.",
+			CanRetryCleanup:    cleanupQuarantined,
+		}
+	}
+	canManageSession := state.fromStateV2 && state.durable.SessionID != "" && state.durable.OutputRoot.CanonicalPath != ""
 	return ActionRequiredReview{
 		JobID: state.snap.ID, Title: state.snap.Title,
 		Heading: "This download needs your decision", Message: message,
-		PreservationNotice: "The original queue item and its saved temporary data will stay in place. Starting over will not reuse or delete that uncertain data.",
+		PreservationNotice: "The original queue item and its saved temporary data will stay in place unless you explicitly discard it. Starting over uses a new destination reservation and never reuses uncertain data.",
 		CanStartOver:       url != "",
+		CanRetryRecovery:   canManageSession && canRetryActionRequiredRecovery(state),
+		CanRetryFreshLink:  canManageSession && canRetryActionRequiredFresh(state),
+		CanDiscard:         canManageSession,
+	}
+}
+
+func freshRetryDestinationAvailable(job jobmodel.DurableJob) bool {
+	root, err := reservationfs.OpenRoot(job.OutputRoot.CanonicalPath)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	facts := root.Facts()
+	if facts.Volume.CanonicalPath != job.OutputRoot.CanonicalPath || facts.Volume.Identity != job.OutputRoot.Identity {
+		return false
+	}
+	for _, artifact := range job.Reservation.Artifacts {
+		availability, err := facts.Probe.Probe(context.Background(), facts.Volume, artifact.Basename)
+		if err != nil || availability != reservation.Available {
+			return false
+		}
+	}
+	return true
+}
+
+func canRetryActionRequiredRecovery(state *jobState) bool {
+	if state == nil || !state.fromStateV2 || state.durable.SessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
+		return false
+	}
+	switch state.durable.ActionRequiredCode {
+	case "session-lease-contended", "recovery-session-unavailable", "output-root-unavailable":
+		return true
+	default:
+		return false
+	}
+}
+
+func canRetryActionRequiredFresh(state *jobState) bool {
+	if state == nil || !state.fromStateV2 || strings.TrimSpace(state.snap.URL) == "" || state.durable.SessionID == "" || state.durable.OutputRoot.CanonicalPath == "" || len(state.durable.Reservation.Artifacts) == 0 || state.durable.SessionRestarts >= maxZeroProgressRestarts {
+		return false
+	}
+	code := state.durable.ActionRequiredCode
+	switch code {
+	case "publication-reconciliation-required", "output-root-unavailable", "session-path-unsafe", "session-lease-contended", "migration-reanalysis-required", "migration-private-plan-unverified":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -2348,15 +2664,15 @@ func (m *Manager) Cancel(id string) error {
 	m.detachedWG.Add(1)
 	go func() {
 		defer m.detachedWG.Done()
-		m.cancelIdle(state)
+		_ = m.cancelIdle(state)
 	}()
 	m.mu.Unlock()
 	return nil
 }
 
-func (m *Manager) cancelIdle(state *jobState) {
+func (m *Manager) cancelIdle(state *jobState) error {
 	if state == nil {
-		return
+		return errors.New("jobs: missing idle job")
 	}
 	handle, unavailable, prepareErr := m.prepareDiscardSession(state, state.durable.SessionID)
 	if prepareErr != nil {
@@ -2367,7 +2683,7 @@ func (m *Manager) cancelIdle(state *jobState) {
 		m.maybeStartNextLocked()
 		m.emitQueueLocked()
 		m.mu.Unlock()
-		return
+		return prepareErr
 	}
 	if err := m.transitionDurable(state, jobmodel.LifecycleCanceling, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp); err != nil {
 		if handle != nil {
@@ -2378,7 +2694,7 @@ func (m *Manager) cancelIdle(state *jobState) {
 		m.maybeStartNextLocked()
 		m.emitQueueLocked()
 		m.mu.Unlock()
-		return
+		return err
 	}
 	cleanupPending := false
 	cleanupCode := ""
@@ -2406,7 +2722,7 @@ func (m *Manager) cancelIdle(state *jobState) {
 		m.maybeStartNextLocked()
 		m.emitQueueLocked()
 		m.mu.Unlock()
-		return
+		return err
 	}
 	m.mu.Lock()
 	if current := m.all[state.snap.ID]; current == state {
@@ -2418,6 +2734,7 @@ func (m *Manager) cancelIdle(state *jobState) {
 		m.emitQueueLocked()
 	}
 	m.mu.Unlock()
+	return nil
 }
 
 // Pause suspends a pending or actively downloading job. Active processing
@@ -3102,6 +3419,9 @@ func (m *Manager) Retry(id string) error {
 		}
 		previousSessionID := state.durable.SessionID
 		if err := m.commitDurable(state, func(job *jobmodel.DurableJob, document *jobmodel.State) error {
+			if escalatedRestart && previousSessionID != "" && previousSessionID != sessionID {
+				upsertJobCleanupTombstone(document, job.ID, previousSessionID, job.OutputRoot, job.Reservation, "cleanup", time.Now().UTC())
+			}
 			job.Lifecycle = jobmodel.LifecyclePending
 			job.Desired = jobmodel.DesiredRunning
 			job.Phase = jobmodel.PhasePreparing
@@ -3308,6 +3628,10 @@ func (m *Manager) Remove(id string) error {
 	default:
 		m.mu.Unlock()
 		return errors.New("jobs: only terminal jobs can be removed")
+	}
+	if pendingCleanup, _ := m.cleanupStatusLocked(id); pendingCleanup {
+		m.mu.Unlock()
+		return errors.New("jobs: saved temporary data cleanup is still pending")
 	}
 	if state.commanding || state.settling {
 		m.mu.Unlock()

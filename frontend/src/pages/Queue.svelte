@@ -70,7 +70,7 @@
       actionRequiredAuthority = null;
       pendingUrl.set(url);
       route.set('home');
-      showBanner('info', 'Analyze the video again to start a fresh download. The original saved data was preserved.');
+      showBanner('info', 'Analyze the video again to start a fresh download. The original saved data and destination reservation were preserved.');
     } catch (err) {
       actionRequiredReview = null;
       actionRequiredAuthority = null;
@@ -79,6 +79,89 @@
     } finally {
       startingOver = false;
     }
+  }
+
+  async function retryActionRequiredRecovery() {
+    if (!actionRequiredAuthority || startingOver) return;
+    startingOver = true;
+    try {
+      await api.queue.retryActionRequired(actionRequiredAuthority.jobId, actionRequiredAuthority.commandToken);
+      actionRequiredReview = null;
+      actionRequiredAuthority = null;
+      await refresh();
+      showBanner('info', 'The saved session is safe again and has been returned to the queue.');
+    } catch (err) {
+      actionRequiredReview = null;
+      actionRequiredAuthority = null;
+      await refresh().catch(() => undefined);
+      showError(err, 'The saved session still could not be recovered safely');
+    } finally {
+      startingOver = false;
+    }
+  }
+
+  async function retryActionRequiredFreshLink() {
+    if (!actionRequiredAuthority || startingOver) return;
+    startingOver = true;
+    try {
+      await api.queue.retryActionRequiredFreshLink(actionRequiredAuthority.jobId, actionRequiredAuthority.commandToken);
+      actionRequiredReview = null;
+      actionRequiredAuthority = null;
+      await refresh();
+      showBanner('info', 'Retrying in place with a freshly resolved media link. The uncertain session was retained for safe cleanup.');
+    } catch (err) {
+      actionRequiredReview = null;
+      actionRequiredAuthority = null;
+      await refresh().catch(() => undefined);
+      showError(err, 'Could not retry with a fresh link');
+    } finally {
+      startingOver = false;
+    }
+  }
+
+  async function retryCleanup() {
+    if (!actionRequiredAuthority || startingOver) return;
+    startingOver = true;
+    try {
+      await api.queue.retryCleanup(actionRequiredAuthority.jobId, actionRequiredAuthority.commandToken);
+      actionRequiredReview = null;
+      actionRequiredAuthority = null;
+      await refresh();
+      showBanner('info', 'Cleanup will be tried again automatically.');
+    } catch (err) {
+      actionRequiredReview = null;
+      actionRequiredAuthority = null;
+      await refresh().catch(() => undefined);
+      showError(err, 'Could not retry cleanup');
+    } finally {
+      startingOver = false;
+    }
+  }
+
+  function discardActionRequired() {
+    if (!actionRequiredAuthority || startingOver) return;
+    const authority = actionRequiredAuthority;
+    actionRequiredReview = null;
+    actionRequiredAuthority = null;
+    modal.set({
+      kind: 'confirm',
+      title: 'Discard saved temporary data?',
+      message: 'VidStow will only remove data the download engine can identify safely. If cleanup cannot be completed, this queue item will remain visible.',
+      actions: [{
+        label: 'Discard saved data',
+        primary: true,
+        action: async () => {
+          try {
+            await api.queue.discardActionRequired(authority.jobId, authority.commandToken);
+            await refresh();
+            showBanner('info', 'Saved temporary data was discarded or scheduled for safe cleanup.');
+          } catch (err) {
+            await refresh().catch(() => undefined);
+            showError(err, 'Saved data could not be discarded safely');
+          }
+        },
+      }],
+    });
   }
 
   async function collectionAction(detail: QueueCollectionActionEvent) {
@@ -145,4 +228,8 @@
   busy={startingOver}
   onClose={closeActionRequiredReview}
   onStartOver={startOverActionRequired}
+  onRetryRecovery={retryActionRequiredRecovery}
+  onRetryFreshLink={retryActionRequiredFreshLink}
+  onDiscard={discardActionRequired}
+  onRetryCleanup={retryCleanup}
 />

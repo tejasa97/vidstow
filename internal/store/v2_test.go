@@ -450,7 +450,7 @@ func TestV2RetryEscalationCountersAreBounded(t *testing.T) {
 	}
 }
 
-func TestV2CleanupTombstoneCannotOverlapLivePendingJob(t *testing.T) {
+func TestV2CleanupTombstoneRetainsRetiredSessionForLiveJob(t *testing.T) {
 	now := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
 	state := defaultStateV2()
 	job := testJob()
@@ -464,8 +464,12 @@ func TestV2CleanupTombstoneCannotOverlapLivePendingJob(t *testing.T) {
 	state.Jobs = []jobmodel.DurableJob{job}
 	state.Cleanup = []jobmodel.CleanupTombstone{tomb}
 	state.NextQueueOrdinal = 2
+	if err := validateState(state); err != nil {
+		t.Fatalf("retired-session cleanup record was rejected: %v", err)
+	}
+	state.Cleanup[0].OutputRoot.Identity = "different-volume"
 	if err := validateState(state); err == nil {
-		t.Fatal("retired-session tombstone overlapping a live pending job was accepted")
+		t.Fatal("retired-session cleanup with a different root was accepted")
 	}
 }
 

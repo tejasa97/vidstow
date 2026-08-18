@@ -41,7 +41,7 @@ var (
 		return recovery.Reconcile(ctx, state, recovery.Options{})
 	}
 	restoreStartupManager = func(manager *jobs.Manager, snapshot jobmodel.State) error { return manager.RestoreStateV2(snapshot) }
-	startStartupCleanup   = recovery.StartCleanupWorker
+	startStartupCleanup   = recovery.StartCleanupWorkerWithReport
 	logAppErrorf          = wailsruntime.LogErrorf
 	emitAppEvent          = wailsruntime.EventsEmit
 )
@@ -165,7 +165,11 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 	a.jobs.SetConcurrency(settings.DownloadConcurrency)
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	a.cleanupCancel = cleanupCancel
-	a.cleanupDone = startStartupCleanup(cleanupCtx, st, recovery.DefaultCleanupInterval)
+	a.cleanupDone = startStartupCleanup(cleanupCtx, st, recovery.DefaultCleanupInterval, func(pass recovery.CleanupPass) {
+		if pass.DurableChanges > 0 && a.jobs != nil {
+			a.jobs.RefreshDurableMaintenance()
+		}
+	})
 	a.applyFFmpegDiscovery(ffmpegdetect.Probe(ctx, settings.FFmpegPath))
 	emitAppEvent(ctx, "ffmpeg:update", a.ffmpegStatus())
 }
@@ -552,6 +556,34 @@ func (a *App) StartOverActionRequiredQueueJob(id, token string) (string, error) 
 		return "", err
 	}
 	return a.jobs.QueueActionRequiredStartOverURL(id, token)
+}
+
+func (a *App) RetryActionRequiredQueueJob(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueActionRequiredRetryRecovery(id, token)
+}
+
+func (a *App) RetryActionRequiredWithFreshLink(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueActionRequiredRetryFreshLink(id, token)
+}
+
+func (a *App) DiscardActionRequiredQueueJob(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueActionRequiredDiscard(id, token)
+}
+
+func (a *App) RetryQueueJobCleanup(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueRetryCleanup(id, token)
 }
 
 func (a *App) OpenQueueJob(id, token string) error {
