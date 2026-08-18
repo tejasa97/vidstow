@@ -96,7 +96,7 @@
     modal.set({
       kind: 'confirm',
       title: 'Delete downloaded file?',
-      message: `Permanently delete “${entry.filename || entry.title}” from disk and remove it from history.`,
+      message: `Permanently delete “${entry.filename || entry.title}” from disk and remove it from Downloads and the queue.`,
       actions: [
         {
           label: 'Delete file',

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tejasa97/vidstow/internal/admission"
 	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/jobs"
 	"github.com/tejasa97/vidstow/internal/recovery"
@@ -244,6 +245,155 @@ func TestShutdownDeadlineKeepsStateOpenUntilLateWorkSettles(t *testing.T) {
 	if closes, transactions, afterClose := state.snapshot(); closes != 1 || transactions != 1 || afterClose != 0 {
 		t.Fatalf("state after late worker = closes=%d transactions=%d after-close=%d, want 1/1/0", closes, transactions, afterClose)
 	}
+}
+
+func TestDeleteDownloadFileRemovesCompletedQueueRow(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app, mediaPath := newCompletedDownloadApp(t)
+
+	if err := app.DeleteDownloadFile("completed-job"); err != nil {
+		t.Fatalf("DeleteDownloadFile: %v", err)
+	}
+	if _, err := os.Stat(mediaPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted media still present: %v", err)
+	}
+	if got := app.ListDownloads(); len(got) != 0 {
+		t.Fatalf("history after delete = %#v; want empty", got)
+	}
+	if _, ok := app.jobs.Find("completed-job"); ok {
+		t.Fatal("completed queue row remained after deleting the download")
+	}
+	if _, ok := app.jobs.Find("failed-job"); !ok {
+		t.Fatal("unrelated failed queue row was removed")
+	}
+}
+
+func TestRemoveDownloadKeepsCompletedQueueRowAndFile(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app, mediaPath := newCompletedDownloadApp(t)
+
+	if err := app.RemoveDownload("completed-job"); err != nil {
+		t.Fatalf("RemoveDownload: %v", err)
+	}
+	if _, err := os.Stat(mediaPath); err != nil {
+		t.Fatalf("history-only remove deleted media: %v", err)
+	}
+	if got := app.ListDownloads(); len(got) != 0 {
+		t.Fatalf("history after remove = %#v; want empty", got)
+	}
+	if _, ok := app.jobs.Find("completed-job"); !ok {
+		t.Fatal("completed queue row was removed by history-only removal")
+	}
+}
+
+func TestDeleteDownloadFileSucceedsWhenQueueRowAlreadyGone(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app, mediaPath := newCompletedDownloadApp(t)
+	if err := app.jobs.Remove("completed-job"); err != nil {
+		t.Fatalf("Remove completed job: %v", err)
+	}
+
+	if err := app.DeleteDownloadFile("completed-job"); err != nil {
+		t.Fatalf("DeleteDownloadFile after queue removal: %v", err)
+	}
+	if _, err := os.Stat(mediaPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted media still present: %v", err)
+	}
+	if got := app.ListDownloads(); len(got) != 0 {
+		t.Fatalf("history after delete = %#v; want empty", got)
+	}
+}
+
+func newCompletedDownloadApp(t *testing.T) (*App, string) {
+	t.Helper()
+	root := secureAppTempDir(t)
+	downloads := filepath.Join(root, "downloads")
+	if err := os.Mkdir(downloads, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(downloads, "Demo.mp4")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := filepath.Join(root, "state.json")
+	st, status, err := store.OpenV2(statePath)
+	if err != nil || !status.Healthy() || st == nil {
+		t.Fatalf("OpenV2 = %v, %#v, %v", st, status, err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	settings := st.Settings()
+	settings.DownloadFolder = downloads
+	if err := st.SetSettings(settings); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+
+	now := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	plan := jobmodel.PersistedPlan{ID: "video-1080-mp4", Kind: "video", Label: "1080p", Container: "MP4"}
+	rootRef := jobmodel.OutputRootRef{CanonicalPath: downloads, Identity: "volume-test"}
+	completed := jobmodel.DurableJob{
+		ID: "completed-job", Revision: 1, AttemptID: "attempt-completed", SessionID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		QueueOrdinal: 1, Lifecycle: jobmodel.LifecycleCompleted, Phase: jobmodel.PhaseReadyToPublish, Desired: jobmodel.DesiredRunning,
+		Request: jobmodel.PersistedRequest{
+			SourceURL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", VideoID: "dQw4w9WgXcQ",
+			Title: "Demo", Channel: "Creator", Quality: "best", PlanID: plan.ID,
+		},
+		Plan: plan, OutputRoot: rootRef,
+		Reservation: jobmodel.ReservationSet{
+			GroupID: "completed-job", Directory: rootRef,
+			Artifacts: []jobmodel.ReservedArtifact{{Kind: string(engine.ArtifactKindPrimary), Identity: "primary", Basename: "Demo.mp4"}},
+		},
+		RetryMode: jobmodel.RetryModeNone, CreatedAt: now, UpdatedAt: now,
+	}
+	failed := completed
+	failed.ID = "failed-job"
+	failed.AttemptID = "attempt-failed"
+	failed.SessionID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	failed.QueueOrdinal = 2
+	failed.Lifecycle = jobmodel.LifecycleFailed
+	failed.Phase = jobmodel.PhaseDownloading
+	failed.Reservation.GroupID = "failed-job"
+	failed.Reservation.Artifacts = []jobmodel.ReservedArtifact{{Kind: string(engine.ArtifactKindPrimary), Identity: "primary", Basename: "Other.mp4"}}
+	failed.LastErrorCode = "download-failed"
+
+	if err := st.Transaction(nil, func(state *jobmodel.State) error {
+		state.NextQueueOrdinal = 3
+		state.Jobs = []jobmodel.DurableJob{completed, failed}
+		state.History = []jobmodel.HistoryEntry{{
+			ID: completed.ID, VideoID: completed.Request.VideoID, Title: completed.Request.Title,
+			Channel: completed.Request.Channel, Quality: "1080p", Container: "MP4",
+			Filename: "Demo.mp4", AbsolutePath: mediaPath, SizeBytes: int64(len("fixture")),
+			CompletedAt: now.Format(time.RFC3339Nano),
+		}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed completed download: %v", err)
+	}
+
+	manager := jobs.New(nil, nil)
+	t.Cleanup(func() { _ = manager.Close() })
+	if err := manager.SetStateStore(st); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(st.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := admission.NewCoordinator(admission.Dependencies{Store: st, Resolver: manager, Queue: manager})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.store = st
+	app.jobs = manager
+	app.coordinator = coordinator
+	app.setStartupStatus(store.StartupStatus{Mode: store.StartupHealthy})
+	return app, mediaPath
 }
 
 func installAppTestSeams(t *testing.T) func() {
