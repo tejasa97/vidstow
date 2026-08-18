@@ -30,7 +30,7 @@ A local desktop application built with Go, Wails, and Svelte.
 
 ## Download
 
-[`v0.1.0-beta.2`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.2)
+[`v0.1.0-beta.3`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.3)
 is the current macOS Apple Silicon preview. The recommended installation
 uses VidStow's Homebrew tap:
 
@@ -143,7 +143,7 @@ application and engine versions and by artifact-specific validation.
 | Area | Supported boundary |
 | --- | --- |
 | Product | Beta; focused public YouTube video, Short, and playlist workflow |
-| Package | [`v0.1.0-beta.2`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.2) installs on Apple Silicon through the [`vidstow/tap`](https://github.com/vidstow/homebrew-tap) Homebrew cask |
+| Package | [`v0.1.0-beta.3`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.3) installs on Apple Silicon through the [`vidstow/tap`](https://github.com/vidstow/homebrew-tap) Homebrew cask |
 | Source | Apache-2.0 source and self-build instructions |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
 | Engine | `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.3` |
