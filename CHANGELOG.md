@@ -18,7 +18,9 @@ does not exist yet.
 
 ### Changed
 
-- No entries yet.
+- The desktop engine pin is `github.com/tejasa97/youtube_dlp v0.2.3`.
+- Repeated downloads using the same YouTube player can reuse completed EJS
+  preprocessing while each job retains its isolated JavaScript helper.
 
 ### Fixed
 
