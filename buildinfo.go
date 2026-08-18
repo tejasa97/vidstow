@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	appVersion          = "0.1.0-beta.3"
+	appVersion          = "0.1.0-beta.4"
 	engineModulePath    = "github.com/tejasa97/youtube_dlp"
 	pinnedEngineVersion = "v0.2.3"
 )

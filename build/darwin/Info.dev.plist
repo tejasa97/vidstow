@@ -16,7 +16,7 @@
         <key>CFBundleShortVersionString</key>
         <string>{{.Info.ProductVersion}}</string>
         <key>VidStowReleaseVersion</key>
-        <string>0.1.0-beta.3</string>
+        <string>0.1.0-beta.4</string>
         <key>VidStowReleaseChannel</key>
         <string>beta</string>
         <key>CFBundleIconFile</key>
