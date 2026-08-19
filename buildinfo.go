@@ -5,8 +5,8 @@ import (
 	"runtime/debug"
 )
 
-// diagnosticsEventsEndpoint is injected only into builds whose privacy notice
-// and ingestion service are ready. Empty keeps transport dormant.
+// diagnosticsEventsEndpoint is the reviewed production ingestion endpoint.
+// An empty value keeps automatic transport dormant for development builds.
 var diagnosticsEventsEndpoint = "https://diagnostics.vidstow.workers.dev/v1/events"
 
 const (

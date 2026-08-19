@@ -93,6 +93,13 @@
     for (const off of unsubAll) off();
   });
 
+  // Never pass browser error/rejection data across the backend boundary: it
+  // can contain a URL, user input, or stack trace. The backend records only a
+  // fixed frontend_unhandled category and applies the session caps.
+  function reportFrontendFailure(): void {
+    void api.diagnostics.frontendFailure().catch(() => {});
+  }
+
   function updateJobInList(updated: JobSnapshot) {
     jobs.update((list) => {
       const idx = list.findIndex((j) => j.id === updated.id);
@@ -133,10 +140,11 @@
     if (diagnosticChoiceSaving) return;
     diagnosticChoiceSaving = true;
     try {
-      const saved = await api.settings.update({ ...get(settings), automaticDiagnostics: value });
+      const saved = await api.settings.setAutomaticDiagnostics(value);
       settings.set(saved);
       closeDiagnosticChoice();
     } catch (err) {
+      try { settings.set(await api.settings.get()); } catch { /* retain the last known value */ }
       showBanner('danger', errorMessage(err, 'Could not save the diagnostics preference. Automatic sending remains off.'));
     } finally {
       diagnosticChoiceSaving = false;
@@ -204,7 +212,7 @@
   }
 </script>
 
-<svelte:window on:dragover={acceptDrop} on:drop={handleDrop} />
+<svelte:window on:dragover={acceptDrop} on:drop={handleDrop} on:error={reportFrontendFailure} on:unhandledrejection={reportFrontendFailure} />
 
 {#if startupStatus?.mode === 'recovery-required'}
   <main class="main">

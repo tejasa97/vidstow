@@ -73,7 +73,15 @@
   }
 
   async function setAutomaticDiagnostics(value: 'enabled' | 'disabled') {
-    await update({ ...$settings, automaticDiagnostics: value }, value === 'enabled' ? 'Automatic diagnostics enabled' : 'Automatic diagnostics disabled');
+    try {
+      settings.set(await api.settings.setAutomaticDiagnostics(value));
+      showBanner('success', value === 'enabled' ? 'Automatic diagnostics enabled' : 'Automatic diagnostics disabled');
+    } catch (err) {
+      // Disabling remains persisted even if its best-effort local purge reports
+      // an error, so refresh instead of leaving the control misleadingly on.
+      try { settings.set(await api.settings.get()); } catch { /* retain the last known value */ }
+      showError(err, 'Could not save the diagnostics preference');
+    }
   }
 </script>
 
@@ -165,7 +173,7 @@
     <div class="setting">
       <div class="copy">
         <strong>Send operational diagnostics</strong>
-        <span>When VidStow encounters a problem, send a sanitized report in the background. Reports may identify the affected YouTube video, but never include cookies, media links, tokens, signatures, or downloaded filenames.</span>
+        <span>When VidStow cannot complete a requested download or encounters an app failure, send a small sanitized report in the background. Video IDs, links, paths, filenames, cookies, tokens, and error text stay private.</span>
         <small>Local diagnostic history remains available either way. Disabling this immediately deletes anything waiting to be sent.</small>
         <button class="privacy-link" type="button" on:click={() => window.runtime.BrowserOpenURL('https://diagnostics.vidstow.workers.dev/privacy')}>Diagnostics privacy notice ↗</button>
       </div>

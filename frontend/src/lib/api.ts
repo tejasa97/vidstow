@@ -74,6 +74,7 @@ export const api = {
   settings: {
     get: () => call<Settings>('GetSettings'),
     update: (next: Settings) => call<Settings>('UpdateSettings', next),
+    setAutomaticDiagnostics: (preference: 'enabled' | 'disabled') => call<Settings>('SetAutomaticDiagnostics', preference),
   },
   ffmpeg: {
     status: () => call<FFmpegStatus>('GetFFmpegStatus'),
@@ -147,6 +148,7 @@ export const api = {
   diagnostics: {
     copy: () => call<string>('CopyDiagnostics'),
     clear: () => call<void>('ClearDiagnostics'),
+    frontendFailure: () => call<void>('RecordFrontendFailure'),
   },
   events: {
     onJobUpdate: (cb: (job: JobSnapshot) => void) =>

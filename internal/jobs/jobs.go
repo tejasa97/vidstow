@@ -345,6 +345,17 @@ type Event struct {
 	Queue       []JobSnapshot      `json:"queue"`
 	QueueView   *QueueView         `json:"queueView,omitempty"`
 	Persistence *PersistenceStatus `json:"persistence,omitempty"`
+	// Diagnostic is an allowlisted terminal failure classification. It never
+	// contains an error, URL, path, filename, or other user data.
+	Diagnostic *Diagnostic `json:"-"`
+}
+
+// Diagnostic is emitted only when an admitted download reaches a terminal
+// failure. App owns recording/transmission so jobs remains transport-agnostic.
+type Diagnostic struct {
+	Stage    string
+	Category string
+	Duration time.Duration
 }
 
 // PersistenceStatus reports whether the durable queue can currently be
@@ -3867,6 +3878,7 @@ func (m *Manager) startWorker(state *jobState, worker *worker) {
 
 func (m *Manager) run(state *jobState, worker *worker) {
 	defer close(worker.Done)
+	started := time.Now()
 
 	m.mu.Lock()
 	req := engine.Request{
@@ -3915,7 +3927,11 @@ func (m *Manager) run(state *jobState, worker *worker) {
 
 	processingHeld := false
 	sawPostprocess := false
+	sawDownload := false
 	handler := func(ctx context.Context, ev engine.Event) error {
+		if ev.Kind == engine.EventDownloadStarting {
+			sawDownload = true
+		}
 		if ev.Kind == engine.EventPostprocessStarting && !processingHeld {
 			select {
 			case m.processing <- struct{}{}:
@@ -3936,6 +3952,7 @@ func (m *Manager) run(state *jobState, worker *worker) {
 	}
 
 	result, err := runner(ctx, req, handler)
+	diagnostic := terminalDownloadDiagnostic(err, sawDownload, sawPostprocess, time.Since(started))
 	if processingHeld {
 		<-m.processing
 	}
@@ -3945,6 +3962,9 @@ func (m *Manager) run(state *jobState, worker *worker) {
 	canceled := errors.Is(cause, errCancelRequested)
 	if !paused && !canceled && errors.Is(cause, context.Canceled) {
 		canceled = true
+	}
+	if paused || canceled {
+		diagnostic = nil
 	}
 
 	// Checkpoint evidence is read outside m.mu because inspection does disk
@@ -4041,6 +4061,7 @@ func (m *Manager) run(state *jobState, worker *worker) {
 		state.snap.Status = StatusFailed
 		state.snap.Message = "Could not save lifecycle state"
 		state.snap.ErrorReason = "persistence"
+		diagnostic = &Diagnostic{Stage: "persistence", Category: "state_unavailable", Duration: time.Since(started)}
 	}
 	state.settling = false
 	state.commanding = false
@@ -4049,9 +4070,54 @@ func (m *Manager) run(state *jobState, worker *worker) {
 	state.snap.OccupiesSlot = false
 	delete(m.active, state.snap.ID)
 	state.worker = nil
-	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap, Diagnostic: diagnostic})
 	m.maybeStartNextLocked()
 	m.emitQueueLocked()
+}
+
+// terminalDownloadDiagnostic maps only typed engine facts. Unknown errors keep
+// a coarse stage-specific category rather than serializing or matching text.
+func terminalDownloadDiagnostic(err error, sawDownload, sawPostprocess bool, duration time.Duration) *Diagnostic {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		stage := "extraction"
+		if sawDownload {
+			stage = "media_transfer"
+		}
+		return &Diagnostic{Stage: stage, Category: "network_timeout", Duration: duration}
+	}
+	if errors.Is(err, context.Canceled) || engine.IsCategory(err, engine.ErrorCancelled) {
+		return nil
+	}
+	problem := &Diagnostic{Stage: "media_transfer", Category: "transfer_failed", Duration: duration}
+	if sawPostprocess {
+		problem.Stage, problem.Category = "postprocessing", "ffmpeg_failed"
+		return problem
+	}
+	if !sawDownload {
+		problem.Stage, problem.Category = "extraction", "extractor_failed"
+		var typed *engine.Error
+		if errors.As(err, &typed) {
+			switch typed.Category {
+			case engine.ErrorAuthentication:
+				problem.Category = "authentication_required"
+			case engine.ErrorUnsupported:
+				problem.Category = "unsupported_resource"
+			}
+		}
+		return problem
+	}
+	if code, ok := engine.DownloadHTTPStatusCode(err); ok {
+		switch code {
+		case http.StatusForbidden:
+			problem.Category = "http_403"
+		case http.StatusTooManyRequests:
+			problem.Category = "http_429"
+		}
+	}
+	return problem
 }
 
 func literalOutputTemplate(basename string) (string, error) {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tejasa97/vidstow/internal/admission"
+	"github.com/tejasa97/vidstow/internal/diagnostics"
 	"github.com/tejasa97/vidstow/internal/ffmpegdetect"
 	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/jobs"
@@ -248,10 +249,220 @@ func TestAutomaticDiagnosticsRequiresConsentAndDisableClearsOutbox(t *testing.T)
 	if err != nil || len(batch) != 1 || batch[0].Problem == nil || batch[0].Problem.Category != "unsafe_path" {
 		t.Fatalf("outbox batch=%#v err=%v", batch, err)
 	}
-	app.configureAutomaticDiagnostics("disabled")
+	if err := app.configureAutomaticDiagnostics("disabled"); err != nil {
+		t.Fatal(err)
+	}
 	batch, err = app.diagnosticOutbox.Batch()
 	if err != nil || len(batch) != 0 {
 		t.Fatalf("disabled outbox batch=%#v err=%v", batch, err)
+	}
+}
+
+func TestRepeatedDiagnosticEnableKeepsOneUploaderAndOptOutCancelsIt(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if app.store == nil || app.diagnosticOutbox == nil {
+		t.Fatalf("startup did not initialize diagnostics: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+	originalUploader := newDiagnosticUploader
+	starts := 0
+	newDiagnosticUploader = func(outbox *diagnostics.Outbox, endpoint string, client diagnostics.HTTPDoer) (*diagnostics.Uploader, error) {
+		starts++
+		return originalUploader(outbox, endpoint, client)
+	}
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 {
+		t.Fatalf("uploader starts = %d, want 1", starts)
+	}
+	if _, err := app.SetAutomaticDiagnostics("disabled"); err != nil {
+		t.Fatal(err)
+	}
+	if app.diagnosticUploadCancel != nil {
+		t.Fatal("opt-out left an uploader active")
+	}
+}
+
+func TestDiagnosticOptOutFailsClosedWhenSettingsPersistenceFails(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if app.store == nil || app.diagnosticOutbox == nil {
+		t.Fatalf("startup did not initialize diagnostics: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err != nil {
+		t.Fatal(err)
+	}
+	setAppSettings = func(*store.V2Store, store.Settings) error { return errors.New("injected settings write failure") }
+	if _, err := app.SetAutomaticDiagnostics("disabled"); err == nil {
+		t.Fatal("opt-out accepted an injected settings write failure")
+	}
+	app.diagnosticMu.Lock()
+	forcedOff := app.diagnosticForcedOff
+	app.diagnosticMu.Unlock()
+	if !forcedOff {
+		t.Fatal("failed opt-out left automatic diagnostics enabled at runtime")
+	}
+	app.recordDiagnosticProblem("after-opt-out", diagnostics.Problem{Stage: "internal", Category: "unexpected_internal", Outcome: "terminal", RetryBucket: "none"})
+	batch, err := app.diagnosticOutbox.Batch()
+	if err != nil || len(batch) != 0 {
+		t.Fatalf("failed opt-out queued diagnostics: %#v err=%v", batch, err)
+	}
+}
+
+func TestAutomaticOutboxContinuesWhenLocalHistoryWriteFails(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if app.store == nil || app.diagnostics == nil || app.diagnosticOutbox == nil {
+		t.Fatalf("startup did not initialize diagnostics: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err != nil {
+		t.Fatal(err)
+	}
+	path := app.diagnostics.Path()
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(path)
+
+	app.recordDiagnosticProblem("local-history-failure", diagnostics.Problem{Stage: "internal", Category: "unexpected_internal", Outcome: "terminal", RetryBucket: "none"})
+	batch, err := app.diagnosticOutbox.Batch()
+	if err != nil || len(batch) != 1 || batch[0].Problem == nil || batch[0].Problem.Category != "unexpected_internal" {
+		t.Fatalf("outbox batch=%#v err=%v; want queued event despite local-history failure", batch, err)
+	}
+}
+
+func TestDiagnosticOptOutPrecedesFolderValidationAndBlocksStaleOutbox(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	privateRoot := secureAppTempDir(t)
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(privateRoot, "state.json"))
+	if app.store == nil || app.diagnosticOutbox == nil {
+		t.Fatalf("startup did not initialize settings/outbox: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+
+	invalidFolder := filepath.Join(privateRoot, "not-a-directory")
+	if err := os.WriteFile(invalidFolder, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	next := app.GetSettings()
+	next.DownloadFolder = invalidFolder
+	next.AutomaticDiagnostics = "disabled"
+	if _, err := app.UpdateSettings(next); err == nil {
+		t.Fatal("UpdateSettings accepted a file as a download folder")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("opt-out preference = %q, want disabled despite folder validation failure", got)
+	}
+
+	optIn := app.GetSettings()
+	optIn.DownloadFolder = invalidFolder
+	optIn.AutomaticDiagnostics = "enabled"
+	if _, err := app.UpdateSettings(optIn); err == nil {
+		t.Fatal("UpdateSettings accepted an opt-in with an invalid download folder")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("opt-in preference = %q after invalid settings, want disabled", got)
+	}
+	if app.diagnosticUploadCancel != nil {
+		t.Fatal("uploader started despite invalid general settings")
+	}
+	staleGeneralSettings := app.GetSettings()
+	staleGeneralSettings.AutomaticDiagnostics = "enabled"
+	if _, err := app.UpdateSettings(staleGeneralSettings); err != nil {
+		t.Fatalf("UpdateSettings with a stale opt-in snapshot: %v", err)
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("stale general settings overwrote opt-out: %q", got)
+	}
+
+	outboxDirectory := filepath.Join(privateRoot, "diagnostics")
+	if err := os.RemoveAll(outboxDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outboxDirectory, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SetAutomaticDiagnostics("disabled"); err == nil {
+		t.Fatal("disabling diagnostics accepted an outbox purge failure")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("preference after failed purge = %q, want disabled", got)
+	}
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err == nil {
+		t.Fatal("enabling diagnostics accepted stale outbox data that could not be purged")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("preference after rejected enable = %q, want disabled", got)
+	}
+	if app.diagnosticUploadCancel != nil {
+		t.Fatal("uploader started despite failed stale-outbox purge")
+	}
+}
+
+func TestAnalysisDiagnosticOperationsAreUniqueAndIdentifierFree(t *testing.T) {
+	first := newAnalysisDiagnosticOperation()
+	second := newAnalysisDiagnosticOperation()
+	if first == "" || second == "" || first == second || !strings.HasPrefix(first, "analysis:") || !strings.HasPrefix(second, "analysis:") {
+		t.Fatalf("analysis operation IDs = %q, %q; want unique local IDs", first, second)
+	}
+}
+
+func TestStartDownloadRejectsMalformedPreAdmissionRequestWithoutDiagnostic(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if app.store == nil || app.jobs == nil || app.diagnostics == nil {
+		t.Fatalf("startup did not initialize app: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+	if _, err := app.StartDownload(jobs.Request{URL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}); err == nil {
+		t.Fatal("StartDownload accepted a request without analyzed metadata")
+	}
+	events, err := app.diagnostics.Recent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("pre-admission validation recorded diagnostics: %#v", events)
 	}
 }
 
@@ -568,6 +779,7 @@ func newCompletedDownloadApp(t *testing.T) (*App, string) {
 func installAppTestSeams(t *testing.T) func() {
 	t.Helper()
 	oldOpen := openStateV2
+	oldSetAppSettings := setAppSettings
 	oldPrepare := prepareStartupStateRoots
 	oldReconcile := reconcileStartupState
 	oldRestore := restoreStartupManager
@@ -584,6 +796,7 @@ func installAppTestSeams(t *testing.T) func() {
 	emitAppEvent = func(context.Context, string, ...interface{}) {}
 	return func() {
 		openStateV2 = oldOpen
+		setAppSettings = oldSetAppSettings
 		prepareStartupStateRoots = oldPrepare
 		reconcileStartupState = oldReconcile
 		restoreStartupManager = oldRestore
