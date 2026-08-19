@@ -166,6 +166,10 @@ export interface ActionRequiredReviewViewModel {
   message: string;
   preservationNotice: string;
   canStartOver: boolean;
+  canRetryRecovery: boolean;
+  canRetryFreshLink: boolean;
+  canDiscard: boolean;
+  canRetryCleanup: boolean;
 }
 
 /** Mirrors the bridge queue contract without importing legacy JobSnapshot. */

@@ -8,9 +8,13 @@
     busy?: boolean;
     onClose?: () => void;
     onStartOver?: () => void;
+    onRetryRecovery?: () => void;
+    onRetryFreshLink?: () => void;
+    onDiscard?: () => void;
+    onRetryCleanup?: () => void;
   }
 
-  let { open, review, busy = false, onClose, onStartOver }: Props = $props();
+  let { open, review, busy = false, onClose, onStartOver, onRetryRecovery, onRetryFreshLink, onDiscard, onRetryCleanup }: Props = $props();
 
   function close(): void {
     if (!busy) onClose?.();
@@ -46,17 +50,28 @@
           <p>{review.preservationNotice}</p>
         </div>
         {#if review.canStartOver}
-          <p class="next-step">Starting over takes you to Home for fresh analysis and normal destination review before anything is queued.</p>
-        {:else}
+          <p class="next-step">Starting over takes you to Home for fresh analysis and a new destination reservation, avoiding conflicts with the preserved attempt.</p>
+        {:else if !review.canRetryCleanup}
           <p class="next-step">Starting over is unavailable for this item. Keep the row while inspecting the saved application data.</p>
         {/if}
       </div>
 
       <footer class="dialog-footer">
         <button type="button" class="app-btn" disabled={busy} onclick={close}>Keep for now</button>
+        {#if review.canDiscard}
+          <button type="button" class="app-btn danger" disabled={busy} onclick={() => onDiscard?.()}>Discard saved data</button>
+        {/if}
+        {#if review.canRetryCleanup}
+          <button type="button" class="app-btn primary" data-autofocus disabled={busy} onclick={() => onRetryCleanup?.()}>Retry cleanup</button>
+        {:else if review.canRetryRecovery}
+          <button type="button" class="app-btn" disabled={busy} onclick={() => onRetryRecovery?.()}>Try recovery again</button>
+        {/if}
+        {#if review.canRetryFreshLink}
+          <button type="button" class="app-btn" disabled={busy} onclick={() => onRetryFreshLink?.()}>Retry with fresh link</button>
+        {/if}
         {#if review.canStartOver}
           <button type="button" class="app-btn primary" data-autofocus disabled={busy} onclick={() => onStartOver?.()}>
-            {busy ? 'Opening…' : 'Start over from Home'}
+            {busy ? 'Working…' : 'Start over from Home'}
           </button>
         {/if}
       </footer>
@@ -78,7 +93,7 @@
   .preservation { padding: var(--sp-4); border: 1px solid var(--border-default); border-radius: var(--r-md); background: var(--surface-sunken); }
   .preservation strong { font-size: var(--fs-sm); }
   .preservation p, .next-step { margin: var(--sp-1) 0 0; color: var(--text-secondary) !important; font-size: var(--fs-sm); line-height: 1.5; }
-  .dialog-footer { display: flex; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-3) var(--sp-6) var(--sp-5); }
+  .dialog-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-3) var(--sp-6) var(--sp-5); }
   @media (max-width: 560px) {
     .dialog-header, .dialog-body { padding-left: var(--sp-4); padding-right: var(--sp-4); }
     .dialog-footer { flex-direction: column-reverse; padding-left: var(--sp-4); padding-right: var(--sp-4); }

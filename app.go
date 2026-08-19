@@ -43,7 +43,7 @@ var (
 		return recovery.Reconcile(ctx, state, recovery.Options{})
 	}
 	restoreStartupManager = func(manager *jobs.Manager, snapshot jobmodel.State) error { return manager.RestoreStateV2(snapshot) }
-	startStartupCleanup   = recovery.StartCleanupWorker
+	startStartupCleanup   = recovery.StartCleanupWorkerWithReport
 	logAppErrorf          = wailsruntime.LogErrorf
 	emitAppEvent          = wailsruntime.EventsEmit
 	openDiagnostics       = localdiagnostics.Open
@@ -195,7 +195,11 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 	a.jobs.SetConcurrency(settings.DownloadConcurrency)
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	a.cleanupCancel = cleanupCancel
-	a.cleanupDone = startStartupCleanup(cleanupCtx, st, recovery.DefaultCleanupInterval)
+	a.cleanupDone = startStartupCleanup(cleanupCtx, st, recovery.DefaultCleanupInterval, func(pass recovery.CleanupPass) {
+		if pass.DurableChanges > 0 && a.jobs != nil {
+			a.jobs.RefreshDurableMaintenance()
+		}
+	})
 	a.applyFFmpegDiscovery(ffmpegdetect.Probe(ctx, settings.FFmpegPath))
 	emitAppEvent(ctx, "ffmpeg:update", a.ffmpegStatus())
 }
@@ -584,6 +588,34 @@ func (a *App) StartOverActionRequiredQueueJob(id, token string) (string, error) 
 	return a.jobs.QueueActionRequiredStartOverURL(id, token)
 }
 
+func (a *App) RetryActionRequiredQueueJob(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueActionRequiredRetryRecovery(id, token)
+}
+
+func (a *App) RetryActionRequiredWithFreshLink(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueActionRequiredRetryFreshLink(id, token)
+}
+
+func (a *App) DiscardActionRequiredQueueJob(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueActionRequiredDiscard(id, token)
+}
+
+func (a *App) RetryQueueJobCleanup(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	return a.jobs.QueueRetryCleanup(id, token)
+}
+
 func (a *App) OpenQueueJob(id, token string) error {
 	if err := a.requireReady(); err != nil {
 		return err
@@ -716,13 +748,14 @@ func (a *App) RemoveDownload(id string) error {
 	}
 	removed, err := a.store.RemoveHistory(id)
 	if err == nil && removed {
-		wailsruntime.EventsEmit(a.ctx, "history:update", a.store.History())
+		emitAppEvent(a.ctx, "history:update", a.store.History())
 	}
 	return err
 }
 
-// DeleteDownloadFile deletes the media file for one history entry and then
-// removes that history row. History-only removal stays on RemoveDownload.
+// DeleteDownloadFile deletes the media file for one history entry, removes
+// that history row, and drops the matching completed queue row if it is
+// still present. History-only removal stays on RemoveDownload.
 func (a *App) DeleteDownloadFile(id string) error {
 	if err := a.requireReady(); err != nil {
 		return err
@@ -731,10 +764,25 @@ func (a *App) DeleteDownloadFile(id string) error {
 	if err != nil {
 		return err
 	}
-	if deleted {
-		wailsruntime.EventsEmit(a.ctx, "history:update", a.store.History())
+	if !deleted {
+		return nil
 	}
-	return nil
+	emitAppEvent(a.ctx, "history:update", a.store.History())
+	return a.dropCompletedQueueRow(id)
+}
+
+// dropCompletedQueueRow removes a still-visible completed queue row after
+// its Downloads entry was deleted. Missing rows and non-completed jobs are
+// left untouched so this cannot cancel in-progress work.
+func (a *App) dropCompletedQueueRow(id string) error {
+	if a.jobs == nil {
+		return nil
+	}
+	snap, ok := a.jobs.Find(id)
+	if !ok || snap.Status != jobs.StatusComplete {
+		return nil
+	}
+	return a.jobs.Remove(id)
 }
 
 // ClearDownloads empties the persisted history.

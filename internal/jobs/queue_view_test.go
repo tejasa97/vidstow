@@ -1,11 +1,16 @@
 package jobs
 
 import (
+	"context"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/tejasa97/vidstow/internal/jobmodel"
+	"github.com/tejasa97/vidstow/internal/reservationfs"
+	"github.com/tejasa97/youtube_dlp/engine"
 )
 
 type queueTestCommitOutcome struct {
@@ -112,6 +117,205 @@ func TestQueueActionRequiredReviewIsAuthorizedAndPreservesEvidence(t *testing.T)
 	}
 	if _, err := m.QueueActionRequiredStartOverURL("action", "stale-token"); err == nil {
 		t.Fatal("stale start-over authority was accepted")
+	}
+}
+
+func TestActionRequiredDiscardFailsClosedWhenEngineCannotPrepare(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "action-discard")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleActionRequired
+	store.state.Jobs[0].Desired = jobmodel.DesiredPaused
+	store.state.Jobs[0].ActionRequiredCode = "session-manifest-corrupt"
+	store.state.Jobs[0].LastErrorCode = "session-manifest-corrupt"
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.prepareResumeDiscard = func(context.Context, engine.OutputRootRef, string) (*engine.ResumeDiscardHandle, error) {
+		return nil, errors.New("unsafe evidence")
+	}
+	view := manager.QueueView()
+	if err := manager.QueueActionRequiredDiscard("action-discard", view.Rows[0].CommandToken); err == nil {
+		t.Fatal("unsafe action-required evidence was discarded")
+	}
+	after := store.Snapshot()
+	if after.Jobs[0].Lifecycle != jobmodel.LifecycleActionRequired || len(after.Cleanup) != 0 {
+		t.Fatalf("failed discard mutated evidence: %#v", after)
+	}
+}
+
+func setRealQueueTestRoot(t *testing.T, store *v2MemoryStore, rootPath string) string {
+	t.Helper()
+	rootPath, err := filepath.EvalSymlinks(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := reservationfs.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := root.Facts()
+	if err := root.Close(); err != nil {
+		t.Fatal(err)
+	}
+	engineRoot, err := engine.ValidateOutputRoot(facts.Volume.CanonicalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := jobmodel.OutputRootRef{CanonicalPath: facts.Volume.CanonicalPath, Identity: facts.Volume.Identity, EngineIdentity: engineRoot.Identity}
+	for index := range store.state.Jobs {
+		store.state.Jobs[index].OutputRoot = ref
+		store.state.Jobs[index].Reservation.Directory = ref
+	}
+	return rootPath
+}
+
+func TestActionRequiredFreshLinkRetryRotatesAndRetainsUncertainSession(t *testing.T) {
+	store, root, _ := newV2TestStore(t, "action-fresh-link")
+	root = setRealQueueTestRoot(t, store, root)
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleActionRequired
+	store.state.Jobs[0].Desired = jobmodel.DesiredPaused
+	store.state.Jobs[0].ActionRequiredCode = "session-manifest-corrupt"
+	store.state.Jobs[0].LastErrorCode = "session-manifest-corrupt"
+	originalSession := store.state.Jobs[0].SessionID
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.prepareResumeDiscard = func(context.Context, engine.OutputRootRef, string) (*engine.ResumeDiscardHandle, error) {
+		return nil, errors.New("uncertain session remains preserved")
+	}
+	requests := make(chan engine.Request, 1)
+	manager.runDownload = func(_ context.Context, request engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		requests <- request
+		return engine.Result{Filename: root + "/Demo [abc123] [1080p].mp4"}, nil
+	}
+	view := manager.QueueView()
+	review, err := manager.QueueActionRequiredReview("action-fresh-link", view.Rows[0].CommandToken)
+	if err != nil || !review.CanRetryFreshLink {
+		t.Fatalf("fresh-link review = %#v, %v", review, err)
+	}
+	if err := manager.QueueActionRequiredRetryFreshLink("action-fresh-link", view.Rows[0].CommandToken); err != nil {
+		t.Fatal(err)
+	}
+	request := <-requests
+	if request.Filesystem.Resume.SessionID == originalSession || request.Filesystem.Resume.SessionID == "" {
+		t.Fatalf("fresh-link retry session = %q; want a new session", request.Filesystem.Resume.SessionID)
+	}
+	completed := waitForV2Job(t, store, "action-fresh-link", jobmodel.LifecycleCompleted)
+	if completed.SessionID != request.Filesystem.Resume.SessionID {
+		t.Fatalf("durable session = %q; request used %q", completed.SessionID, request.Filesystem.Resume.SessionID)
+	}
+	cleanup := store.Snapshot().Cleanup
+	if len(cleanup) != 1 || cleanup[0].SessionID != originalSession {
+		t.Fatalf("retired cleanup = %#v; want preserved original session", cleanup)
+	}
+}
+
+func TestActionRequiredFreshLinkRetryRejectsOccupiedDestination(t *testing.T) {
+	store, root, _ := newV2TestStore(t, "action-fresh-conflict")
+	root = setRealQueueTestRoot(t, store, root)
+	job := &store.state.Jobs[0]
+	job.Lifecycle = jobmodel.LifecycleActionRequired
+	job.Desired = jobmodel.DesiredPaused
+	job.ActionRequiredCode = "session-manifest-corrupt"
+	job.LastErrorCode = job.ActionRequiredCode
+	original := *job
+	if err := os.WriteFile(filepath.Join(root, job.Reservation.Artifacts[0].Basename), []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	view := manager.QueueView()
+	if err := manager.QueueActionRequiredRetryFreshLink(job.ID, view.Rows[0].CommandToken); err == nil {
+		t.Fatal("fresh-link retry accepted an occupied destination")
+	}
+	after := store.Snapshot()
+	if after.Jobs[0].SessionID != original.SessionID || after.Jobs[0].Lifecycle != jobmodel.LifecycleActionRequired || len(after.Cleanup) != 0 {
+		t.Fatalf("destination conflict mutated row: %#v", after)
+	}
+}
+
+func TestActionRequiredRecoveryReinspectionReturnsSafeSessionToQueue(t *testing.T) {
+	store, root, _ := newV2TestStore(t, "action-retry")
+	store.state.Jobs[0].Lifecycle = jobmodel.LifecycleActionRequired
+	store.state.Jobs[0].Desired = jobmodel.DesiredPaused
+	store.state.Jobs[0].ActionRequiredCode = "session-lease-contended"
+	store.state.Jobs[0].LastErrorCode = "session-lease-contended"
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	manager.inspectResume = func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error) {
+		return engine.ResumeSummary{HasManifest: true, Classification: "available", Components: []engine.ResumeComponent{{ID: "video", Kind: "video", CommittedBytes: 10}}}, nil
+	}
+	manager.runDownload = func(context.Context, engine.Request, engine.EventHandler) (engine.Result, error) {
+		return engine.Result{Filename: root + "/Demo [abc123] [1080p].mp4"}, nil
+	}
+	view := manager.QueueView()
+	if err := manager.QueueActionRequiredRetryRecovery("action-retry", view.Rows[0].CommandToken); err != nil {
+		t.Fatal(err)
+	}
+	completed := waitForV2Job(t, store, "action-retry", jobmodel.LifecycleCompleted)
+	if completed.ActionRequiredCode != "" {
+		t.Fatalf("recovered row retained action-required code %q", completed.ActionRequiredCode)
+	}
+}
+
+func TestCleanupEvidenceBlocksRemovalAndQuarantineCanBeRetried(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "cleanup-visible")
+	job := store.state.Jobs[0]
+	job.Lifecycle = jobmodel.LifecycleCanceled
+	job.Desired = jobmodel.DesiredCanceled
+	job.Phase = jobmodel.PhaseCleaningUp
+	store.state.Jobs[0] = job
+	store.state.Cleanup = []jobmodel.CleanupTombstone{{
+		JobID: job.ID, SessionID: job.SessionID, OutputRoot: job.OutputRoot, Reservation: job.Reservation,
+		State: jobmodel.CleanupQuarantined, LastErrorCode: "session-reconciliation-required",
+		CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
+	}}
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	view := manager.QueueView()
+	row := view.Rows[0]
+	if row.Capabilities.Remove || !row.Capabilities.Review || row.Message == "" {
+		t.Fatalf("cleanup row = %#v; want visible Review and no Remove", row)
+	}
+	if err := manager.Remove(job.ID); err == nil {
+		t.Fatal("direct removal hid pending cleanup evidence")
+	}
+	review, err := manager.QueueActionRequiredReview(job.ID, row.CommandToken)
+	if err != nil || !review.CanRetryCleanup || review.CanStartOver {
+		t.Fatalf("cleanup review = %#v, %v", review, err)
+	}
+	if err := manager.QueueRetryCleanup(job.ID, row.CommandToken); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Snapshot().Cleanup[0].State; got != jobmodel.CleanupPending {
+		t.Fatalf("cleanup state = %q; want pending", got)
 	}
 }
 

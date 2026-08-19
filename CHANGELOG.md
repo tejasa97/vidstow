@@ -7,7 +7,7 @@ and versions follow semantic versioning where practical for a desktop
 application.
 
 `v0.1.0-beta.1` is the first public VidStow prerelease. The current packaged
-preview is `v0.1.0-beta.3` for macOS Apple Silicon; a later stable `0.1.0`
+preview is `v0.1.0-beta.4` for macOS Apple Silicon; a later stable `0.1.0`
 does not exist yet.
 
 ## [Unreleased]
@@ -23,6 +23,24 @@ does not exist yet.
 ### Fixed
 
 - No entries yet.
+
+## [0.1.0-beta.4] - 2026-08-18
+
+### Changed
+
+- The packaged application version is `0.1.0-beta.4`.
+- Action-required Review can try recovery again, retry with a fresh link, or
+  discard saved data. Uncertain session evidence is not reused.
+- Queue rows with pending or quarantined cleanup stay visible until that
+  cleanup settles. Retry cleanup is available, and Remove appears only after
+  cleanup is done.
+
+### Fixed
+
+- Deleting a file from Downloads also removes the matching completed item from
+  the queue.
+- Canceled rows that still carried a leftover cleanup phase show as Canceled
+  and can be removed once cleanup has settled.
 
 ## [0.1.0-beta.3] - 2026-08-18
 
@@ -88,7 +106,8 @@ does not exist yet.
 - Release automation creates a draft prerelease and cannot publish it.
 - The desktop engine pin is `github.com/tejasa97/youtube_dlp v0.2.1`.
 
-[Unreleased]: https://github.com/vidstow/vidstow/compare/v0.1.0-beta.3...HEAD
+[Unreleased]: https://github.com/vidstow/vidstow/compare/v0.1.0-beta.4...HEAD
+[0.1.0-beta.4]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.4
 [0.1.0-beta.3]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.3
 [0.1.0-beta.2]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.2
 [0.1.0-beta.1]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.1

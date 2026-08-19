@@ -1284,6 +1284,14 @@ func TestV2EscalationDiscardRunsOnlyAfterCommit(t *testing.T) {
 			if completed.SessionRestarts != 1 {
 				t.Fatalf("escalation restarts = %d; want 1", completed.SessionRestarts)
 			}
+			cleanup := store.Snapshot().Cleanup
+			if test.discardErr != nil {
+				if len(cleanup) != 1 || cleanup[0].SessionID != original.SessionID || cleanup[0].State != jobmodel.CleanupPending {
+					t.Fatalf("retired cleanup = %#v; want durable pending evidence for %q", cleanup, original.SessionID)
+				}
+			} else if len(cleanup) != 0 {
+				t.Fatalf("successful retired cleanup left tombstones: %#v", cleanup)
+			}
 			if test.wantLeakLog {
 				message := logged.String()
 				if !strings.Contains(message, "job-discard-order") {
