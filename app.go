@@ -39,6 +39,7 @@ type shutdownLifecycle interface {
 var (
 	defaultStatePath         = store.DefaultPath
 	openStateV2              = store.OpenV2
+	setAppSettings           = func(state *store.V2Store, next store.Settings) error { return state.SetSettings(next) }
 	prepareStartupStateRoots = prepareStartupRoots
 	reconcileStartupState    = func(ctx context.Context, state *store.V2Store) (jobmodel.State, error) {
 		return recovery.Reconcile(ctx, state, recovery.Options{})
@@ -72,6 +73,8 @@ type App struct {
 	diagnosticOperations   map[string]map[string]bool
 	diagnosticUploadCancel context.CancelFunc
 	diagnosticUploadWake   chan struct{}
+	diagnosticForcedOff    bool
+	settingsMu             sync.Mutex
 	cleanupCancel          context.CancelFunc
 	cleanupDone            <-chan struct{}
 	shutdownManager        shutdownLifecycle
@@ -283,8 +286,10 @@ func (a *App) GetSettings() store.Settings {
 }
 
 // UpdateSettings persists general settings and re-probes ffmpeg so the UI
-// stays accurate. A consent transition is applied first because opting out
-// must not be blocked by unrelated download-folder validation.
+// stays accurate. It applies an opt-out first because that must not be blocked
+// by unrelated validation. It never opts in: callers must use the dedicated
+// SetAutomaticDiagnostics API, so a stale general-settings snapshot cannot
+// overwrite a newer opt-out.
 func (a *App) UpdateSettings(next store.Settings) (store.Settings, error) {
 	if err := a.requireReady(); err != nil {
 		return store.Settings{}, err
@@ -292,11 +297,21 @@ func (a *App) UpdateSettings(next store.Settings) (store.Settings, error) {
 	if next.AutomaticDiagnostics != "" && next.AutomaticDiagnostics != "enabled" && next.AutomaticDiagnostics != "disabled" {
 		return store.Settings{}, errors.New("invalid automatic diagnostics preference")
 	}
-	if next.AutomaticDiagnostics != a.store.Settings().AutomaticDiagnostics {
-		if _, err := a.SetAutomaticDiagnostics(next.AutomaticDiagnostics); err != nil {
+	if next.AutomaticDiagnostics != "enabled" {
+		// Stop automatic transmission before waiting for unrelated filesystem
+		// validation or settings serialization. The locked transition below
+		// persists the preference and reports any purge failure.
+		_ = a.disableAutomaticDiagnosticsRuntime()
+	}
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	current := a.store.Settings()
+	if next.AutomaticDiagnostics != current.AutomaticDiagnostics && next.AutomaticDiagnostics != "enabled" {
+		if _, err := a.setAutomaticDiagnostics(next.AutomaticDiagnostics); err != nil {
 			return a.store.Settings(), err
 		}
-		next.AutomaticDiagnostics = a.store.Settings().AutomaticDiagnostics
+		current = a.store.Settings()
+		next.AutomaticDiagnostics = current.AutomaticDiagnostics
 	}
 	if strings.TrimSpace(next.DownloadFolder) == "" {
 		return store.Settings{}, errors.New("download folder is required")
@@ -321,12 +336,16 @@ func (a *App) UpdateSettings(next store.Settings) (store.Settings, error) {
 	if next.DownloadConcurrency < 1 || next.DownloadConcurrency > jobs.MaxDownloadConcurrency {
 		return store.Settings{}, fmt.Errorf("download concurrency must be between 1 and %d", jobs.MaxDownloadConcurrency)
 	}
-	if err := a.store.SetSettings(next); err != nil {
+	// Preserve the current consent on every ordinary settings write. In
+	// particular, a queued stale snapshot containing "enabled" must not undo
+	// a user-facing opt-out that completed first.
+	next.AutomaticDiagnostics = current.AutomaticDiagnostics
+	if err := setAppSettings(a.store, next); err != nil {
 		return store.Settings{}, err
 	}
 	a.jobs.SetConcurrency(next.DownloadConcurrency)
 	a.applyFFmpegDiscovery(ffmpegdetect.Probe(a.ctx, next.FFmpegPath))
-	wailsruntime.EventsEmit(a.ctx, "settings:update", a.store.Settings())
+	emitAppEvent(a.ctx, "settings:update", a.store.Settings())
 	return a.store.Settings(), nil
 }
 
@@ -339,8 +358,39 @@ func (a *App) SetAutomaticDiagnostics(preference string) (store.Settings, error)
 	if preference != "" && preference != "enabled" && preference != "disabled" {
 		return store.Settings{}, errors.New("invalid automatic diagnostics preference")
 	}
+	if preference != "enabled" {
+		// Runtime opt-out cannot wait behind slow general-settings work.
+		// setAutomaticDiagnostics repeats the purge after serialization so its
+		// failure remains visible to the caller.
+		_ = a.disableAutomaticDiagnosticsRuntime()
+	}
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	return a.setAutomaticDiagnostics(preference)
+}
+
+// setAutomaticDiagnostics applies a consent transition while settingsMu is held.
+func (a *App) setAutomaticDiagnostics(preference string) (store.Settings, error) {
+	if preference != "" && preference != "enabled" && preference != "disabled" {
+		return store.Settings{}, errors.New("invalid automatic diagnostics preference")
+	}
 	current := a.store.Settings()
-	if preference == "enabled" && current.AutomaticDiagnostics != "enabled" {
+	if preference != "enabled" {
+		// Fail closed before persistence. A disk error must never leave this
+		// running process able to enqueue or upload after an opt-out attempt.
+		clearErr := a.disableAutomaticDiagnosticsRuntime()
+		next := current
+		next.AutomaticDiagnostics = preference
+		if err := setAppSettings(a.store, next); err != nil {
+			return current, err
+		}
+		emitAppEvent(a.ctx, "settings:update", a.store.Settings())
+		if clearErr != nil {
+			return a.store.Settings(), clearErr
+		}
+		return a.store.Settings(), nil
+	}
+	if current.AutomaticDiagnostics != "enabled" {
 		// Disabled consent must leave no stale data that could be sent after a
 		// later opt-in. Refuse to enable if the purge cannot be completed.
 		a.diagnosticMu.Lock()
@@ -354,7 +404,7 @@ func (a *App) SetAutomaticDiagnostics(preference string) (store.Settings, error)
 	}
 	next := current
 	next.AutomaticDiagnostics = preference
-	if err := a.store.SetSettings(next); err != nil {
+	if err := setAppSettings(a.store, next); err != nil {
 		return current, err
 	}
 	if err := a.configureAutomaticDiagnostics(preference); err != nil {
@@ -431,6 +481,8 @@ func (a *App) ConfigureFFmpeg(path string) (ffmpegdetect.Status, error) {
 	if err := a.requireReady(); err != nil {
 		return ffmpegdetect.Status{}, err
 	}
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
 	status := ffmpegdetect.ConfigurePath(a.ctx, path)
 	if !status.Available {
 		a.setFFmpegStatus(status)
@@ -439,7 +491,7 @@ func (a *App) ConfigureFFmpeg(path string) (ffmpegdetect.Status, error) {
 	}
 	settings := a.store.Settings()
 	settings.FFmpegPath = status.Path
-	if err := a.store.SetSettings(settings); err != nil {
+	if err := setAppSettings(a.store, settings); err != nil {
 		return status, err
 	}
 	a.applyFFmpegDiscovery(status)
@@ -454,9 +506,11 @@ func (a *App) ClearFFmpegPath() ffmpegdetect.Status {
 	if a.store == nil || a.jobs == nil {
 		return a.ffmpegStatus()
 	}
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
 	settings := a.store.Settings()
 	settings.FFmpegPath = ""
-	_ = a.store.SetSettings(settings)
+	_ = setAppSettings(a.store, settings)
 	status := ffmpegdetect.Probe(a.ctx, "")
 	a.applyFFmpegDiscovery(status)
 	wailsruntime.EventsEmit(a.ctx, "ffmpeg:update", status)
@@ -472,6 +526,14 @@ func (a *App) ClearFFmpegPath() ffmpegdetect.Status {
 // error whose Reason() explains why it was rejected.
 func (a *App) ValidateURL(raw string) (urlcheck.Result, error) {
 	return urlcheck.Validate(raw)
+}
+
+func newAnalysisDiagnosticOperation() string {
+	id, err := newDiagnosticID()
+	if err != nil {
+		return ""
+	}
+	return "analysis:" + id
 }
 
 // AnalyzeURL fetches metadata for one single YouTube video.
@@ -491,10 +553,11 @@ func (a *App) AnalyzeURL(raw string) (jobs.InfoSummary, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, 75*time.Second)
 	defer cancel()
 	started := time.Now()
+	operationID := newAnalysisDiagnosticOperation()
 	summary, err := a.jobs.Analyze(ctx, res.URL)
 	if err != nil {
 		if problem, ok := classifyAnalysisProblem(err, time.Since(started)); ok {
-			a.recordDiagnosticProblem("analysis:"+res.VideoID, problem)
+			a.recordDiagnosticProblem(operationID, problem)
 		}
 		wailsruntime.LogErrorf(a.ctx, "desktop: analyze video: %v", err)
 		return jobs.InfoSummary{}, errors.New(friendlyAnalyzeError(err))
@@ -523,10 +586,11 @@ func (a *App) AnalyzePlaylist(raw string) (jobs.PlaylistSummary, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, 75*time.Second)
 	defer cancel()
 	started := time.Now()
+	operationID := newAnalysisDiagnosticOperation()
 	summary, err := a.jobs.AnalyzePlaylist(ctx, res.PlaylistURL)
 	if err != nil {
 		if problem, ok := classifyAnalysisProblem(err, time.Since(started)); ok {
-			a.recordDiagnosticProblem("analysis:"+res.PlaylistID, problem)
+			a.recordDiagnosticProblem(operationID, problem)
 		}
 		wailsruntime.LogErrorf(a.ctx, "desktop: analyze playlist: %v", err)
 		return jobs.PlaylistSummary{}, errors.New(friendlyAnalyzeError(err))
@@ -1046,7 +1110,6 @@ func (a *App) recordDiagnosticProblem(operationID string, problem localdiagnosti
 	}
 	if err := a.diagnostics.Record(event); err != nil {
 		logAppErrorf(a.ctx, "desktop: record local diagnostic event: %v", err)
-		return
 	}
 	// The automatic outbox is intentionally independent from local history;
 	// one best-effort path failing must not suppress the other.
@@ -1109,7 +1172,7 @@ func (a *App) enqueueAutomaticDiagnostic(event localdiagnostics.Event) {
 	defer a.diagnosticMu.Unlock()
 	// Consent is checked while holding the same lock used by opt-out and
 	// outbox clearing, so an event cannot be enqueued after opt-out wins.
-	if a.store == nil || a.store.Settings().AutomaticDiagnostics != "enabled" || a.diagnosticOutbox == nil {
+	if a.diagnosticForcedOff || a.store == nil || a.store.Settings().AutomaticDiagnostics != "enabled" || a.diagnosticOutbox == nil {
 		return
 	}
 	if a.diagnosticOutbox.Enqueue(event) != nil {
@@ -1123,23 +1186,37 @@ func (a *App) enqueueAutomaticDiagnostic(event localdiagnostics.Event) {
 	}
 }
 
-func (a *App) configureAutomaticDiagnostics(preference string) error {
+func (a *App) disableAutomaticDiagnosticsRuntime() error {
 	a.diagnosticMu.Lock()
 	defer a.diagnosticMu.Unlock()
+	a.diagnosticForcedOff = true
 	if a.diagnosticUploadCancel != nil {
 		a.diagnosticUploadCancel()
 		a.diagnosticUploadCancel = nil
 		a.diagnosticUploadWake = nil
 	}
-	if preference != "enabled" {
-		if a.diagnosticOutbox != nil {
-			if err := a.diagnosticOutbox.Clear(); err != nil {
-				return fmt.Errorf("clear queued diagnostics: %w", err)
-			}
+	if a.diagnosticOutbox != nil {
+		if err := a.diagnosticOutbox.Clear(); err != nil {
+			return fmt.Errorf("clear queued diagnostics: %w", err)
 		}
+	}
+	return nil
+}
+
+func (a *App) configureAutomaticDiagnostics(preference string) error {
+	if preference != "enabled" {
+		return a.disableAutomaticDiagnosticsRuntime()
+	}
+	a.diagnosticMu.Lock()
+	defer a.diagnosticMu.Unlock()
+	if a.diagnosticUploadCancel != nil {
+		// Consent is already active with a single owned uploader. Keeping it
+		// avoids orphaning a request that a later opt-out could not cancel.
+		a.diagnosticForcedOff = false
 		return nil
 	}
 	if a.diagnosticOutbox == nil || diagnosticsEventsEndpoint == "" {
+		a.diagnosticForcedOff = false
 		return nil
 	}
 	uploader, err := newDiagnosticUploader(a.diagnosticOutbox, diagnosticsEventsEndpoint, &http.Client{})
@@ -1148,6 +1225,7 @@ func (a *App) configureAutomaticDiagnostics(preference string) error {
 	}
 	uploadCtx, cancel := context.WithCancel(context.Background())
 	wake := make(chan struct{}, 1)
+	a.diagnosticForcedOff = false
 	a.diagnosticUploadCancel = cancel
 	a.diagnosticUploadWake = wake
 	go func() {

@@ -2,6 +2,10 @@ package diagnostics
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +56,59 @@ func TestEventValidationRejectsUnsafeOrDeprecatedFields(t *testing.T) {
 				t.Fatal("Validate accepted unsafe event")
 			}
 		})
+	}
+}
+
+func TestPublishedSchemaMatchesStageCategoryContract(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "diagnostics", "event-v1.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Definitions struct {
+			Problem struct {
+				AllOf []struct {
+					If struct {
+						Properties struct {
+							Stage struct {
+								Const string `json:"const"`
+							} `json:"stage"`
+						} `json:"properties"`
+					} `json:"if"`
+					Then struct {
+						Properties struct {
+							Category struct {
+								Enum []string `json:"enum"`
+							} `json:"category"`
+						} `json:"properties"`
+					} `json:"then"`
+				} `json:"allOf"`
+			} `json:"problem"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	actual := make(map[string][]string, len(schema.Definitions.Problem.AllOf))
+	for _, rule := range schema.Definitions.Problem.AllOf {
+		stage := rule.If.Properties.Stage.Const
+		if stage == "" || len(rule.Then.Properties.Category.Enum) == 0 {
+			t.Fatalf("invalid schema stage/category rule: %#v", rule)
+		}
+		actual[stage] = append([]string(nil), rule.Then.Properties.Category.Enum...)
+		sort.Strings(actual[stage])
+	}
+	expected := make(map[string][]string, len(stages))
+	for category, validStages := range categoryStages {
+		for stage := range validStages {
+			expected[stage] = append(expected[stage], category)
+		}
+	}
+	for stage := range expected {
+		sort.Strings(expected[stage])
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("published stage/category rules = %#v, want %#v", actual, expected)
 	}
 }
 

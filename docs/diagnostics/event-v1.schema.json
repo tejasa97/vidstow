@@ -36,7 +36,20 @@
         "outcome": {"const": "terminal"},
         "retry_bucket": {"enum": ["none", "one", "two", "three_plus"]},
         "duration_bucket": {"enum": ["lt_100ms", "100_499ms", "500_1999ms", "2_9s", "10_29s", "30_59s", "gte_60s"]}
-      }
+      },
+      "allOf": [
+        {"if": {"properties": {"stage": {"const": "startup"}}}, "then": {"properties": {"category": {"enum": ["state_unavailable", "state_corrupt", "state_unsupported", "state_contended", "state_indeterminate"]}}}},
+        {"if": {"properties": {"stage": {"const": "persistence"}}}, "then": {"properties": {"category": {"enum": ["permission_denied", "disk_full", "state_unavailable", "state_corrupt", "state_unsupported", "state_contended", "state_indeterminate"]}}}},
+        {"if": {"properties": {"stage": {"const": "extraction"}}}, "then": {"properties": {"category": {"enum": ["http_403", "http_429", "network_timeout", "network_offline", "dns_failure", "tls_failure", "resource_unavailable", "resource_restricted", "authentication_required", "unsupported_resource", "extractor_failed"]}}}},
+        {"if": {"properties": {"stage": {"const": "ejs_preprocess"}}}, "then": {"properties": {"category": {"enum": ["preprocess_failed"]}}}},
+        {"if": {"properties": {"stage": {"const": "ejs_solve"}}}, "then": {"properties": {"category": {"enum": ["solve_failed", "invalid_solver_result"]}}}},
+        {"if": {"properties": {"stage": {"const": "helper"}}}, "then": {"properties": {"category": {"enum": ["helper_start_failed", "helper_timeout", "helper_crashed", "helper_security_limit"]}}}},
+        {"if": {"properties": {"stage": {"const": "media_transfer"}}}, "then": {"properties": {"category": {"enum": ["http_403", "http_429", "network_timeout", "network_offline", "dns_failure", "tls_failure", "range_rejected", "resume_invalid", "remote_content_changed", "incomplete_transfer", "transfer_failed"]}}}},
+        {"if": {"properties": {"stage": {"const": "postprocessing"}}}, "then": {"properties": {"category": {"enum": ["ffmpeg_missing", "ffmpeg_start_failed", "ffmpeg_failed"]}}}},
+        {"if": {"properties": {"stage": {"const": "filesystem"}}}, "then": {"properties": {"category": {"enum": ["permission_denied", "disk_full", "path_unavailable", "destination_conflict", "unsafe_path"]}}}},
+        {"if": {"properties": {"stage": {"const": "frontend"}}}, "then": {"properties": {"category": {"enum": ["frontend_unhandled"]}}}},
+        {"if": {"properties": {"stage": {"const": "internal"}}}, "then": {"properties": {"category": {"enum": ["backend_panic", "unexpected_internal"]}}}}
+      ]
     }
   }
 }
