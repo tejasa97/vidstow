@@ -146,6 +146,7 @@ export const api = {
   },
   diagnostics: {
     copy: () => call<string>('CopyDiagnostics'),
+    clear: () => call<void>('ClearDiagnostics'),
   },
   events: {
     onJobUpdate: (cb: (job: JobSnapshot) => void) =>
