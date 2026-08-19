@@ -31,7 +31,7 @@ var (
 		"state_unavailable", "state_corrupt", "state_unsupported", "state_contended", "state_indeterminate",
 		"frontend_unhandled", "backend_panic", "unexpected_internal",
 	)
-	outcomes         = allowed("terminal", "degraded")
+	outcomes         = allowed("terminal")
 	retryBuckets     = allowed("none", "one", "two", "three_plus")
 	durationBuckets  = allowed("lt_100ms", "100_499ms", "500_1999ms", "2_9s", "10_29s", "30_59s", "gte_60s")
 	operatingSystems = allowed("macos", "windows", "linux")

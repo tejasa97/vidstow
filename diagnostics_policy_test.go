@@ -46,10 +46,14 @@ func TestDiagnosticPolicyCapsAndDoesNotSerializeOperationIDs(t *testing.T) {
 	}
 }
 
-func TestClassifyAnalysisProblemSkipsCancellation(t *testing.T) {
+func TestClassifyAnalysisProblemDistinguishesDeadlineAndCancellation(t *testing.T) {
 	for _, err := range []error{context.Canceled, &engine.Error{Category: engine.ErrorCancelled, Err: errors.New("private error")}} {
 		if problem, ok := classifyAnalysisProblem(err, time.Second); ok {
 			t.Fatalf("classifyAnalysisProblem(%v) = %#v, true; want no diagnostic", err, problem)
 		}
+	}
+	problem, ok := classifyAnalysisProblem(context.DeadlineExceeded, time.Second)
+	if !ok || problem.Stage != "extraction" || problem.Category != "network_timeout" || problem.Outcome != "terminal" {
+		t.Fatalf("deadline classification = %#v, %t; want terminal extraction/network_timeout", problem, ok)
 	}
 }

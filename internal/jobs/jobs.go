@@ -4078,7 +4078,17 @@ func (m *Manager) run(state *jobState, worker *worker) {
 // terminalDownloadDiagnostic maps only typed engine facts. Unknown errors keep
 // a coarse stage-specific category rather than serializing or matching text.
 func terminalDownloadDiagnostic(err error, sawDownload, sawPostprocess bool, duration time.Duration) *Diagnostic {
-	if err == nil || errors.Is(err, context.Canceled) || engine.IsCategory(err, engine.ErrorCancelled) {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		stage := "extraction"
+		if sawDownload {
+			stage = "media_transfer"
+		}
+		return &Diagnostic{Stage: stage, Category: "network_timeout", Duration: duration}
+	}
+	if errors.Is(err, context.Canceled) || engine.IsCategory(err, engine.ErrorCancelled) {
 		return nil
 	}
 	problem := &Diagnostic{Stage: "media_transfer", Category: "transfer_failed", Duration: duration}

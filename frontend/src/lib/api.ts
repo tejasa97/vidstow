@@ -74,6 +74,7 @@ export const api = {
   settings: {
     get: () => call<Settings>('GetSettings'),
     update: (next: Settings) => call<Settings>('UpdateSettings', next),
+    setAutomaticDiagnostics: (preference: 'enabled' | 'disabled') => call<Settings>('SetAutomaticDiagnostics', preference),
   },
   ffmpeg: {
     status: () => call<FFmpegStatus>('GetFFmpegStatus'),

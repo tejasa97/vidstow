@@ -140,10 +140,11 @@
     if (diagnosticChoiceSaving) return;
     diagnosticChoiceSaving = true;
     try {
-      const saved = await api.settings.update({ ...get(settings), automaticDiagnostics: value });
+      const saved = await api.settings.setAutomaticDiagnostics(value);
       settings.set(saved);
       closeDiagnosticChoice();
     } catch (err) {
+      try { settings.set(await api.settings.get()); } catch { /* retain the last known value */ }
       showBanner('danger', errorMessage(err, 'Could not save the diagnostics preference. Automatic sending remains off.'));
     } finally {
       diagnosticChoiceSaving = false;

@@ -40,6 +40,7 @@ func TestEventValidationRejectsUnsafeOrDeprecatedFields(t *testing.T) {
 		{"URL in version", func(event *Event) { event.AppVersion = "https://example.test/secret" }},
 		{"unknown category", func(event *Event) { event.Problem.Category = "raw error: cookie=secret" }},
 		{"recovered outcome", func(event *Event) { event.Problem.Outcome = "recovered" }},
+		{"degraded outcome", func(event *Event) { event.Problem.Outcome = "degraded" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

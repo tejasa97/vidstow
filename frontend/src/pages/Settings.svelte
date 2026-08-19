@@ -73,7 +73,15 @@
   }
 
   async function setAutomaticDiagnostics(value: 'enabled' | 'disabled') {
-    await update({ ...$settings, automaticDiagnostics: value }, value === 'enabled' ? 'Automatic diagnostics enabled' : 'Automatic diagnostics disabled');
+    try {
+      settings.set(await api.settings.setAutomaticDiagnostics(value));
+      showBanner('success', value === 'enabled' ? 'Automatic diagnostics enabled' : 'Automatic diagnostics disabled');
+    } catch (err) {
+      // Disabling remains persisted even if its best-effort local purge reports
+      // an error, so refresh instead of leaving the control misleadingly on.
+      try { settings.set(await api.settings.get()); } catch { /* retain the last known value */ }
+      showError(err, 'Could not save the diagnostics preference');
+    }
   }
 </script>
 

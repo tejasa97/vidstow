@@ -42,8 +42,8 @@ Every event contains only:
 - random UUIDv4 event and per-launch session IDs;
 - app and engine version;
 - coarse OS major version and architecture;
-- typed stage, category, terminal/degraded outcome, retry bucket, and optional
-  duration bucket.
+- typed stage, category, terminal outcome, retry bucket, and optional duration
+  bucket.
 
 There is no installation or device ID. `operation_id` is used locally for
 deduplication and is never serialized. Automatic events must never include
@@ -57,7 +57,7 @@ not inspect or transmit `err.Error()` text.
 ## Limits
 
 - one event per local operation and `(stage, category)`;
-- only terminal failures (or a degraded startup/recovery state);
+- only terminal failures, including startup/recovery failures that prevent safe operation;
 - at most 10 events per app launch;
 - at most 3 events per `(stage, category)` per launch;
 - upload batches contain at most 20 events or 64 KiB.

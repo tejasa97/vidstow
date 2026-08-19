@@ -33,7 +33,7 @@
       "properties": {
         "stage": {"enum": ["startup", "persistence", "extraction", "ejs_preprocess", "ejs_solve", "helper", "media_transfer", "postprocessing", "filesystem", "frontend", "internal"]},
         "category": {"enum": ["http_403", "http_429", "network_timeout", "network_offline", "dns_failure", "tls_failure", "resource_unavailable", "resource_restricted", "authentication_required", "unsupported_resource", "extractor_failed", "helper_start_failed", "helper_timeout", "helper_crashed", "helper_security_limit", "preprocess_failed", "solve_failed", "invalid_solver_result", "range_rejected", "resume_invalid", "remote_content_changed", "incomplete_transfer", "transfer_failed", "ffmpeg_missing", "ffmpeg_start_failed", "ffmpeg_failed", "permission_denied", "disk_full", "path_unavailable", "destination_conflict", "unsafe_path", "state_unavailable", "state_corrupt", "state_unsupported", "state_contended", "state_indeterminate", "frontend_unhandled", "backend_panic", "unexpected_internal"]},
-        "outcome": {"enum": ["terminal", "degraded"]},
+        "outcome": {"const": "terminal"},
         "retry_bucket": {"enum": ["none", "one", "two", "three_plus"]},
         "duration_bucket": {"enum": ["lt_100ms", "100_499ms", "500_1999ms", "2_9s", "10_29s", "30_59s", "gte_60s"]}
       }

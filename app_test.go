@@ -248,10 +248,90 @@ func TestAutomaticDiagnosticsRequiresConsentAndDisableClearsOutbox(t *testing.T)
 	if err != nil || len(batch) != 1 || batch[0].Problem == nil || batch[0].Problem.Category != "unsafe_path" {
 		t.Fatalf("outbox batch=%#v err=%v", batch, err)
 	}
-	app.configureAutomaticDiagnostics("disabled")
+	if err := app.configureAutomaticDiagnostics("disabled"); err != nil {
+		t.Fatal(err)
+	}
 	batch, err = app.diagnosticOutbox.Batch()
 	if err != nil || len(batch) != 0 {
 		t.Fatalf("disabled outbox batch=%#v err=%v", batch, err)
+	}
+}
+
+func TestDiagnosticOptOutPrecedesFolderValidationAndBlocksStaleOutbox(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	privateRoot := secureAppTempDir(t)
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(privateRoot, "state.json"))
+	if app.store == nil || app.diagnosticOutbox == nil {
+		t.Fatalf("startup did not initialize settings/outbox: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+
+	invalidFolder := filepath.Join(privateRoot, "not-a-directory")
+	if err := os.WriteFile(invalidFolder, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	next := app.GetSettings()
+	next.DownloadFolder = invalidFolder
+	next.AutomaticDiagnostics = "disabled"
+	if _, err := app.UpdateSettings(next); err == nil {
+		t.Fatal("UpdateSettings accepted a file as a download folder")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("opt-out preference = %q, want disabled despite folder validation failure", got)
+	}
+
+	outboxDirectory := filepath.Join(privateRoot, "diagnostics")
+	if err := os.RemoveAll(outboxDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outboxDirectory, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SetAutomaticDiagnostics("disabled"); err == nil {
+		t.Fatal("disabling diagnostics accepted an outbox purge failure")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("preference after failed purge = %q, want disabled", got)
+	}
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err == nil {
+		t.Fatal("enabling diagnostics accepted stale outbox data that could not be purged")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("preference after rejected enable = %q, want disabled", got)
+	}
+	if app.diagnosticUploadCancel != nil {
+		t.Fatal("uploader started despite failed stale-outbox purge")
+	}
+}
+
+func TestStartDownloadRejectsMalformedPreAdmissionRequestWithoutDiagnostic(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if app.store == nil || app.jobs == nil || app.diagnostics == nil {
+		t.Fatalf("startup did not initialize app: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+	if _, err := app.StartDownload(jobs.Request{URL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}); err == nil {
+		t.Fatal("StartDownload accepted a request without analyzed metadata")
+	}
+	events, err := app.diagnostics.Recent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("pre-admission validation recorded diagnostics: %#v", events)
 	}
 }
 

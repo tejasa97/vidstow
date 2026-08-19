@@ -19,6 +19,8 @@ func TestTerminalDownloadDiagnosticUsesTypedFacts(t *testing.T) {
 		{"media 403", &engine.DownloadHTTPStatusError{Code: 403}, true, false, "media_transfer", "http_403"},
 		{"media 429", &engine.DownloadHTTPStatusError{Code: 429}, true, false, "media_transfer", "http_429"},
 		{"typed authentication before transfer", &engine.Error{Category: engine.ErrorAuthentication, Err: errors.New("private value")}, false, false, "extraction", "authentication_required"},
+		{"deadline before transfer", context.DeadlineExceeded, false, false, "extraction", "network_timeout"},
+		{"deadline during transfer", context.DeadlineExceeded, true, false, "media_transfer", "network_timeout"},
 		{"postprocess failure", errors.New("/private/path/token"), true, true, "postprocessing", "ffmpeg_failed"},
 	}
 	for _, test := range tests {
