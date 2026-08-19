@@ -18,7 +18,8 @@ does not exist yet.
 
 ### Changed
 
-- No entries yet.
+- Public engine naming now uses `ytdlp-go` (`https://github.com/tejasa97/ytdlp-go`).
+  The Go module pin remains `github.com/tejasa97/youtube_dlp v0.2.3`.
 
 ### Fixed
 

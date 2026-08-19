@@ -861,7 +861,7 @@ func (a *App) CopyDiagnostics() (string, error) {
 	report := strings.Builder{}
 	report.WriteString("VidStow diagnostics\n")
 	report.WriteString("App: VidStow v" + build.Version + " (" + build.OS + "/" + build.Architecture + ", " + build.GoVersion + ")\n")
-	report.WriteString("Engine: youtube_dlp " + build.EngineVersion + "\n")
+	report.WriteString("Engine: ytdlp-go " + build.EngineVersion + "\n")
 	if a.store != nil {
 		report.WriteString("Download folder: configured\n")
 	} else {

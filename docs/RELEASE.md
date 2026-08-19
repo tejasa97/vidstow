@@ -32,9 +32,9 @@ technical release inputs and verification evidence; the supported user
 installation path is the Homebrew cask.
 
 The release also includes `SHA256SUMS` and build metadata identifying the exact
-source revision and `youtube_dlp` module version. A checksum establishes file
-identity only; it does not establish publisher identity, notarization, safety,
-or reproducibility.
+source revision and `ytdlp-go` module version (`github.com/tejasa97/youtube_dlp`).
+A checksum establishes file identity only; it does not establish publisher identity,
+notarization, safety, or reproducibility.
 
 Windows, Linux, and macOS Intel packages are outside the current supported
 release scope.
