@@ -1063,7 +1063,8 @@ func validHistory(h jobmodel.HistoryEntry) bool {
 }
 
 func validSettings(s jobmodel.Settings) bool {
-	return validText(s.DownloadFolder, maxPathBytes, false) && validText(s.FFmpegPath, maxPathBytes, false) && s.WindowWidth >= 0 && s.WindowWidth <= 10000 && s.WindowHeight >= 0 && s.WindowHeight <= 10000
+	validDiagnostics := s.AutomaticDiagnostics == "" || s.AutomaticDiagnostics == "enabled" || s.AutomaticDiagnostics == "disabled"
+	return validDiagnostics && validText(s.DownloadFolder, maxPathBytes, false) && validText(s.FFmpegPath, maxPathBytes, false) && s.WindowWidth >= 0 && s.WindowWidth <= 10000 && s.WindowHeight >= 0 && s.WindowHeight <= 10000
 }
 func validatePreconditionsInput(values []JobPrecondition) error {
 	if len(values) > maxPreconditions {

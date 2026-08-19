@@ -48,6 +48,7 @@ func (s *V2Store) Settings() Settings {
 		DownloadConcurrency:   state.Settings.DownloadConcurrency,
 		PerVideoSubfolder:     state.Settings.PerVideoSubfolder,
 		ConfirmBeforeDownload: state.Settings.ConfirmBeforeDownload,
+		AutomaticDiagnostics:  state.Settings.AutomaticDiagnostics,
 	}
 }
 
@@ -64,6 +65,7 @@ func (s *V2Store) SetSettings(next Settings) error {
 		DownloadConcurrency:   next.DownloadConcurrency,
 		PerVideoSubfolder:     next.PerVideoSubfolder,
 		ConfirmBeforeDownload: next.ConfirmBeforeDownload,
+		AutomaticDiagnostics:  next.AutomaticDiagnostics,
 	}
 	if settings.DownloadFolder == "" {
 		settings.DownloadFolder = defaultStateV2().Settings.DownloadFolder

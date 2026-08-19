@@ -48,8 +48,29 @@ test('page titles and controls match the approved redesign', async () => {
   assert.match(settings, />Diagnostics</);
   assert.match(settings, />Copy Diagnostics</);
   assert.match(settings, />Clear history</);
+  assert.match(settings, /> Send diagnostics<\/label>/);
+  assert.match(settings, /> Don’t send<\/label>/);
+  assert.match(settings, /automaticDiagnostics === 'enabled'/);
+  assert.match(settings, /automaticDiagnostics === 'disabled'/);
+  assert.match(settings, /Disabling this immediately deletes anything waiting to be sent/);
   assert.match(settings, /await api\.diagnostics\.copy\(\)/);
   assert.match(settings, /await api\.diagnostics\.clear\(\)/);
+});
+
+test('first launch asks for explicit diagnostic consent without a default', async () => {
+  const [app, dialog] = await Promise.all([
+    read('../src/App.svelte'),
+    read('../src/lib/lifecycle-ui/DiagnosticConsentDialog.svelte'),
+  ]);
+  assert.match(app, /if \(!savedSettings\.automaticDiagnostics\)/);
+  assert.match(app, /chooseAutomaticDiagnostics\('enabled'\)/);
+  assert.match(app, /chooseAutomaticDiagnostics\('disabled'\)/);
+  assert.match(app, /https:\/\/diagnostics\.vidstow\.workers\.dev\/privacy/);
+  assert.match(dialog, />Send diagnostics<\/button>/);
+  assert.match(dialog, />Don’t send<\/button>/);
+  assert.match(dialog, /affected YouTube video identifier/);
+  assert.match(dialog, /never include cookies, media download links, tokens, signatures, or downloaded filenames/);
+  assert.doesNotMatch(dialog, /checked|selected/);
 });
 
 test('analysis failures use the redesigned error modal', async () => {
