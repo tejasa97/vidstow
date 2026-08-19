@@ -27,7 +27,7 @@
         <button type="button" class="close" aria-label="Close" onclick={() => onClose?.()}>×</button>
       </header>
       <p id="diagnostic-consent-description">
-        Send operational diagnostics when downloads or app operations encounter problems. Reports may include the affected YouTube video identifier. They never include cookies, media download links, tokens, signatures, or downloaded filenames.
+        Send a small, sanitized report only when VidStow cannot complete a requested download or encounters an app failure. Reports never include video IDs, links, paths, filenames, cookies, tokens, or error text.
       </p>
       <button type="button" class="privacy" onclick={() => onPrivacy?.()}>Read the diagnostics privacy notice ↗</button>
       <footer>

@@ -68,8 +68,8 @@ test('first launch asks for explicit diagnostic consent without a default', asyn
   assert.match(app, /https:\/\/diagnostics\.vidstow\.workers\.dev\/privacy/);
   assert.match(dialog, />Send diagnostics<\/button>/);
   assert.match(dialog, />Don’t send<\/button>/);
-  assert.match(dialog, /affected YouTube video identifier/);
-  assert.match(dialog, /never include cookies, media download links, tokens, signatures, or downloaded filenames/);
+  assert.match(dialog, /cannot complete a requested download or encounters an app failure/);
+  assert.match(dialog, /never include video IDs, links, paths, filenames, cookies, tokens, or error text/);
   assert.doesNotMatch(dialog, /checked|selected/);
 });
 

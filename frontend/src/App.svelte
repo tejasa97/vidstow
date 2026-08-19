@@ -93,6 +93,13 @@
     for (const off of unsubAll) off();
   });
 
+  // Never pass browser error/rejection data across the backend boundary: it
+  // can contain a URL, user input, or stack trace. The backend records only a
+  // fixed frontend_unhandled category and applies the session caps.
+  function reportFrontendFailure(): void {
+    void api.diagnostics.frontendFailure().catch(() => {});
+  }
+
   function updateJobInList(updated: JobSnapshot) {
     jobs.update((list) => {
       const idx = list.findIndex((j) => j.id === updated.id);
@@ -204,7 +211,7 @@
   }
 </script>
 
-<svelte:window on:dragover={acceptDrop} on:drop={handleDrop} />
+<svelte:window on:dragover={acceptDrop} on:drop={handleDrop} on:error={reportFrontendFailure} on:unhandledrejection={reportFrontendFailure} />
 
 {#if startupStatus?.mode === 'recovery-required'}
   <main class="main">
