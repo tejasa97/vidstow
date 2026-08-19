@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vidstow.github.io/schemas/diagnostics/event-v1.schema.json",
+  "title": "VidStow automatic diagnostic event v1",
+  "description": "Closed schema for one automatic diagnostic event. Unknown fields are forbidden.",
+  "oneOf": [
+    { "$ref": "#/$defs/problemEvent" },
+    { "$ref": "#/$defs/healthEvent" }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "os_major", "architecture"],
+      "properties": {
+        "os": {
+          "type": "string",
+          "enum": ["macos", "windows", "linux"]
+        },
+        "os_major": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16,
+          "pattern": "^[0-9]+$"
+        },
+        "architecture": {
+          "type": "string",
+          "enum": ["arm64", "amd64"]
+        }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "resource_type", "resource_id"],
+      "properties": {
+        "provider": { "const": "youtube" },
+        "resource_type": {
+          "type": "string",
+          "enum": ["video", "playlist", "channel"]
+        },
+        "resource_id": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "resource_type": { "const": "video" } } },
+          "then": { "properties": { "resource_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{11}$" } } }
+        },
+        {
+          "if": { "properties": { "resource_type": { "const": "playlist" } } },
+          "then": { "properties": { "resource_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{2,128}$" } } }
+        },
+        {
+          "if": { "properties": { "resource_type": { "const": "channel" } } },
+          "then": { "properties": { "resource_id": { "type": "string", "pattern": "^UC[A-Za-z0-9_-]{22}$" } } }
+        }
+      ]
+    },
+    "durationBucket": {
+      "type": "string",
+      "enum": [
+        "lt_100ms",
+        "100_499ms",
+        "500_1999ms",
+        "2_9s",
+        "10_29s",
+        "30_59s",
+        "gte_60s"
+      ]
+    },
+    "durationHistogram": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lt_100ms",
+        "100_499ms",
+        "500_1999ms",
+        "2_9s",
+        "10_29s",
+        "30_59s",
+        "gte_60s"
+      ],
+      "properties": {
+        "lt_100ms": { "$ref": "#/$defs/counter" },
+        "100_499ms": { "$ref": "#/$defs/counter" },
+        "500_1999ms": { "$ref": "#/$defs/counter" },
+        "2_9s": { "$ref": "#/$defs/counter" },
+        "10_29s": { "$ref": "#/$defs/counter" },
+        "30_59s": { "$ref": "#/$defs/counter" },
+        "gte_60s": { "$ref": "#/$defs/counter" }
+      }
+    },
+    "counter": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "startup",
+        "persistence",
+        "extraction",
+        "ejs_preprocess",
+        "ejs_solve",
+        "helper",
+        "media_transfer",
+        "postprocessing",
+        "filesystem",
+        "frontend",
+        "internal"
+      ]
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "http_403",
+        "http_429",
+        "network_timeout",
+        "network_offline",
+        "dns_failure",
+        "tls_failure",
+        "resource_unavailable",
+        "resource_restricted",
+        "authentication_required",
+        "unsupported_resource",
+        "extractor_failed",
+        "helper_start_failed",
+        "helper_timeout",
+        "helper_crashed",
+        "helper_security_limit",
+        "preprocess_failed",
+        "solve_failed",
+        "invalid_solver_result",
+        "range_rejected",
+        "resume_invalid",
+        "remote_content_changed",
+        "incomplete_transfer",
+        "transfer_failed",
+        "ffmpeg_missing",
+        "ffmpeg_start_failed",
+        "ffmpeg_failed",
+        "permission_denied",
+        "disk_full",
+        "path_unavailable",
+        "destination_conflict",
+        "unsafe_path",
+        "state_unavailable",
+        "state_corrupt",
+        "state_unsupported",
+        "state_contended",
+        "state_indeterminate",
+        "frontend_unhandled",
+        "backend_panic",
+        "unexpected_internal"
+      ]
+    },
+    "problemEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "event_id",
+        "session_id",
+        "occurred_at",
+        "app_version",
+        "engine_version",
+        "platform",
+        "type",
+        "problem"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "event_id": { "$ref": "#/$defs/uuid" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "operation_id": { "$ref": "#/$defs/uuid" },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "app_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "engine_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "platform": { "$ref": "#/$defs/platform" },
+        "type": { "const": "problem_observed" },
+        "problem": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stage", "category", "outcome", "retry_bucket"],
+          "allOf": [
+            {
+              "if": { "required": ["panic_fingerprint"] },
+              "then": {
+                "properties": {
+                  "stage": { "const": "internal" },
+                  "category": { "const": "backend_panic" }
+                }
+              }
+            },
+            {
+              "oneOf": [
+                {
+                  "properties": {
+                    "stage": { "enum": ["extraction", "media_transfer"] },
+                    "category": { "enum": ["http_403", "http_429", "network_timeout", "network_offline", "dns_failure", "tls_failure"] }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "const": "extraction" },
+                    "category": { "enum": ["resource_unavailable", "resource_restricted", "authentication_required", "unsupported_resource", "extractor_failed"] }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "const": "helper" },
+                    "category": { "enum": ["helper_start_failed", "helper_timeout", "helper_crashed", "helper_security_limit"] }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "const": "ejs_preprocess" },
+                    "category": { "const": "preprocess_failed" }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "const": "ejs_solve" },
+                    "category": { "enum": ["solve_failed", "invalid_solver_result"] }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "const": "media_transfer" },
+                    "category": { "enum": ["range_rejected", "resume_invalid", "remote_content_changed", "incomplete_transfer", "transfer_failed"] }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "const": "postprocessing" },
+                    "category": { "enum": ["ffmpeg_missing", "ffmpeg_start_failed", "ffmpeg_failed"] }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "enum": ["filesystem", "persistence"] },
+                    "category": { "enum": ["permission_denied", "disk_full"] }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "const": "filesystem" },
+                    "category": { "enum": ["path_unavailable", "destination_conflict", "unsafe_path"] }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "enum": ["startup", "persistence"] },
+                    "category": { "enum": ["state_unavailable", "state_corrupt", "state_unsupported", "state_contended", "state_indeterminate"] }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "const": "frontend" },
+                    "category": { "const": "frontend_unhandled" }
+                  }
+                },
+                {
+                  "properties": {
+                    "stage": { "const": "internal" },
+                    "category": { "enum": ["backend_panic", "unexpected_internal"] }
+                  }
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "stage": { "$ref": "#/$defs/stage" },
+            "category": { "$ref": "#/$defs/category" },
+            "outcome": {
+              "type": "string",
+              "enum": ["recovered", "terminal", "degraded"]
+            },
+            "retry_bucket": {
+              "type": "string",
+              "enum": ["none", "one", "two", "three_plus"]
+            },
+            "duration_bucket": { "$ref": "#/$defs/durationBucket" },
+            "panic_fingerprint": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "resource": { "$ref": "#/$defs/resource" }
+      }
+    },
+    "healthEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "event_id",
+        "session_id",
+        "occurred_at",
+        "app_version",
+        "engine_version",
+        "platform",
+        "type",
+        "health"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "event_id": { "$ref": "#/$defs/uuid" },
+        "session_id": { "$ref": "#/$defs/uuid" },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "app_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "engine_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "platform": { "$ref": "#/$defs/platform" },
+        "type": { "const": "health_summary" },
+        "health": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "period_started_at",
+            "period_ended_at",
+            "operations_started",
+            "operations_completed",
+            "operations_terminally_failed",
+            "retries",
+            "successful_recoveries",
+            "ejs_memory_cache_hits",
+            "ejs_memory_cache_misses",
+            "ejs_persistent_cache_hits",
+            "ejs_persistent_cache_misses",
+            "ejs_persistent_cache_invalid",
+            "ejs_persistent_cache_expired",
+            "ejs_persistent_cache_read_failures",
+            "ejs_persistent_cache_write_failures",
+            "ejs_preprocess_durations",
+            "ejs_solve_durations"
+          ],
+          "properties": {
+            "period_started_at": {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 40
+            },
+            "period_ended_at": {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 40
+            },
+            "operations_started": { "$ref": "#/$defs/counter" },
+            "operations_completed": { "$ref": "#/$defs/counter" },
+            "operations_terminally_failed": { "$ref": "#/$defs/counter" },
+            "retries": { "$ref": "#/$defs/counter" },
+            "successful_recoveries": { "$ref": "#/$defs/counter" },
+            "ejs_memory_cache_hits": { "$ref": "#/$defs/counter" },
+            "ejs_memory_cache_misses": { "$ref": "#/$defs/counter" },
+            "ejs_persistent_cache_hits": { "$ref": "#/$defs/counter" },
+            "ejs_persistent_cache_misses": { "$ref": "#/$defs/counter" },
+            "ejs_persistent_cache_invalid": { "$ref": "#/$defs/counter" },
+            "ejs_persistent_cache_expired": { "$ref": "#/$defs/counter" },
+            "ejs_persistent_cache_read_failures": { "$ref": "#/$defs/counter" },
+            "ejs_persistent_cache_write_failures": { "$ref": "#/$defs/counter" },
+            "ejs_preprocess_durations": { "$ref": "#/$defs/durationHistogram" },
+            "ejs_solve_durations": { "$ref": "#/$defs/durationHistogram" }
+          }
+        }
+      }
+    }
+  }
+}

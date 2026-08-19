@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "event_id": "ca4ff990-4a4a-455e-aa48-c2e909f7b62a",
+  "session_id": "710f96b8-68a2-492f-8f27-373365132fca",
+  "occurred_at": "2026-08-18T12:15:00Z",
+  "app_version": "0.1.0-beta.3",
+  "engine_version": "0.2.3",
+  "platform": {
+    "os": "macos",
+    "os_major": "15",
+    "architecture": "arm64"
+  },
+  "type": "health_summary",
+  "health": {
+    "period_started_at": "2026-08-18T12:00:00Z",
+    "period_ended_at": "2026-08-18T12:15:00Z",
+    "operations_started": 8,
+    "operations_completed": 7,
+    "operations_terminally_failed": 1,
+    "retries": 2,
+    "successful_recoveries": 1,
+    "ejs_memory_cache_hits": 5,
+    "ejs_memory_cache_misses": 2,
+    "ejs_persistent_cache_hits": 1,
+    "ejs_persistent_cache_misses": 1,
+    "ejs_persistent_cache_invalid": 0,
+    "ejs_persistent_cache_expired": 0,
+    "ejs_persistent_cache_read_failures": 0,
+    "ejs_persistent_cache_write_failures": 0,
+    "ejs_preprocess_durations": {
+      "lt_100ms": 0,
+      "100_499ms": 1,
+      "500_1999ms": 1,
+      "2_9s": 0,
+      "10_29s": 0,
+      "30_59s": 0,
+      "gte_60s": 0
+    },
+    "ejs_solve_durations": {
+      "lt_100ms": 6,
+      "100_499ms": 1,
+      "500_1999ms": 0,
+      "2_9s": 0,
+      "10_29s": 0,
+      "30_59s": 0,
+      "gte_60s": 0
+    }
+  }
+}
