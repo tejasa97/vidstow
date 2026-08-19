@@ -66,6 +66,7 @@ type Settings struct {
 	DownloadConcurrency   int    `json:"downloadConcurrency"`
 	PerVideoSubfolder     bool   `json:"perVideoSubfolder"`
 	ConfirmBeforeDownload bool   `json:"confirmBeforeDownload"`
+	AutomaticDiagnostics  string `json:"automaticDiagnostics,omitempty"`
 }
 
 type State struct {

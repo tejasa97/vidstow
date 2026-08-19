@@ -9,6 +9,7 @@
   import type { JobSnapshot, QuitSummary, StartupStatus } from './lib/types.js';
   import { DEFAULT_RECOVERY_REQUIRED, type RecoveryRequiredViewModel } from './lib/lifecycle-ui/types.js';
   import QuitConfirmationDialog from './lib/lifecycle-ui/QuitConfirmationDialog.svelte';
+  import DiagnosticConsentDialog from './lib/lifecycle-ui/DiagnosticConsentDialog.svelte';
   import RecoveryRequiredShell from './lib/lifecycle-ui/RecoveryRequiredShell.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
   import Modal from './lib/components/Modal.svelte';
@@ -24,6 +25,9 @@
   let quitOpen = false;
   let quitModel: QuitSummary = { activeDownloads: 0, waitingOrPausedDownloads: 0 };
   let recoveryModel: RecoveryRequiredViewModel = DEFAULT_RECOVERY_REQUIRED;
+  let diagnosticChoiceOpen = false;
+  let diagnosticChoiceSaving = false;
+  let showFFmpegAfterDiagnosticChoice = false;
 
   onMount(async () => {
     unsubAll = [
@@ -70,13 +74,11 @@
       history.set(savedHistory ?? []);
       ffmpeg.set(ffmpegStatus);
       persistence.set(persistenceStatus);
-      if (!ffmpegStatus.available) {
-        modal.set({
-          kind: 'ffmpeg-missing',
-          title: 'FFmpeg is required for most downloads',
-          message: 'Install FFmpeg or point VidStow at it in Settings. You can still queue original audio that does not need merging.',
-          actions: [{ label: 'Open Settings', primary: true, action: () => navigate('settings') }],
-        });
+      if (!savedSettings.automaticDiagnostics) {
+        diagnosticChoiceOpen = true;
+        showFFmpegAfterDiagnosticChoice = !ffmpegStatus.available;
+      } else if (!ffmpegStatus.available) {
+        showFFmpegRequired();
       }
     } catch (err) {
       modal.set({
@@ -110,6 +112,35 @@
 
   function navigate(target: 'home' | 'queue' | 'downloads' | 'settings' | 'about') {
     route.set(target);
+  }
+
+  function showFFmpegRequired() {
+    modal.set({
+      kind: 'ffmpeg-missing',
+      title: 'FFmpeg is required for most downloads',
+      message: 'Install FFmpeg or point VidStow at it in Settings. You can still queue original audio that does not need merging.',
+      actions: [{ label: 'Open Settings', primary: true, action: () => navigate('settings') }],
+    });
+  }
+
+  function closeDiagnosticChoice() {
+    diagnosticChoiceOpen = false;
+    if (showFFmpegAfterDiagnosticChoice) showFFmpegRequired();
+    showFFmpegAfterDiagnosticChoice = false;
+  }
+
+  async function chooseAutomaticDiagnostics(value: 'enabled' | 'disabled') {
+    if (diagnosticChoiceSaving) return;
+    diagnosticChoiceSaving = true;
+    try {
+      const saved = await api.settings.update({ ...get(settings), automaticDiagnostics: value });
+      settings.set(saved);
+      closeDiagnosticChoice();
+    } catch (err) {
+      showBanner('danger', errorMessage(err, 'Could not save the diagnostics preference. Automatic sending remains off.'));
+    } finally {
+      diagnosticChoiceSaving = false;
+    }
   }
 
   async function copyRecoveryDiagnostics() {
@@ -207,6 +238,14 @@
 
 <Modal />
 <Banner />
+<DiagnosticConsentDialog
+  open={diagnosticChoiceOpen}
+  busy={diagnosticChoiceSaving}
+  onClose={closeDiagnosticChoice}
+  onEnable={() => chooseAutomaticDiagnostics('enabled')}
+  onDisable={() => chooseAutomaticDiagnostics('disabled')}
+  onPrivacy={() => window.runtime.BrowserOpenURL('https://diagnostics.vidstow.workers.dev/privacy')}
+/>
 <QuitConfirmationDialog
   open={quitOpen}
   model={quitModel}

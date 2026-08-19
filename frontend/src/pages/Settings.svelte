@@ -71,6 +71,10 @@
   async function changeConcurrency(value: number) {
     await update({ ...$settings, downloadConcurrency: value });
   }
+
+  async function setAutomaticDiagnostics(value: 'enabled' | 'disabled') {
+    await update({ ...$settings, automaticDiagnostics: value }, value === 'enabled' ? 'Automatic diagnostics enabled' : 'Automatic diagnostics disabled');
+  }
 </script>
 
 <section class="page" aria-labelledby="settings-title">
@@ -160,6 +164,18 @@
     <h2 id="diagnostics-title">Diagnostics</h2>
     <div class="setting">
       <div class="copy">
+        <strong>Send operational diagnostics</strong>
+        <span>When VidStow encounters a problem, send a sanitized report in the background. Reports may identify the affected YouTube video, but never include cookies, media links, tokens, signatures, or downloaded filenames.</span>
+        <small>Local diagnostic history remains available either way. Disabling this immediately deletes anything waiting to be sent.</small>
+        <button class="privacy-link" type="button" on:click={() => window.runtime.BrowserOpenURL('https://diagnostics.vidstow.workers.dev/privacy')}>Diagnostics privacy notice ↗</button>
+      </div>
+      <div class="actions choices" role="radiogroup" aria-label="Automatic diagnostics">
+        <label><input type="radio" name="automatic-diagnostics" checked={$settings.automaticDiagnostics === 'enabled'} on:change={() => setAutomaticDiagnostics('enabled')} /> Send diagnostics</label>
+        <label><input type="radio" name="automatic-diagnostics" checked={$settings.automaticDiagnostics === 'disabled'} on:change={() => setAutomaticDiagnostics('disabled')} /> Don’t send</label>
+      </div>
+    </div>
+    <div class="setting">
+      <div class="copy">
         <strong>Support report</strong>
         <span>Includes app and FFmpeg status plus recent sanitized failures. URLs and paths stay private.</span>
       </div>
@@ -218,6 +234,10 @@
   .copy .mono.empty { font-family: var(--font-sans); font-style: italic; }
   label.setting { cursor: pointer; }
   label.setting input { margin-left: 8px; flex-shrink: 0; }
+  .choices { align-items: flex-start; flex-direction: column; gap: 6px; min-width: 154px; }
+  .choices label { display: flex; gap: 7px; align-items: center; font-size: var(--fs-xs); cursor: pointer; }
+  .choices input { margin: 0; }
+  .privacy-link { margin-top: 6px; padding: 0; color: var(--accent-primary); font-size: var(--fs-xs); text-decoration: underline; text-underline-offset: 3px; }
 
   .actions {
     display: flex;

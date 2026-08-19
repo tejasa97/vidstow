@@ -200,6 +200,9 @@ func TestLocalDiagnosticsRecordsStartupFailureAndCopiesSanitizedEvent(t *testing
 	if len(events) != 1 || events[0].Problem == nil || events[0].Problem.Stage != "filesystem" || events[0].Problem.Category != "unsafe_path" {
 		t.Fatalf("diagnostic events = %#v", events)
 	}
+	if batch, err := app.diagnosticOutbox.Batch(); err != nil || len(batch) != 0 {
+		t.Fatalf("automatic diagnostics queued without consent: batch=%#v err=%v", batch, err)
+	}
 	if _, err := app.CopyDiagnostics(); err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +217,41 @@ func TestLocalDiagnosticsRecordsStartupFailureAndCopiesSanitizedEvent(t *testing
 	}
 	if events, err := app.diagnostics.Recent(); err != nil || len(events) != 0 {
 		t.Fatalf("events after clear = %#v, %v", events, err)
+	}
+}
+
+func TestAutomaticDiagnosticsRequiresConsentAndDisableClearsOutbox(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	privateRoot := secureAppTempDir(t)
+	statePath := filepath.Join(privateRoot, "state.json")
+	state, status, err := store.OpenV2(statePath)
+	if err != nil || !status.Healthy() {
+		t.Fatalf("OpenV2 = %#v, %v", status, err)
+	}
+	settings := state.Settings()
+	settings.AutomaticDiagnostics = "enabled"
+	if err := state.SetSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	prepareStartupStateRoots = func(jobmodel.State) error { return reservationfs.ErrUnsafe }
+
+	app := NewApp()
+	app.startupAt(context.Background(), statePath)
+	if app.diagnosticOutbox == nil {
+		t.Fatal("automatic diagnostics outbox was not opened")
+	}
+	batch, err := app.diagnosticOutbox.Batch()
+	if err != nil || len(batch) != 1 || batch[0].Problem == nil || batch[0].Problem.Category != "unsafe_path" {
+		t.Fatalf("outbox batch=%#v err=%v", batch, err)
+	}
+	app.configureAutomaticDiagnostics("disabled")
+	batch, err = app.diagnosticOutbox.Batch()
+	if err != nil || len(batch) != 0 {
+		t.Fatalf("disabled outbox batch=%#v err=%v", batch, err)
 	}
 }
 
@@ -537,6 +575,9 @@ func installAppTestSeams(t *testing.T) func() {
 	oldLog := logAppErrorf
 	oldEmit := emitAppEvent
 	oldOpenDiagnostics := openDiagnostics
+	oldOpenDiagnosticOutbox := openDiagnosticOutbox
+	oldNewDiagnosticUploader := newDiagnosticUploader
+	oldDiagnosticsEndpoint := diagnosticsEventsEndpoint
 	oldDiagnosticID := newDiagnosticID
 	oldClipboard := clipboardSetText
 	logAppErrorf = func(context.Context, string, ...interface{}) {}
@@ -550,6 +591,9 @@ func installAppTestSeams(t *testing.T) func() {
 		logAppErrorf = oldLog
 		emitAppEvent = oldEmit
 		openDiagnostics = oldOpenDiagnostics
+		openDiagnosticOutbox = oldOpenDiagnosticOutbox
+		newDiagnosticUploader = oldNewDiagnosticUploader
+		diagnosticsEventsEndpoint = oldDiagnosticsEndpoint
 		newDiagnosticID = oldDiagnosticID
 		clipboardSetText = oldClipboard
 	}

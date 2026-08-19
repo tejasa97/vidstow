@@ -13,6 +13,7 @@ export const settings = writable<Settings>({
   downloadConcurrency: 2,
   perVideoSubfolder: true,
   confirmBeforeDownload: false,
+  automaticDiagnostics: '',
 });
 
 export const ffmpeg = writable<FFmpegStatus>({

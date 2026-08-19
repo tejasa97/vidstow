@@ -111,6 +111,7 @@ export interface Settings {
   downloadConcurrency: number;
   perVideoSubfolder: boolean;
   confirmBeforeDownload: boolean;
+  automaticDiagnostics: '' | 'enabled' | 'disabled';
 }
 
 export interface UrlCheckResult {

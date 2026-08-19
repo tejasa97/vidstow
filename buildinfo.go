@@ -5,6 +5,10 @@ import (
 	"runtime/debug"
 )
 
+// diagnosticsEventsEndpoint is injected only into builds whose privacy notice
+// and ingestion service are ready. Empty keeps transport dormant.
+var diagnosticsEventsEndpoint = "https://diagnostics.vidstow.workers.dev/v1/events"
+
 const (
 	appVersion          = "0.1.0-beta.4"
 	engineModulePath    = "github.com/tejasa97/youtube_dlp"

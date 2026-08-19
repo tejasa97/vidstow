@@ -28,6 +28,7 @@ type Settings struct {
 	DownloadConcurrency   int    `json:"downloadConcurrency"`
 	PerVideoSubfolder     bool   `json:"perVideoSubfolder"`
 	ConfirmBeforeDownload bool   `json:"confirmBeforeDownload"`
+	AutomaticDiagnostics  string `json:"automaticDiagnostics"`
 }
 
 // HistoryEntry is one completed download shown in the Downloads page.

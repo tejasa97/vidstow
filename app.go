@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,8 @@ var (
 	logAppErrorf          = wailsruntime.LogErrorf
 	emitAppEvent          = wailsruntime.EventsEmit
 	openDiagnostics       = localdiagnostics.Open
+	openDiagnosticOutbox  = localdiagnostics.OpenOutbox
+	newDiagnosticUploader = localdiagnostics.NewUploader
 	newDiagnosticID       = localdiagnostics.NewUUID
 	clipboardSetText      = wailsruntime.ClipboardSetText
 )
@@ -54,25 +57,29 @@ var (
 // App is the Wails-bound root. Every exported method is reachable from
 // the frontend via the generated bindings in wailsjs/go/main/App.js.
 type App struct {
-	ctx               context.Context
-	store             *store.V2Store
-	jobs              *jobs.Manager
-	coordinator       *admission.Coordinator
-	statePath         string
-	startupStatus     store.StartupStatus
-	diagnostics       *localdiagnostics.Recorder
-	diagnosticSession string
-	cleanupCancel     context.CancelFunc
-	cleanupDone       <-chan struct{}
-	shutdownManager   shutdownLifecycle
-	closeState        func() error
-	mu                sync.Mutex
-	lastFFmpeg        ffmpegdetect.Status
-	quitMu            sync.Mutex
-	playlistMu        sync.Mutex
-	quitPermit        bool
-	quitRequestOpen   bool
-	quitDeadline      time.Time
+	ctx                    context.Context
+	store                  *store.V2Store
+	jobs                   *jobs.Manager
+	coordinator            *admission.Coordinator
+	statePath              string
+	startupStatus          store.StartupStatus
+	diagnostics            *localdiagnostics.Recorder
+	diagnosticOutbox       *localdiagnostics.Outbox
+	diagnosticSession      string
+	diagnosticMu           sync.Mutex
+	diagnosticUploadCancel context.CancelFunc
+	diagnosticUploadWake   chan struct{}
+	cleanupCancel          context.CancelFunc
+	cleanupDone            <-chan struct{}
+	shutdownManager        shutdownLifecycle
+	closeState             func() error
+	mu                     sync.Mutex
+	lastFFmpeg             ffmpegdetect.Status
+	quitMu                 sync.Mutex
+	playlistMu             sync.Mutex
+	quitPermit             bool
+	quitRequestOpen        bool
+	quitDeadline           time.Time
 }
 
 // NewApp constructs the App. The Wails bind() call wires every public
@@ -100,6 +107,11 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 	st, status, openErr := openStateV2(statePath)
 	if openErr == nil && status.Reason != store.RecoveryUnsafePermissions {
 		a.openLocalDiagnostics(filepath.Dir(statePath))
+		// An unset or disabled preference never leaves a stale automatic
+		// outbox behind, including when startup later enters recovery mode.
+		if st != nil && st.Settings().AutomaticDiagnostics != "enabled" && a.diagnosticOutbox != nil {
+			_ = a.diagnosticOutbox.Clear()
+		}
 	}
 	if openErr != nil || !status.Healthy() || status.Warning != "" || st == nil {
 		if a.diagnostics != nil {
@@ -202,12 +214,14 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 	})
 	a.applyFFmpegDiscovery(ffmpegdetect.Probe(ctx, settings.FFmpegPath))
 	emitAppEvent(ctx, "ffmpeg:update", a.ffmpegStatus())
+	a.configureAutomaticDiagnostics(settings.AutomaticDiagnostics)
 }
 
 // shutdown is called by Wails after the native close gate has permitted the
 // window to exit. One deadline is shared by cleanup, workers, and manager
 // close; a stuck process cannot turn quit into an unbounded join.
 func (a *App) shutdown(ctx context.Context) {
+	a.stopDiagnosticUploader()
 	shutdownCtx, cancel := a.shutdownContext(ctx)
 	defer cancel()
 	a.stopCleanup(shutdownCtx)
@@ -286,10 +300,14 @@ func (a *App) UpdateSettings(next store.Settings) (store.Settings, error) {
 	if next.DownloadConcurrency < 1 || next.DownloadConcurrency > jobs.MaxDownloadConcurrency {
 		return store.Settings{}, fmt.Errorf("download concurrency must be between 1 and %d", jobs.MaxDownloadConcurrency)
 	}
+	if next.AutomaticDiagnostics != "" && next.AutomaticDiagnostics != "enabled" && next.AutomaticDiagnostics != "disabled" {
+		return store.Settings{}, errors.New("invalid automatic diagnostics preference")
+	}
 	if err := a.store.SetSettings(next); err != nil {
 		return store.Settings{}, err
 	}
 	a.jobs.SetConcurrency(next.DownloadConcurrency)
+	a.configureAutomaticDiagnostics(next.AutomaticDiagnostics)
 	a.applyFFmpegDiscovery(ffmpegdetect.Probe(a.ctx, next.FFmpegPath))
 	wailsruntime.EventsEmit(a.ctx, "settings:update", a.store.Settings())
 	return a.store.Settings(), nil
@@ -909,13 +927,19 @@ func (a *App) openLocalDiagnostics(dataDirectory string) {
 		logAppErrorf(a.ctx, "desktop: create diagnostic session: %v", err)
 		return
 	}
-	recorder, err := openDiagnostics(filepath.Join(dataDirectory, "diagnostics", "history-v1.json"))
+	diagnosticsDirectory := filepath.Join(dataDirectory, "diagnostics")
+	recorder, err := openDiagnostics(filepath.Join(diagnosticsDirectory, "history-v1.json"))
 	if err != nil {
 		logAppErrorf(a.ctx, "desktop: open local diagnostics: %v", err)
 		return
 	}
 	a.diagnostics = recorder
 	a.diagnosticSession = sessionID
+	// Outbox failure is deliberately non-authoritative: local diagnostics and
+	// all app operations continue without automatic transmission.
+	if outbox, err := openDiagnosticOutbox(filepath.Join(diagnosticsDirectory, "outbox-v1.json")); err == nil {
+		a.diagnosticOutbox = outbox
+	}
 }
 
 func (a *App) recordDiagnosticProblem(operationID string, problem localdiagnostics.Problem, resource *localdiagnostics.Resource) {
@@ -942,6 +966,75 @@ func (a *App) recordDiagnosticProblem(operationID string, problem localdiagnosti
 	}
 	if err := a.diagnostics.Record(event); err != nil {
 		logAppErrorf(a.ctx, "desktop: record local diagnostic event: %v", err)
+	}
+	// The automatic outbox is intentionally independent from local history;
+	// one best-effort path failing must not suppress the other.
+	a.enqueueAutomaticDiagnostic(event)
+}
+
+func (a *App) enqueueAutomaticDiagnostic(event localdiagnostics.Event) {
+	if a.store == nil || a.store.Settings().AutomaticDiagnostics != "enabled" {
+		return
+	}
+	a.diagnosticMu.Lock()
+	defer a.diagnosticMu.Unlock()
+	if a.diagnosticOutbox == nil || a.diagnosticOutbox.Enqueue(event) != nil {
+		return
+	}
+	if a.diagnosticUploadWake != nil {
+		select {
+		case a.diagnosticUploadWake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (a *App) configureAutomaticDiagnostics(preference string) {
+	a.diagnosticMu.Lock()
+	defer a.diagnosticMu.Unlock()
+	if a.diagnosticUploadCancel != nil {
+		a.diagnosticUploadCancel()
+		a.diagnosticUploadCancel = nil
+		a.diagnosticUploadWake = nil
+	}
+	if preference != "enabled" {
+		if a.diagnosticOutbox != nil {
+			_ = a.diagnosticOutbox.Clear()
+		}
+		return
+	}
+	if a.diagnosticOutbox == nil || diagnosticsEventsEndpoint == "" {
+		return
+	}
+	uploader, err := newDiagnosticUploader(a.diagnosticOutbox, diagnosticsEventsEndpoint, &http.Client{})
+	if err != nil {
+		return
+	}
+	uploadCtx, cancel := context.WithCancel(context.Background())
+	wake := make(chan struct{}, 1)
+	a.diagnosticUploadCancel = cancel
+	a.diagnosticUploadWake = wake
+	go func() {
+		// Wails startup must return and the application must become responsive
+		// before any best-effort network work begins.
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case <-uploadCtx.Done():
+			return
+		case <-timer.C:
+		}
+		uploader.Run(uploadCtx, wake)
+	}()
+}
+
+func (a *App) stopDiagnosticUploader() {
+	a.diagnosticMu.Lock()
+	defer a.diagnosticMu.Unlock()
+	if a.diagnosticUploadCancel != nil {
+		a.diagnosticUploadCancel()
+		a.diagnosticUploadCancel = nil
+		a.diagnosticUploadWake = nil
 	}
 }
 
