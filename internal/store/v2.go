@@ -21,6 +21,9 @@ import (
 type StartupMode string
 
 const (
+	// StartupStarting is returned while Wails has not yet invoked App.startup.
+	// It is not a persistence result and must not be rendered as recovery.
+	StartupStarting         StartupMode = "starting"
 	StartupHealthy          StartupMode = "healthy"
 	StartupRecoveryRequired StartupMode = "recovery-required"
 )

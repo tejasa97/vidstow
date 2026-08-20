@@ -106,7 +106,7 @@ func TestStartupRecoveryRequiredFailsClosedWithoutRuntimeFallback(t *testing.T) 
 	}
 }
 
-func TestGetStartupStatusWaitsForTerminalStartupResult(t *testing.T) {
+func TestGetStartupStatusReturnsStartingUntilStartupCompletes(t *testing.T) {
 	restore := installAppTestSeams(t)
 	defer restore()
 
@@ -120,35 +120,27 @@ func TestGetStartupStatusWaitsForTerminalStartupResult(t *testing.T) {
 	}
 
 	app := NewApp()
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	if got := app.GetStartupStatus(); got.Mode != store.StartupStarting {
+		t.Fatalf("initial startup status = %#v, want starting", got)
+	}
 	startupReturned := make(chan struct{})
 	go func() {
-		app.startupAt(context.Background(), statePath)
+		app.startupAt(context.Background(), filepath.Join(t.TempDir(), "state.json"))
 		close(startupReturned)
 	}()
 	<-entered
-
-	gotStatus := make(chan store.StartupStatus, 1)
-	go func() { gotStatus <- app.GetStartupStatus() }()
-	select {
-	case got := <-gotStatus:
-		t.Fatalf("GetStartupStatus returned placeholder before startup completed: %#v", got)
-	case <-time.After(100 * time.Millisecond):
+	if got := app.GetStartupStatus(); got.Mode != store.StartupStarting {
+		t.Fatalf("in-flight startup status = %#v, want starting", got)
 	}
 
 	close(release)
 	select {
-	case got := <-gotStatus:
-		if got != want {
-			t.Fatalf("startup status = %#v, want %#v", got, want)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("GetStartupStatus remained blocked after startup completed")
-	}
-	select {
 	case <-startupReturned:
 	case <-time.After(time.Second):
 		t.Fatal("startupAt did not return")
+	}
+	if got := app.GetStartupStatus(); got != want {
+		t.Fatalf("startup status = %#v, want %#v", got, want)
 	}
 }
 

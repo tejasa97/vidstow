@@ -52,8 +52,8 @@
     ].filter(Boolean) as Array<() => void>;
 
     try {
-      startupStatus = await api.app.startupStatus();
-      if (startupStatus?.mode === 'recovery-required') {
+      startupStatus = await waitForStartupStatus();
+      if (startupStatus.mode === 'recovery-required') {
         recoveryModel = {
           ...DEFAULT_RECOVERY_REQUIRED,
           stateFileStatus: startupStatus.reason ? `State v2: ${startupStatus.reason}` : DEFAULT_RECOVERY_REQUIRED.stateFileStatus,
@@ -98,6 +98,16 @@
   // fixed frontend_unhandled category and applies the session caps.
   function reportFrontendFailure(): void {
     void api.diagnostics.frontendFailure().catch(() => {});
+  }
+
+  async function waitForStartupStatus(): Promise<StartupStatus> {
+    // Wails can bind frontend calls before dispatching App.startup. Polling the
+    // explicit non-terminal status leaves that callback free to run.
+    for (;;) {
+      const status = await api.app.startupStatus();
+      if (status.mode !== 'starting') return status;
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
   }
 
   function updateJobInList(updated: JobSnapshot) {
