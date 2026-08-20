@@ -146,13 +146,14 @@ application and engine versions and by artifact-specific validation.
 | Package | [`v0.1.0-beta.4`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.4) installs on Apple Silicon through the [`vidstow/tap`](https://github.com/vidstow/homebrew-tap) Homebrew cask |
 | Source | Apache-2.0 source and self-build instructions |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
-| Engine | `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.3` |
+| Engine | [ytdlp-go](https://github.com/tejasa97/ytdlp-go); `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.3` |
 | Resume | Session reuse is evidence-dependent; no universal transfer continuation or guaranteed byte reuse |
 | Updates | Manual downloads from GitHub Releases |
 
-The underlying [`youtube_dlp`](https://github.com/tejasa97/youtube_dlp)
+The underlying [`ytdlp-go`](https://github.com/tejasa97/ytdlp-go)
 project has broader extractor and CLI capabilities. VidStow supports only the
-workflow documented here and exposed by its desktop UI.
+workflow documented here and exposed by its desktop UI. The Go module path
+remains `github.com/tejasa97/youtube_dlp`.
 
 ## Prerequisites
 
@@ -202,7 +203,7 @@ flowchart LR
     Bridge --> Manager["Queue manager"]
     Admission --> State["State v2 store"]
     Manager --> State
-    Manager --> Engine["youtube_dlp engine"]
+    Manager --> Engine["ytdlp-go engine"]
     Engine --> Session["Engine session workspace"]
     Engine --> FFmpeg["FFmpeg / FFprobe"]
     Session --> Output["Reserved output"]
@@ -284,7 +285,7 @@ VidStow does not support:
 - treating cleanup, publication, or recovery as successful when evidence is
   uncertain;
 - automatic updates or packages outside macOS Apple Silicon; or
-- feature parity with yt-dlp or the broader `youtube_dlp` CLI.
+- feature parity with yt-dlp or the broader `ytdlp-go` CLI.
 
 ## Responsible use
 
