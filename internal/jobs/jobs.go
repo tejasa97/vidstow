@@ -4831,6 +4831,11 @@ func (m *Manager) cachePlans(videoID string, plans []outputplan.Plan) {
 	m.planCache[videoID] = cachedPlans{plans: plans, expiresAt: time.Now().Add(30 * time.Minute)}
 }
 
+// CachePlans stores analyzed output plans so ResolvePlan can run without a live extraction.
+func (m *Manager) CachePlans(videoID string, plans []outputplan.Plan) {
+	m.cachePlans(videoID, plans)
+}
+
 // ResolvePlan resolves a UI-visible plan ID to the private engine selector
 // created by the most recent analysis of that video.
 func (m *Manager) ResolvePlan(videoID, planID string) (outputplan.Plan, error) {
