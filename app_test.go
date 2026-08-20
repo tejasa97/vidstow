@@ -106,6 +106,94 @@ func TestStartupRecoveryRequiredFailsClosedWithoutRuntimeFallback(t *testing.T) 
 	}
 }
 
+func TestGetStartupStatusWaitsForTerminalStartupResult(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	want := store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryUnsupportedVersion}
+	openStateV2 = func(string) (*store.V2Store, store.StartupStatus, error) {
+		close(entered)
+		<-release
+		return nil, want, nil
+	}
+
+	app := NewApp()
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	startupReturned := make(chan struct{})
+	go func() {
+		app.startupAt(context.Background(), statePath)
+		close(startupReturned)
+	}()
+	<-entered
+
+	gotStatus := make(chan store.StartupStatus, 1)
+	go func() { gotStatus <- app.GetStartupStatus() }()
+	select {
+	case got := <-gotStatus:
+		t.Fatalf("GetStartupStatus returned placeholder before startup completed: %#v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case got := <-gotStatus:
+		if got != want {
+			t.Fatalf("startup status = %#v, want %#v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GetStartupStatus remained blocked after startup completed")
+	}
+	select {
+	case <-startupReturned:
+	case <-time.After(time.Second):
+		t.Fatal("startupAt did not return")
+	}
+}
+
+func TestStartupPathFailureSignalsTerminalStatus(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	oldDefaultStatePath := defaultStatePath
+	defer func() { defaultStatePath = oldDefaultStatePath }()
+	defaultStatePath = func() (string, error) { return "", errors.New("path unavailable") }
+
+	app := NewApp()
+	app.startup(context.Background())
+	want := store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryUnsafePermissions}
+	if got := app.GetStartupStatus(); got != want {
+		t.Fatalf("startup status = %#v, want %#v", got, want)
+	}
+}
+
+func TestPrepareStartupRootsIgnoresTerminalJobWorkspaceIdentity(t *testing.T) {
+	root := secureAppTempDir(t)
+	state := jobmodel.State{
+		Settings: jobmodel.Settings{DownloadFolder: root},
+		Jobs: []jobmodel.DurableJob{{
+			Lifecycle: jobmodel.LifecycleCompleted,
+			OutputRoot: jobmodel.OutputRootRef{
+				CanonicalPath: root,
+				Identity:      "stale-after-publication",
+			},
+		}},
+	}
+	for _, lifecycle := range []jobmodel.Lifecycle{jobmodel.LifecycleCompleted, jobmodel.LifecycleFailed, jobmodel.LifecycleCanceled} {
+		state.Jobs[0].Lifecycle = lifecycle
+		if err := prepareStartupRoots(state); err != nil {
+			t.Fatalf("%s workspace blocked startup: %v", lifecycle, err)
+		}
+	}
+
+	for _, lifecycle := range []jobmodel.Lifecycle{jobmodel.LifecyclePaused, jobmodel.LifecycleActionRequired} {
+		state.Jobs[0].Lifecycle = lifecycle
+		if err := prepareStartupRoots(state); err == nil {
+			t.Fatalf("%s workspace identity mismatch did not fail closed", lifecycle)
+		}
+	}
+}
+
 func TestStartupDurabilityWarningRecordsIndeterminateState(t *testing.T) {
 	restore := installAppTestSeams(t)
 	defer restore()

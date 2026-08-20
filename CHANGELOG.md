@@ -23,7 +23,9 @@ does not exist yet.
 
 ### Fixed
 
-- No entries yet.
+- Startup waits for the saved queue check instead of briefly reporting recovery,
+  ignores stale workspace identities for terminal jobs, and clears a leftover
+  recovery marker only when the committed state is provably intact.
 
 ## [0.1.0-beta.4] - 2026-08-18
 

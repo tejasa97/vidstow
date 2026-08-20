@@ -64,6 +64,8 @@ type App struct {
 	coordinator            *admission.Coordinator
 	statePath              string
 	startupStatus          store.StartupStatus
+	startupDone            chan struct{}
+	startupDoneOnce        sync.Once
 	diagnostics            *localdiagnostics.Recorder
 	diagnosticOutbox       *localdiagnostics.Outbox
 	diagnosticSession      string
@@ -91,7 +93,10 @@ type App struct {
 // NewApp constructs the App. The Wails bind() call wires every public
 // method to the JS side.
 func NewApp() *App {
-	return &App{startupStatus: store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryCorruptState}}
+	return &App{
+		startupStatus: store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryCorruptState},
+		startupDone:   make(chan struct{}),
+	}
 }
 
 // startup is called once by Wails after the window is ready.
@@ -102,12 +107,14 @@ func (a *App) startup(ctx context.Context) {
 	if err != nil {
 		a.setStartupStatus(store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryUnsafePermissions})
 		logAppErrorf(ctx, "desktop: store path: %v", err)
+		a.finishStartup()
 		return
 	}
 	a.startupAt(ctx, statePath)
 }
 
 func (a *App) startupAt(ctx context.Context, statePath string) {
+	defer a.finishStartup()
 	a.ctx = ctx
 	a.statePath = statePath
 	st, status, openErr := openStateV2(statePath)
@@ -460,10 +467,15 @@ func (a *App) GetPersistenceStatus() jobs.PersistenceStatus {
 	return a.jobs.PersistenceStatus()
 }
 
-// GetStartupStatus is the first app contract the frontend should read. A
+// GetStartupStatus is the first app contract the frontend should read. It
+// waits for Wails' asynchronous startup callback so the constructor's
+// fail-closed placeholder can never be mistaken for a terminal result. A
 // recovery-required result is authoritative and never accompanied by an
 // ephemeral queue manager.
-func (a *App) GetStartupStatus() store.StartupStatus { return a.startupStatusSnapshot() }
+func (a *App) GetStartupStatus() store.StartupStatus {
+	<-a.startupDone
+	return a.startupStatusSnapshot()
+}
 
 // ProbeFFmpeg re-runs detection and broadcasts the result.
 func (a *App) ProbeFFmpeg() ffmpegdetect.Status {
@@ -1316,6 +1328,10 @@ func (a *App) setStartupStatus(status store.StartupStatus) {
 	a.mu.Unlock()
 }
 
+func (a *App) finishStartup() {
+	a.startupDoneOnce.Do(func() { close(a.startupDone) })
+}
+
 func (a *App) startupStatusSnapshot() store.StartupStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1357,6 +1373,12 @@ func prepareStartupRoots(state jobmodel.State) error {
 		stateKeyRoot(settingsRoot, ""): {CanonicalPath: settingsRoot},
 	}
 	for _, job := range state.Jobs {
+		// Recovery deliberately does not inspect terminal job workspaces: they
+		// may have been moved, deleted, or recreated after publication. Cleanup
+		// authority, when any remains, is represented by a tombstone below.
+		if job.Lifecycle == jobmodel.LifecycleCanceled || job.Lifecycle == jobmodel.LifecycleCompleted || job.Lifecycle == jobmodel.LifecycleFailed {
+			continue
+		}
 		if job.OutputRoot.CanonicalPath != "" {
 			refs[stateKeyRoot(job.OutputRoot.CanonicalPath, job.OutputRoot.Identity)] = job.OutputRoot
 		}

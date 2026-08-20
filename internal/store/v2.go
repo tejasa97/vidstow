@@ -149,16 +149,49 @@ func OpenV2(path string) (store *V2Store, status StartupStatus, returnErr error)
 			returnErr = nil
 		}
 	}()
-	if _, exists, markerErr := readRecoveryMarker(s.markerPath); markerErr != nil || exists {
-		if markerErr != nil && errors.Is(markerErr, errUnsafePermissions) {
+	var state decodedState
+	stateLoaded := false
+	marker, markerExists, markerErr := readRecoveryMarker(s.markerPath)
+	if markerErr != nil {
+		if errors.Is(markerErr, errUnsafePermissions) {
 			return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryUnsafePermissions}, nil
 		}
 		return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryIndeterminate}, nil
 	}
+	if markerExists {
+		// A marker can survive a process exit after the target replacement has
+		// committed but before marker cleanup. Only clear that evidence when the
+		// current target itself proves the exact marked revision is authoritative.
+		// Candidate promotion and cleanup remain deliberately out of scope.
+		if marker.TargetPath != path {
+			return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryIndeterminate}, nil
+		}
+		markedState, missing, readErr := readStateV2(path)
+		if readErr != nil {
+			if errors.Is(readErr, errUnsafePermissions) {
+				return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryUnsafePermissions}, nil
+			}
+			return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryIndeterminate}, nil
+		}
+		if missing || markedState.Version != jobmodel.StateVersion || markedState.StoreRevision != marker.StoreRevision || validateState(markedState.State) != nil {
+			return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryIndeterminate}, nil
+		}
+		if err := removeRecoveryMarker(s.markerPath); err != nil {
+			if errors.Is(err, errUnsafePermissions) {
+				return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryUnsafePermissions}, nil
+			}
+			return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryIndeterminate}, nil
+		}
+		state = markedState
+		stateLoaded = true
+	}
 
-	state, missing, err := readStateV2(path)
-	if err != nil {
-		return nil, recoveryStatus(err), nil
+	var missing bool
+	if !stateLoaded {
+		state, missing, err = readStateV2(path)
+		if err != nil {
+			return nil, recoveryStatus(err), nil
+		}
 	}
 	if missing {
 		state = decodedState{State: defaultStateV2()}
