@@ -66,6 +66,18 @@
   }
 
   const fallbackThumbnail = (videoId: string) => (videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '');
+  const batchReviewSummary = (review: BatchAnalysisView) => {
+    const { pasted, ready, duplicate, invalid, analysisFailed } = review.counts;
+    if (ready === pasted && duplicate === 0 && invalid === 0 && analysisFailed === 0) {
+      return `${ready} ${ready === 1 ? 'video' : 'videos'} ready to download`;
+    }
+    return [
+      ready ? `${ready} ready` : '',
+      duplicate ? `${duplicate} duplicate` : '',
+      invalid ? `${invalid} invalid` : '',
+      analysisFailed ? `${analysisFailed} could not be analyzed` : '',
+    ].filter(Boolean).join(' · ');
+  };
   const hideBrokenImage = (event: Event) => {
     (event.currentTarget as HTMLImageElement).style.display = 'none';
   };
@@ -401,26 +413,25 @@
         <header class="batch-review-header">
           <div>
             <h2 id="batch-review-title">Review URLs</h2>
-            <p aria-live="polite">
-              {batchReview.counts.ready} ready · {batchReview.counts.duplicate} duplicate · {batchReview.counts.invalid} invalid{batchReview.counts.analysisFailed ? ` · ${batchReview.counts.analysisFailed} could not be analyzed` : ''}
-            </p>
+            <p aria-live="polite">{batchReviewSummary(batchReview)}</p>
             {#if !batchTokenValid}<p class="batch-expired" role="alert">This review expired. Edit the lines and review them again.</p>{/if}
           </div>
           <button type="button" class="app-btn" on:click={editBatchLines} disabled={batchBusy}>Edit lines</button>
         </header>
 
-        <div class="batch-counts" aria-label="Batch review counts">
-          <strong>{batchReview.counts.pasted} pasted</strong>
-          <span>{batchReview.counts.ready} ready</span>
-          <span>{batchReview.counts.duplicate} duplicate</span>
-          <span>{batchReview.counts.invalid} invalid</span>
-          {#if batchReview.counts.analysisFailed}<span>{batchReview.counts.analysisFailed} analysis failed</span>{/if}
-        </div>
-
         <div class="batch-lines" role="list" aria-label="Reviewed batch URLs">
           {#each batchReview.items as item (item.lineNumber)}
             <article class="batch-line" data-status={item.status} role="listitem">
               <span class="batch-line-number" aria-label={`Line ${item.lineNumber}`}>{item.lineNumber}</span>
+              <div class="batch-thumbnail" aria-hidden="true">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+                  <path d="m10 9 5 3-5 3Z"></path>
+                </svg>
+                {#if item.status === 'ready' && item.thumbnail}
+                  <img src={item.thumbnail} alt="" referrerpolicy="no-referrer" on:error={hideBrokenImage} />
+                {/if}
+              </div>
               <div class="batch-line-copy">
                 <strong title={item.title || item.input}>{item.title || item.input}</strong>
                 <span title={item.input}>{item.input}</span>
@@ -725,19 +736,10 @@
   .batch-review-header { padding: var(--sp-4); }
   .batch-review-header h2 { margin: 0 0 3px; font-size: var(--fs-lg); }
   .batch-review-header .batch-expired { margin-top: var(--sp-2); color: var(--status-danger); }
-  .batch-counts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0;
-    border-top: 1px solid var(--border-subtle);
-    border-bottom: 1px solid var(--border-subtle);
-    background: var(--surface-sunken);
-  }
-  .batch-counts > * { padding: var(--sp-3) var(--sp-4); border-right: 1px solid var(--border-subtle); font-size: var(--fs-sm); }
-  .batch-lines { display: flex; min-height: 0; flex-direction: column; }
+  .batch-lines { display: flex; min-height: 0; flex-direction: column; border-top: 1px solid var(--border-subtle); }
   .batch-line {
     display: grid;
-    grid-template-columns: 34px minmax(0, 1fr) minmax(150px, 230px);
+    grid-template-columns: 34px 112px minmax(0, 1fr) minmax(150px, 230px);
     align-items: center;
     gap: var(--sp-3);
     padding: var(--sp-3) var(--sp-4);
@@ -745,6 +747,20 @@
     background: var(--surface-base);
   }
   .batch-line-number { color: var(--text-muted); font-variant-numeric: tabular-nums; text-align: center; }
+  .batch-thumbnail {
+    width: 112px;
+    aspect-ratio: 16 / 9;
+    position: relative;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border-radius: var(--r-sm);
+    background: var(--surface-sunken);
+    color: var(--text-muted);
+  }
+  .batch-thumbnail img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .batch-thumbnail svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+  .batch-thumbnail svg path { fill: currentColor; stroke: none; }
   .batch-line-copy,
   .batch-line-state { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
   .batch-line-copy strong,
@@ -1120,8 +1136,9 @@
     .batch-composer-footer .app-btn,
     .batch-review-header .app-btn,
     .batch-save-bar .app-btn { width: 100%; }
-    .batch-line { grid-template-columns: 28px minmax(0, 1fr); }
-    .batch-line-state { grid-column: 2; align-items: flex-start; text-align: left; }
+    .batch-line { grid-template-columns: 28px 72px minmax(0, 1fr); }
+    .batch-thumbnail { width: 72px; }
+    .batch-line-state { grid-column: 3; align-items: flex-start; text-align: left; }
     .save-bar { grid-template-columns: 1fr auto; }
     .destination { grid-column: 1 / -1; }
     .queue { grid-column: 1 / -1; }

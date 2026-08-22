@@ -76,8 +76,10 @@ The Batch URLs mode has four UI states:
    - Show bounded progress without presenting unverified lines as valid.
 3. **Review**
    - Remain on Home; do not render Queue jobs or Queue navigation state in this view.
-   - Show counts for pasted, ready, duplicate, invalid, and analysis-failed lines.
+   - Show one compact outcome summary beneath **Review URLs**. When every line is ready, use copy such as `2 videos ready to download`; for mixed results, show only non-zero ready, duplicate, invalid, and analysis-failed counts.
+   - Do not repeat those values in a second summary strip; the primary action retains the admitted count because it confirms the action's scope.
    - Show every original non-empty line in input order with a status and safe explanation.
+   - Show a 16:9 thumbnail for every successfully analyzed video, with a deterministic YouTube thumbnail fallback and a neutral placeholder when an image is unavailable. Keep non-ready rows aligned using the same placeholder slot.
    - For a duplicate, identify the first matching line, for example `Duplicate of line 1`.
    - Provide **Edit lines** to return to input and invalidate the current review/token.
    - Show one format selector and the current default output folder with **Change…**.
@@ -91,16 +93,14 @@ The Batch URLs mode has four UI states:
 Approved review structure:
 
 ```text
-Batch URLs
+Review URLs
 3 ready · 1 duplicate · 1 invalid
 
-[5 pasted] [3 ready] [1 duplicate] [1 invalid]
-
-1  youtube.com/...       Ready
-2  youtu.be/...          Duplicate of line 1
-3  youtube.com/...       Ready
-4  example.com/...       Invalid URL
-5  youtube.com/...       Ready
+1  [thumbnail]  youtube.com/...       Ready
+2  [placeholder] youtu.be/...         Duplicate of line 1
+3  [thumbnail]  youtube.com/...       Ready
+4  [placeholder] example.com/...      Invalid URL
+5  [thumbnail]  youtube.com/...       Ready
 
 Format       [Video | Audio]
 Save to      /Users/...                 [Change…]
@@ -458,6 +458,7 @@ Keep this section current throughout implementation.
 - 2026-08-22: Reviewed and merged startup recovery PR #76, then rebased this branch onto the resulting `origin/main` merge commit `43c7d24`.
 - 2026-08-22: Manually tested a mixed five-line batch in the production macOS app: two ready videos, one canonical duplicate, one invalid host, and one safe analysis failure. Started both ready downloads, verified the expanded durable parent and stable child order, completed both files, restarted the app, and verified the restored `2 of 2 complete` collection.
 - 2026-08-22: Manual review exposed stale speed/ETA text on a completed child. Updated the backend queue projection to clear live transfer telemetry for completed rows and added a regression test.
+- 2026-08-22: Product review identified redundant review counts and missing analyzed-video artwork. Removed the duplicate count strip, made the remaining summary conditional and outcome-focused, added aligned 16:9 thumbnails/placeholders, and added a backend YouTube-thumbnail fallback plus regression coverage.
 
 ### Plan changes
 

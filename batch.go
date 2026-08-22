@@ -198,6 +198,10 @@ func analyzeBatchLines(ctx context.Context, analyzer batchChildAnalyzer, parsed 
 				if strings.TrimSpace(summary.Channel) == "" {
 					summary.Channel = "YouTube"
 				}
+				summary.Thumbnail = strings.TrimSpace(summary.Thumbnail)
+				if summary.Thumbnail == "" {
+					summary.Thumbnail = "https://i.ytimg.com/vi/" + candidate.line.VideoID + "/hqdefault.jpg"
+				}
 				results[index].view = BatchAnalysisItemView{
 					LineNumber: candidate.line.LineNumber, Input: candidate.line.Input,
 					Status: BatchStatusReady, MessageKey: "batch.ready", Message: "Ready",

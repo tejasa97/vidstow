@@ -179,7 +179,7 @@ describe('Home analysis authority', () => {
       token: 'batch-token', expiresAt: '2099-08-22T12:00:00Z',
       counts: { pasted: 5, ready: 3, duplicate: 1, invalid: 1, analysisFailed: 0 },
       items: [
-        { lineNumber: 1, input: 'https://youtu.be/fixture0001', status: 'ready', messageKey: 'batch.ready', message: 'Ready', title: 'First' },
+        { lineNumber: 1, input: 'https://youtu.be/fixture0001', status: 'ready', messageKey: 'batch.ready', message: 'Ready', title: 'First', thumbnail: 'https://i.ytimg.com/vi/fixture0001/hqdefault.jpg' },
         { lineNumber: 2, input: 'https://youtu.be/fixture0002', status: 'ready', messageKey: 'batch.ready', message: 'Ready', title: 'Second' },
         { lineNumber: 3, input: 'https://www.youtube.com/watch?v=fixture0001', status: 'duplicate', messageKey: 'batch.duplicate', message: 'Duplicate of line 1', duplicateOfLine: 1 },
         { lineNumber: 4, input: 'not-a-url', status: 'invalid', messageKey: 'batch.invalid_url', message: 'Only YouTube links are supported.' },
@@ -195,6 +195,9 @@ describe('Home analysis authority', () => {
 
     expect(await screen.findByText('Duplicate of line 1')).toBeInTheDocument();
     expect(screen.getByText('Only YouTube links are supported.')).toBeInTheDocument();
+    expect(screen.getByText('3 ready · 1 duplicate · 1 invalid')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Batch review counts')).not.toBeInTheDocument();
+    expect(document.querySelector('.batch-thumbnail img')).toHaveAttribute('src', 'https://i.ytimg.com/vi/fixture0001/hqdefault.jpg');
     const start = screen.getByRole('button', { name: 'Start 3 downloads' });
     expect(start).toBeEnabled();
     await user.click(start);
@@ -218,6 +221,7 @@ describe('Home analysis authority', () => {
     await user.type(input, 'one\ntwo');
     await user.click(screen.getByRole('button', { name: 'Review URLs' }));
     expect(await screen.findByRole('button', { name: 'Start 2 downloads' })).toBeEnabled();
+    expect(screen.getByText('2 videos ready to download')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Edit lines' }));
     expect(screen.queryByRole('button', { name: 'Start 2 downloads' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('YouTube video or Short URLs')).toHaveValue('one\ntwo');

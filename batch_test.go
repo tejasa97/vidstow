@@ -50,6 +50,10 @@ func TestAnalyzeBatchLinesPreservesMixedResults(t *testing.T) {
 	if len(analyzed) != 1 || analyzed[0].videoID != "abcdefghijk" || analyzed[0].lineNumber != 1 {
 		t.Fatalf("analyzed = %+v", analyzed)
 	}
+	wantThumbnail := "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg"
+	if view.Items[0].Thumbnail != wantThumbnail || analyzed[0].summary.Thumbnail != wantThumbnail {
+		t.Fatalf("thumbnail fallback: view=%q cached=%q, want %q", view.Items[0].Thumbnail, analyzed[0].summary.Thumbnail, wantThumbnail)
+	}
 }
 
 type concurrencyBatchAnalyzer struct {
