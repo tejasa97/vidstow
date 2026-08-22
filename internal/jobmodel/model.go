@@ -97,18 +97,26 @@ type JobPrecondition struct {
 	OutputRoot OutputRootRef
 }
 
+type CollectionKind string
+
+const (
+	CollectionKindPlaylist CollectionKind = "playlist"
+	CollectionKindBatch    CollectionKind = "batch"
+)
+
 type DurableCollection struct {
-	ID          string    `json:"id"`
-	Revision    uint64    `json:"revision"`
-	PlaylistID  string    `json:"playlistId"`
-	SourceURL   string    `json:"sourceUrl"`
-	Title       string    `json:"title"`
-	Channel     string    `json:"channel,omitempty"`
-	Thumbnail   string    `json:"thumbnail,omitempty"`
-	Policy      string    `json:"policy"`
-	ChildJobIDs []string  `json:"childJobIds"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID          string         `json:"id"`
+	Revision    uint64         `json:"revision"`
+	Kind        CollectionKind `json:"kind"`
+	PlaylistID  string         `json:"playlistId,omitempty"`
+	SourceURL   string         `json:"sourceUrl,omitempty"`
+	Title       string         `json:"title"`
+	Channel     string         `json:"channel,omitempty"`
+	Thumbnail   string         `json:"thumbnail,omitempty"`
+	Policy      string         `json:"policy"`
+	ChildJobIDs []string       `json:"childJobIds"`
+	CreatedAt   time.Time      `json:"createdAt"`
+	UpdatedAt   time.Time      `json:"updatedAt"`
 }
 
 type DurableJob struct {

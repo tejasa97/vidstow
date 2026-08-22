@@ -82,7 +82,7 @@ describe('backend-authored capabilities', () => {
             capabilities: { pause: true }, commandToken: 'child-token',
           }],
           collections: [{
-            id: 'collection-1', title: 'Fixture playlist', metadata: 'Creator', policy: 'video:1080p',
+            id: 'collection-1', kind: 'playlist', title: 'Fixture playlist', metadata: 'Creator', policy: 'video:1080p',
             childJobIds: ['child-1'], total: 1, completed: 0, failed: 0, canceled: 0,
             active: 0, pending: 1, paused: 0, progress: 0, progressLabel: '0 of 1 complete',
             capabilities: { pause: true }, commandToken: 'collection-token',
@@ -102,6 +102,26 @@ describe('backend-authored capabilities', () => {
     expect(screen.getByRole('button', { name: 'Expand Fixture playlist' })).toHaveAttribute('aria-expanded', 'false');
   });
 
+  test('batch collection parents omit synthetic thumbnails', () => {
+    const { container } = render(QueueOverview, {
+      props: {
+        model: queueModel({
+          jobs: [],
+          collections: [{
+            id: 'batch-1', kind: 'batch', title: 'Batch download · 2 videos', thumbnailUrl: 'https://example.invalid/batch.jpg',
+            policy: 'video:720p', childJobIds: [], total: 2, completed: 0, failed: 0, canceled: 0,
+            active: 2, pending: 0, paused: 0, progress: 0.5, progressLabel: '0 of 2 complete',
+            capabilities: {}, commandToken: 'batch-token',
+          }],
+        }),
+      },
+    });
+
+    expect(screen.getByText('Batch download · 2 videos')).toBeInTheDocument();
+    expect(screen.getByText('video:720p')).toBeInTheDocument();
+    expect(container.querySelector('.parent-row > .thumbnail')).not.toBeInTheDocument();
+  });
+
   test('playlist collection actions fail closed without a valid token', async () => {
     const onCollectionAction = vi.fn();
     const user = userEvent.setup();
@@ -110,7 +130,7 @@ describe('backend-authored capabilities', () => {
         model: queueModel({
           jobs: [],
           collections: [{
-            id: 'collection-1', title: 'Fixture playlist', policy: 'audio:original', childJobIds: [],
+            id: 'collection-1', kind: 'playlist', title: 'Fixture playlist', policy: 'audio:original', childJobIds: [],
             total: 0, completed: 0, failed: 0, canceled: 0, active: 0, pending: 0, paused: 0,
             progress: 0, progressLabel: '0 of 0 complete', capabilities: { remove: true }, commandToken: '',
           }],
@@ -184,6 +204,31 @@ describe('backend-authored capabilities', () => {
     });
     await user.click(screen.getByRole('button', { name: 'Resume download' }));
     expect(onResume.mock.calls[0][0].detail).toEqual({ jobId: 'paused-1', commandToken: 'backend-command-token' });
+  });
+
+  test('failed rows render backend-authored recovery copy and capability-backed start again', async () => {
+    const onStartAgain = vi.fn<(event: CustomEvent<LifecycleJobEventDetail>) => void>();
+    const user = userEvent.setup();
+    render(LifecycleJobRow, {
+      props: {
+        job: {
+          id: 'disk-1', title: 'Interrupted video', lifecycle: 'failed', occupiesSlot: false,
+          failure: {
+            category: 'disk_full', messageKey: 'queue.failure.disk_full', heading: 'Not enough disk space',
+            message: 'VidStow could not finish writing this download.',
+            recommendedAction: 'Free space or change the default folder, then start this item again.',
+            retryable: false, partialOutput: true,
+          },
+          capabilities: { startAgain: true, remove: true }, commandToken: 'disk-command-token',
+        },
+      },
+      events: { 'start-again': onStartAgain },
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Not enough disk space');
+    expect(screen.getByRole('alert')).toHaveTextContent('Free space or change the default folder');
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Start again' }));
+    expect(onStartAgain.mock.calls[0][0].detail).toEqual({ jobId: 'disk-1', commandToken: 'disk-command-token' });
   });
 
   test('cleanup-phase terminal rows can expose backend-authorized Review without Remove', async () => {

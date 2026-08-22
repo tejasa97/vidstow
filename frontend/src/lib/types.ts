@@ -166,6 +166,41 @@ export interface AccessSummary {
   label: string;
 }
 
+export type BatchLineStatus = 'ready' | 'duplicate' | 'invalid' | 'analysis_failed';
+
+export interface BatchAnalysisCounts {
+  pasted: number;
+  ready: number;
+  duplicate: number;
+  invalid: number;
+  analysisFailed: number;
+}
+
+export interface BatchAnalysisItem {
+  lineNumber: number;
+  input: string;
+  status: BatchLineStatus;
+  messageKey: string;
+  message: string;
+  duplicateOfLine?: number;
+  title?: string;
+  channel?: string;
+  duration?: string;
+  thumbnail?: string;
+}
+
+export interface BatchAnalysisView {
+  token?: string;
+  expiresAt?: string;
+  counts: BatchAnalysisCounts;
+  items: BatchAnalysisItem[];
+}
+
+export interface BatchStartResult {
+  collectionId: string;
+  admitted: number;
+}
+
 export interface PersistenceStatus {
   available: boolean;
   healthy: boolean;

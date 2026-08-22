@@ -16,11 +16,13 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -226,9 +228,24 @@ type QueueJobCapabilities struct {
 	Resume        bool `json:"resume"`
 	Retry         bool `json:"retry"`
 	DownloadAgain bool `json:"downloadAgain"`
+	StartAgain    bool `json:"startAgain"`
+	OpenSource    bool `json:"openSource"`
+	CopyLink      bool `json:"copyLink"`
 	Review        bool `json:"review"`
 	Open          bool `json:"open"`
 	Remove        bool `json:"remove"`
+}
+
+// QueueFailure is stable, backend-authored failure copy. Retryable explains
+// the category but never grants authority; Capabilities remains authoritative.
+type QueueFailure struct {
+	Category          string `json:"category"`
+	MessageKey        string `json:"messageKey"`
+	Heading           string `json:"heading"`
+	Message           string `json:"message"`
+	RecommendedAction string `json:"recommendedAction"`
+	Retryable         bool   `json:"retryable"`
+	PartialOutput     bool   `json:"partialOutput"`
 }
 
 // QueueRow is the safe frontend projection of a job. Lifecycle, phase,
@@ -250,6 +267,7 @@ type QueueRow struct {
 	SpeedLabel      string                `json:"speedLabel,omitempty"`
 	ETALabel        string                `json:"etaLabel,omitempty"`
 	Message         string                `json:"message,omitempty"`
+	Failure         *QueueFailure         `json:"failure,omitempty"`
 	Capabilities    QueueJobCapabilities  `json:"capabilities"`
 	CommandToken    string                `json:"commandToken,omitempty"`
 }
@@ -264,6 +282,7 @@ type QueueCollectionCapabilities struct {
 
 type QueueCollection struct {
 	ID            string                      `json:"id"`
+	Kind          jobmodel.CollectionKind     `json:"kind"`
 	Title         string                      `json:"title"`
 	Metadata      string                      `json:"metadata,omitempty"`
 	ThumbnailURL  string                      `json:"thumbnailUrl,omitempty"`
@@ -1718,6 +1737,10 @@ func (m *Manager) queueViewLocked() QueueView {
 			Progress: snap.Progress, Message: snap.Message,
 			Capabilities: m.queueCapabilitiesLocked(state, snap),
 		}
+		if lifecycle == jobmodel.LifecycleFailed {
+			failure := queueFailureFor(state, snap)
+			row.Failure = &failure
+		}
 		if present, quarantined := m.cleanupStatusLocked(snap.ID); present {
 			switch snap.Status {
 			case StatusCanceled, StatusFailed, StatusComplete:
@@ -1731,12 +1754,17 @@ func (m *Manager) queueViewLocked() QueueView {
 		if row.Capabilities != (QueueJobCapabilities{}) {
 			row.CommandToken = state.commandToken
 		}
-		if snap.Total > 0 {
+		if lifecycle == jobmodel.LifecycleCompleted {
+			row.Progress = 1
+			row.ProgressLabel = "100%"
+		} else if snap.Total > 0 {
 			row.Progress = snap.Progress
 			row.ProgressLabel = fmt.Sprintf("%.0f%%", snap.Progress*100)
 		}
-		row.SpeedLabel = queueSpeedLabel(snap.SpeedBps)
-		row.ETALabel = queueETALabel(snap.ETASeconds)
+		if lifecycle != jobmodel.LifecycleCompleted {
+			row.SpeedLabel = queueSpeedLabel(snap.SpeedBps)
+			row.ETALabel = queueETALabel(snap.ETASeconds)
+		}
 		view.Rows = append(view.Rows, row)
 		view.Summary.TotalJobs++
 		if row.OccupiesSlot {
@@ -1777,9 +1805,20 @@ func (m *Manager) queueCollectionsLocked(rows []QueueRow) []QueueCollection {
 	collections := make([]QueueCollection, 0, len(durable.Collections))
 	liveAuthority := make(map[string]struct{}, len(durable.Collections))
 	for _, parent := range durable.Collections {
+		kind := parent.Kind
+		if kind == "" {
+			kind = jobmodel.CollectionKindPlaylist
+		}
 		collection := QueueCollection{
-			ID: parent.ID, Title: parent.Title, ThumbnailURL: parent.Thumbnail, Policy: parent.Policy,
+			ID: parent.ID, Kind: kind, Title: parent.Title, ThumbnailURL: parent.Thumbnail, Policy: parent.Policy,
 			ChildJobIDs: append([]string(nil), parent.ChildJobIDs...), Total: len(parent.ChildJobIDs),
+		}
+		if kind == jobmodel.CollectionKindBatch {
+			label := "videos"
+			if collection.Total == 1 {
+				label = "video"
+			}
+			collection.Title = fmt.Sprintf("Batch download · %d %s", collection.Total, label)
 		}
 		if parent.Channel != "" {
 			collection.Metadata = parent.Channel
@@ -1867,10 +1906,11 @@ func (m *Manager) refreshQueueAuthorityLocked() {
 		}
 		caps := m.queueCapabilitiesLocked(state, state.snap)
 		cleanupPresent, cleanupQuarantined := m.cleanupStatusLocked(id)
-		sig := fmt.Sprintf("%s|%s|%s|%s|%d|%t|%d|%t%t|%t%t%t%t%t%t%t%t",
+		sig := fmt.Sprintf("%s|%s|%s|%s|%d|%t|%d|%t|%t|%t|%t|%t|%t|%t|%t|%t|%t|%t|%t|%t",
 			state.snap.Status, state.snap.Lifecycle, state.snap.Phase, state.snap.Desired,
 			state.authorityRevision, m.active[id] != nil, positions[id], m.closing, m.closed,
-			caps.Pause, caps.Cancel, caps.Resume, caps.Retry, caps.DownloadAgain, caps.Review, caps.Open, caps.Remove,
+			caps.Pause, caps.Cancel, caps.Resume, caps.Retry, caps.DownloadAgain, caps.StartAgain,
+			caps.OpenSource, caps.CopyLink, caps.Review, caps.Open, caps.Remove,
 		)
 		// Attempt identity and cleanup disposition are authority boundaries even
 		// when the presentation lifecycle happens to be unchanged.
@@ -1981,7 +2021,13 @@ func queueCapabilitiesFor(state *jobState, snap JobSnapshot) QueueJobCapabilitie
 	case StatusPaused:
 		return QueueJobCapabilities{Resume: true, Cancel: true}
 	case StatusFailed:
-		return QueueJobCapabilities{Retry: !retryExhausted(state), Remove: true}
+		failure := queueFailureFor(state, snap)
+		caps := QueueJobCapabilities{Remove: true}
+		caps.Retry = failure.Retryable && !retryExhausted(state)
+		caps.StartAgain = failure.Category == "disk_full" || failure.Category == "permission_denied"
+		caps.OpenSource = snap.URL != "" && (failure.Category == "authentication_required" || failure.Category == "resource_unavailable")
+		caps.CopyLink = caps.OpenSource
+		return caps
 	case StatusCanceled:
 		// A fresh admission must resolve the persisted server-owned plan after
 		// restart. That resolver is not available in this manager yet, so do
@@ -1999,6 +2045,93 @@ func queueCapabilitiesFor(state *jobState, snap JobSnapshot) QueueJobCapabilitie
 	}
 }
 
+func queueFailureFor(state *jobState, snap JobSnapshot) QueueFailure {
+	code := strings.TrimSpace(snap.ErrorReason)
+	partial := snap.Bytes > 0
+	if state != nil && state.fromStateV2 {
+		if state.durable.LastErrorCode != "" {
+			code = state.durable.LastErrorCode
+		}
+		partial = partial || state.durable.LastFailureCommittedBytes > 0
+	}
+	category := failureCategoryForCode(code)
+	failure := QueueFailure{Category: category, PartialOutput: partial}
+	switch category {
+	case "network_interrupted":
+		failure.MessageKey = "queue.failure.network_interrupted"
+		failure.Heading = "Download interrupted"
+		failure.Message = "The connection was interrupted before this download finished."
+		failure.RecommendedAction = "Check your connection, then retry this item."
+		failure.Retryable = true
+	case "authentication_required":
+		failure.MessageKey = "queue.failure.authentication_required"
+		failure.Heading = "Sign-in required"
+		failure.Message = "This video requires an authenticated session, which VidStow does not support in this release."
+		failure.RecommendedAction = "Open the source to confirm access, or remove this item."
+	case "resource_unavailable":
+		failure.MessageKey = "queue.failure.resource_unavailable"
+		failure.Heading = "Video unavailable"
+		failure.Message = "This video may be private, removed, blocked, or otherwise unavailable."
+		failure.RecommendedAction = "Open the source to check it, or remove this item."
+	case "disk_full":
+		failure.MessageKey = "queue.failure.disk_full"
+		failure.Heading = "Not enough disk space"
+		failure.Message = "VidStow could not finish writing this download."
+		failure.RecommendedAction = "Free space or change the default folder, then start this item again."
+	case "permission_denied":
+		failure.MessageKey = "queue.failure.permission_denied"
+		failure.Heading = "Folder is not writable"
+		failure.Message = "VidStow does not have permission to write this download."
+		failure.RecommendedAction = "Fix access or change the default folder, then start this item again."
+	case "security_blocked":
+		failure.MessageKey = "queue.failure.security_blocked"
+		failure.Heading = "Download blocked"
+		failure.Message = "VidStow stopped this download because a security check failed."
+		failure.RecommendedAction = "Remove this item. If the problem persists, copy diagnostics from Settings."
+	case "retry_exhausted":
+		failure.MessageKey = "queue.failure.retry_exhausted"
+		failure.Heading = "Retry limit reached"
+		failure.Message = "VidStow could not make progress after the allowed recovery attempts."
+		failure.RecommendedAction = "Remove this item and analyze the source again from Home."
+	default:
+		failure.MessageKey = "queue.failure.internal"
+		failure.Heading = "Download failed"
+		failure.Message = "VidStow could not complete this download."
+		failure.RecommendedAction = "Retry this item. If it fails again, copy diagnostics from Settings."
+		failure.Retryable = true
+	}
+	if failure.Retryable && state != nil && retryExhausted(state) {
+		failure.Category = "retry_exhausted"
+		failure.MessageKey = "queue.failure.retry_exhausted"
+		failure.Heading = "Retry limit reached"
+		failure.Message = "VidStow could not make progress after the allowed recovery attempts."
+		failure.RecommendedAction = "Remove this item and analyze the source again from Home."
+		failure.Retryable = false
+	}
+	return failure
+}
+
+func failureCategoryForCode(code string) string {
+	switch strings.TrimSpace(code) {
+	case "network", retryCodeMediaLinkExpired, retryCodeYouTubeChallengePreTransfer:
+		return "network_interrupted"
+	case "authentication":
+		return "authentication_required"
+	case "unsupported", "invalid_input":
+		return "resource_unavailable"
+	case "disk_full":
+		return "disk_full"
+	case "permission_denied":
+		return "permission_denied"
+	case "security":
+		return "security_blocked"
+	case retryCodeFreshDownloadRequired:
+		return "retry_exhausted"
+	default:
+		return "internal"
+	}
+}
+
 func (m *Manager) queueCapabilitiesLocked(state *jobState, snap JobSnapshot) QueueJobCapabilities {
 	if m.persistStatus.Available && !m.persistStatus.Healthy || !m.persistStatus.Available && m.stateStore != nil {
 		return QueueJobCapabilities{}
@@ -2010,6 +2143,7 @@ func (m *Manager) queueCapabilitiesLocked(state *jobState, snap JobSnapshot) Que
 		// only be removed after the durable tombstones have settled. Terminal
 		// rows expose Review so a quarantined cleanup can be retried explicitly.
 		capabilities.Remove = false
+		capabilities.StartAgain = false
 		switch snap.Status {
 		case StatusCanceled, StatusFailed, StatusComplete:
 			capabilities.Review = true
@@ -2067,6 +2201,72 @@ func (m *Manager) QueueRetry(id, token string) error {
 	}
 	return m.Retry(id)
 }
+
+// QueueStartAgainURL removes an eligible failed row and its durable
+// reservation before releasing the source URL for normal Home analysis. A
+// replacement is therefore always a new standalone logical job.
+func (m *Manager) QueueStartAgainURL(id, token string) (string, error) {
+	m.mu.Lock()
+	m.refreshQueueAuthorityLocked()
+	state := m.all[id]
+	if state == nil || token == "" || token != state.commandToken || !m.queueCapabilitiesLocked(state, state.snap).StartAgain {
+		m.mu.Unlock()
+		return "", errors.New("jobs: start again is no longer available")
+	}
+	state.commanding = true
+	url := strings.TrimSpace(state.snap.URL)
+	m.mu.Unlock()
+
+	if url == "" {
+		m.mu.Lock()
+		state.commanding = false
+		m.emitQueueLocked()
+		m.mu.Unlock()
+		return "", errors.New("jobs: source URL is unavailable")
+	}
+	if err := m.removeDurable(state); err != nil {
+		m.mu.Lock()
+		if m.all[id] == state {
+			state.commanding = false
+			m.emitQueueLocked()
+		}
+		m.mu.Unlock()
+		return "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.all[id] != state {
+		return "", errors.New("jobs: failed row changed before it could be removed")
+	}
+	delete(m.all, id)
+	m.removeFromOrderLocked(id)
+	m.emitQueueLocked()
+	return url, nil
+}
+
+func (m *Manager) QueueOpenSourceURL(id, token string) (string, error) {
+	return m.queueSourceURL(id, token, func(c QueueJobCapabilities) bool { return c.OpenSource })
+}
+
+func (m *Manager) QueueCopySourceURL(id, token string) (string, error) {
+	return m.queueSourceURL(id, token, func(c QueueJobCapabilities) bool { return c.CopyLink })
+}
+
+func (m *Manager) queueSourceURL(id, token string, allowed func(QueueJobCapabilities) bool) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshQueueAuthorityLocked()
+	state := m.all[id]
+	if state == nil || token == "" || token != state.commandToken || !allowed(m.queueCapabilitiesLocked(state, state.snap)) {
+		return "", errors.New("jobs: queue action is no longer available")
+	}
+	url := strings.TrimSpace(state.snap.URL)
+	if url == "" {
+		return "", errors.New("jobs: source URL is unavailable")
+	}
+	return url, nil
+}
+
 func (m *Manager) QueueRemove(id, token string) error {
 	if _, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Remove }); err != nil {
 		return err
@@ -4318,6 +4518,12 @@ func humanError(err error) string {
 	if err == nil {
 		return "Failed"
 	}
+	switch {
+	case errors.Is(err, syscall.ENOSPC):
+		return "Not enough disk space"
+	case errors.Is(err, os.ErrPermission):
+		return "The download folder is not writable"
+	}
 	var typed *engine.Error
 	if errors.As(err, &typed) {
 		switch typed.Category {
@@ -4389,6 +4595,12 @@ func errorReason(err error) string {
 	}
 	if isExpiredMediaLinkError(err) {
 		return retryCodeMediaLinkExpired
+	}
+	switch {
+	case errors.Is(err, syscall.ENOSPC):
+		return "disk_full"
+	case errors.Is(err, os.ErrPermission):
+		return "permission_denied"
 	}
 	var typed *engine.Error
 	if errors.As(err, &typed) {

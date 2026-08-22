@@ -53,6 +53,7 @@ var (
 	newDiagnosticUploader = localdiagnostics.NewUploader
 	newDiagnosticID       = localdiagnostics.NewUUID
 	clipboardSetText      = wailsruntime.ClipboardSetText
+	browserOpenURL        = wailsruntime.BrowserOpenURL
 )
 
 // App is the Wails-bound root. Every exported method is reachable from
@@ -83,6 +84,8 @@ type App struct {
 	lastFFmpeg             ffmpegdetect.Status
 	quitMu                 sync.Mutex
 	playlistMu             sync.Mutex
+	batchMu                sync.Mutex
+	batchPlans             map[string]*cachedBatchAnalysis
 	quitPermit             bool
 	quitRequestOpen        bool
 	quitDeadline           time.Time
@@ -725,6 +728,47 @@ func (a *App) RetryQueueJob(id, token string) error {
 		return err
 	}
 	return a.jobs.QueueRetry(id, token)
+}
+
+func (a *App) StartAgainQueueJob(id, token string) (string, error) {
+	if err := a.requireReady(); err != nil {
+		return "", err
+	}
+	return a.jobs.QueueStartAgainURL(id, token)
+}
+
+func (a *App) OpenQueueJobSource(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	raw, err := a.jobs.QueueOpenSourceURL(id, token)
+	if err != nil {
+		return err
+	}
+	accepted, err := urlcheck.Validate(raw)
+	if err != nil || accepted.VideoURL == "" {
+		return errors.New("The source link is no longer available.")
+	}
+	browserOpenURL(a.ctx, accepted.VideoURL)
+	return nil
+}
+
+func (a *App) CopyQueueJobSource(id, token string) error {
+	if err := a.requireReady(); err != nil {
+		return err
+	}
+	raw, err := a.jobs.QueueCopySourceURL(id, token)
+	if err != nil {
+		return err
+	}
+	accepted, err := urlcheck.Validate(raw)
+	if err != nil || accepted.VideoURL == "" {
+		return errors.New("The source link is no longer available.")
+	}
+	if err := clipboardSetText(a.ctx, accepted.VideoURL); err != nil {
+		return errors.New("Could not copy the source link.")
+	}
+	return nil
 }
 
 func (a *App) RemoveQueueJob(id, token string) error {

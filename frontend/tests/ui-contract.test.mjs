@@ -21,7 +21,11 @@ test('page titles and controls match the approved redesign', async () => {
     read('../src/pages/Home.svelte'), read('../src/pages/Queue.svelte'),
     read('../src/pages/Downloads.svelte'), read('../src/pages/Settings.svelte'),
   ]);
-  assert.match(home, /<h1 id="home-title">Download from YouTube<\/h1>/);
+  assert.match(home, /inputMode === 'batch' \? 'Batch URLs' : 'Download from YouTube'/);
+  assert.match(home, />Single URL<\/button>/);
+  assert.match(home, />Batch URLs<\/button>/);
+  assert.match(home, /Start \$\{batchReadyCount\} downloads/);
+  assert.match(home, /<small>\{item\.message\}<\/small>/);
   assert.match(home, /Paste a public YouTube video, Short, or playlist URL to analyze it and choose your download\./);
   assert.match(home, /This link includes a playlist/);
   assert.match(home, /Review the playlist instead/);
@@ -37,8 +41,8 @@ test('page titles and controls match the approved redesign', async () => {
   assert.match(queue, /<QueueOverview/);
   assert.match(queue, /api\.queue\.pauseAll/);
   assert.match(queue, /api\.queue\.clearCompleted/);
-  assert.match(queue, /Cancel this playlist\?/);
-  assert.match(queue, /Remove this playlist from the queue\?/);
+  assert.match(queue, /collectionLabel = collection\?\.kind === 'batch' \? 'batch' : 'playlist'/);
+  assert.match(queue, /Completed files remain on disk\./);
   assert.match(queue, /Jobs are saved automatically\./);
   assert.match(downloads, /View your recently downloaded items\./);
   assert.match(downloads, /placeholder="Search downloads…"/);

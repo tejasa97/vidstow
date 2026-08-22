@@ -634,6 +634,33 @@ func TestQueueWideAuthorizationRefreshesUnseenCapabilityChanges(t *testing.T) {
 	}
 }
 
+func TestCompletedQueueRowClearsLiveTransferTelemetry(t *testing.T) {
+	m := New(nil, nil)
+	defer m.Close()
+	m.mu.Lock()
+	m.all = map[string]*jobState{
+		"job": {snap: JobSnapshot{
+			ID: "job", Title: "Finished video", Status: StatusComplete,
+			Lifecycle: jobmodel.LifecycleCompleted, Progress: 0.48,
+			Bytes: 48, Total: 100, SpeedBps: 3.4 * 1024 * 1024, ETASeconds: 12,
+		}},
+	}
+	m.order = []string{"job"}
+	m.mu.Unlock()
+
+	view := m.QueueView()
+	if len(view.Rows) != 1 {
+		t.Fatalf("queue rows = %#v", view.Rows)
+	}
+	row := view.Rows[0]
+	if row.Progress != 1 || row.ProgressLabel != "100%" {
+		t.Fatalf("completed progress = %#v", row)
+	}
+	if row.SpeedLabel != "" || row.ETALabel != "" {
+		t.Fatalf("completed row retained live transfer telemetry: %#v", row)
+	}
+}
+
 func TestProgressOnlyJobUpdatePreservesUsableAuthority(t *testing.T) {
 	events := make(chan Event, 8)
 	m := New(nil, func(event Event) { events <- event })

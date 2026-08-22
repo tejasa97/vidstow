@@ -35,6 +35,9 @@ export type LifecycleJobAction =
   | 'resume'
   | 'retry'
   | 'download-again'
+  | 'start-again'
+  | 'open-source'
+  | 'copy-link'
   | 'review'
   | 'open'
   | 'remove';
@@ -45,9 +48,22 @@ export interface LifecycleJobCapabilities {
   resume?: boolean;
   retry?: boolean;
   downloadAgain?: boolean;
+  startAgain?: boolean;
+  openSource?: boolean;
+  copyLink?: boolean;
   review?: boolean;
   open?: boolean;
   remove?: boolean;
+}
+
+export interface QueueFailureViewModel {
+  category: string;
+  messageKey: string;
+  heading: string;
+  message: string;
+  recommendedAction: string;
+  retryable: boolean;
+  partialOutput: boolean;
 }
 
 /**
@@ -71,6 +87,7 @@ export interface LifecycleJobViewModel {
   speedLabel?: string;
   etaLabel?: string;
   message?: string;
+  failure?: QueueFailureViewModel;
   queuePosition?: number;
   queueLabel?: string;
   capabilities?: LifecycleJobCapabilities;
@@ -101,6 +118,7 @@ export interface QueueCollectionCapabilities {
 
 export interface QueueCollectionViewModel {
   id: string;
+  kind: 'playlist' | 'batch';
   title: string;
   metadata?: string;
   thumbnailUrl?: string;
@@ -208,6 +226,9 @@ export type LifecycleJobEventName =
   | 'resume'
   | 'retry'
   | 'download-again'
+  | 'start-again'
+  | 'open-source'
+  | 'copy-link'
   | 'review'
   | 'open'
   | 'remove';
