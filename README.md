@@ -30,7 +30,7 @@ A local desktop application built with Go, Wails, and Svelte.
 
 ## Download
 
-[`v0.1.0-beta.4`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.4)
+[`v0.1.0-beta.5`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.5)
 is the current macOS Apple Silicon preview. The recommended installation
 uses VidStow's Homebrew tap:
 
@@ -146,7 +146,7 @@ application and engine versions and by artifact-specific validation.
 | Area | Supported boundary |
 | --- | --- |
 | Product | Beta; focused public YouTube video, Short, playlist, and 2–20 URL batch workflow |
-| Package | [`v0.1.0-beta.4`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.4) installs on Apple Silicon through the [`vidstow/tap`](https://github.com/vidstow/homebrew-tap) Homebrew cask |
+| Package | [`v0.1.0-beta.5`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.5) installs on Apple Silicon through the [`vidstow/tap`](https://github.com/vidstow/homebrew-tap) Homebrew cask |
 | Source | Apache-2.0 source and self-build instructions |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
 | Engine | [ytdlp-go](https://github.com/tejasa97/ytdlp-go); `go.mod` pins `github.com/tejasa97/ytdlp-go v0.3.0` |
@@ -237,9 +237,13 @@ configuration directory. State v2 can include:
   events, and 1 MiB. It contains sanitized failure categories and no YouTube
   URLs, media URLs, arbitrary error text, or absolute paths.
 
-The diagnostic history stays on the device, can be cleared from Settings, and
-is included in **Copy Diagnostics** only as a bounded list of sanitized problem
-events. This release does not transmit diagnostic history automatically.
+The local diagnostic history itself stays on the device, can be cleared from
+Settings, and is included in **Copy Diagnostics** only as a bounded list of
+sanitized problem events. Automatic diagnostics remain off unless the user
+explicitly selects **Send diagnostics**. When enabled, a separate bounded
+outbox sends newly observed, allowlisted terminal-failure reports in the
+background; disabling automatic diagnostics deletes anything waiting to be
+sent.
 
 Engine session work is stored beneath an engine-owned hidden directory in the
 selected output root.
@@ -247,7 +251,9 @@ selected output root.
 State v2 must not persist media delivery URLs, request headers, cookies,
 credentials, signed query parameters, or media encryption keys. VidStow does
 not require a hosted account and does not provide cloud sync. Normal operation
-contacts YouTube and its media or thumbnail hosts, and may start the locally
+contacts YouTube and its media or thumbnail hosts. If automatic diagnostics are
+explicitly enabled, VidStow also contacts `diagnostics.vidstow.workers.dev` to
+submit the bounded reports described above. VidStow may start the locally
 installed FFmpeg/FFprobe tools when the selected output requires them.
 
 Errors shown by lifecycle and recovery views are bounded for presentation, but

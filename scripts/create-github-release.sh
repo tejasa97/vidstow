@@ -86,25 +86,40 @@ cat >"$notes_file" <<EOF
 
 This beta preview targets **macOS on Apple Silicon only**.
 
-### Download
+### Install
 
-- \`VidStow-${tag#v}-darwin-arm64.zip\`
-- External FFmpeg and FFprobe are required.
-- Updates are installed manually from this project's releases.
-- \`SHA256SUMS\` verifies the downloaded candidate files.
-- \`RELEASE-METADATA.txt\` records the exact source commit, engine module,
-  toolchain, workflow, and artifact metadata.
+The recommended installation uses the project Homebrew cask, which also
+installs FFmpeg:
 
-Technical users can also build this Apache-2.0 project from the source attached
-to this release by following the repository's build instructions.
+\`\`\`sh
+brew tap vidstow/tap
+brew install --cask vidstow
+\`\`\`
+
+The technical release also includes
+\`VidStow-${tag#v}-darwin-arm64.zip\`. External FFmpeg and FFprobe are required
+for direct-ZIP and source installations. Updates are installed manually.
+\`SHA256SUMS\` verifies the candidate files, and \`RELEASE-METADATA.txt\`
+records the exact source commit, engine module, toolchain, workflow, and
+artifact metadata.
+
+### Signing and installation warning
+
+The application is ad-hoc signed and is **not notarized by Apple**. The Homebrew
+cask verifies the pinned archive checksum and then explicitly removes macOS
+quarantine so the app can launch. This bypasses normal Gatekeeper quarantine
+enforcement. Review the source, release metadata, and cask before installing.
+
+Technical users can instead build this Apache-2.0 project from the source
+attached to this release.
 
 ### Scope
 
-VidStow accepts public, on-demand YouTube video, Short, and playlist URLs exposed by its UI.
-It does not support channels, search, live streams,
-authentication, cookies, private media, DRM, or access-control circumvention.
-Pause/Resume does not guarantee universal byte reuse; saved bytes are reused
-only when the engine can validate their identity.
+VidStow accepts public, on-demand YouTube video, Short, playlist, and bounded
+2–20 URL batch workflows exposed by its UI. It does not support channels,
+search, live streams, authentication, cookies, private media, DRM, or
+access-control circumvention. Pause/Resume does not guarantee universal byte
+reuse; saved bytes are reused only when the engine can validate their identity.
 
 See the repository's release packaging guide and documented limitations before
 testing.
