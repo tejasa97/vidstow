@@ -1,8 +1,8 @@
 # Reliable Batch Downloads — Implementation Plan
 
-**Status:** Core implementation complete; final manual UI QA pending
-**Branch:** `feat/reliable-batch-downloads`  
-**Base:** `origin/main` at `1007c0b`  
+**Status:** Implementation and manual QA complete; ready for review
+**Branch:** `feat/reliable-batch-downloads`
+**Base:** `origin/main` at `43c7d24`
 **Last updated:** 2026-08-22
 
 This is the living implementation plan for reliable batch downloads. Keep the status, checklists, decisions, and validation record current as the feature is implemented.
@@ -425,8 +425,8 @@ Run the repository’s canonical formatting, generated-binding, Go test, fronten
   - Added typed failure projection, stable copy keys, capability-aware actions, permanent auth/unavailable handling, and safe disk/permission start-again.
 - [x] **Phase 7 — Local aggregate measurements (explicitly deferred)**
   - No usage store or upload path ships in this change. This avoids weakening the existing diagnostics privacy contract; instrumentation can be proposed separately.
-- [ ] **Phase 8 — Hardening and release validation**
-  - Automated regression, race, persistence, accessibility, production build, and documentation validation are complete. Final manual in-app comparison with Penpot remains.
+- [x] **Phase 8 — Hardening and release validation**
+  - Automated regression, race, persistence, accessibility, production build, documentation validation, and manual in-app comparison are complete.
 
 ## 12. Completion criteria
 
@@ -455,6 +455,9 @@ Keep this section current throughout implementation.
 - 2026-08-22: Implemented bounded batch parsing/analysis, canonical within-batch dedupe, expiring single-claim analysis authority, atomic durable admission, generalized playlist/batch collection persistence, and per-video-subfolder reservation roots.
 - 2026-08-22: Implemented Home composer/review states, batch-wide policy and folder controls, durable Queue parent/children, accurate progress, typed failure projections, capability-backed recovery actions, and disk/permission Start again.
 - 2026-08-22: Added backend, persistence, race, frontend DOM/accessibility, and production Wails build coverage. Deferred local usage aggregates rather than coupling them to terminal diagnostics.
+- 2026-08-22: Reviewed and merged startup recovery PR #76, then rebased this branch onto the resulting `origin/main` merge commit `43c7d24`.
+- 2026-08-22: Manually tested a mixed five-line batch in the production macOS app: two ready videos, one canonical duplicate, one invalid host, and one safe analysis failure. Started both ready downloads, verified the expanded durable parent and stable child order, completed both files, restarted the app, and verified the restored `2 of 2 complete` collection.
+- 2026-08-22: Manual review exposed stale speed/ETA text on a completed child. Updated the backend queue projection to clear live transfer telemetry for completed rows and added a regression test.
 
 ### Plan changes
 
@@ -468,8 +471,14 @@ Keep this section current throughout implementation.
 - `cd frontend && npm run check` — passed with 0 errors and one pre-existing unused-selector warning in `About.svelte`.
 - `cd frontend && npm run test:ui` — passed: 27 Node contract tests and 43 Vitest DOM tests.
 - `cd frontend && npm run build` — passed.
+- `go vet ./...` — passed.
 - `go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -clean` — passed; produced the signed macOS application bundle.
 - Launched the production bundle with an isolated Home directory and visually verified the current 1280×800 polished shell and Single URL / Batch URLs mode control.
+- Manual mixed-result review — passed with 5 pasted, 2 ready, 1 duplicate, 1 invalid, and 1 analysis-failed line; raw extraction detail remained hidden.
+- Manual real-download admission — passed; both ready videos were admitted under one expanded batch parent, completed successfully, and used separate per-video output folders.
+- Manual restart recovery — passed; the durable batch parent restored with stable order, full child progress, and `2 of 2 complete`.
+- Manual expand/collapse accessibility — passed through the semantic button controls and updated accessible labels.
+- Screenshots: `docs/assets/reliable-batch-downloads-review.png` and `docs/assets/reliable-batch-downloads-queue.png`.
 - `git diff --check` — passed.
 
 ### Known residual risks
@@ -479,4 +488,3 @@ Keep this section current throughout implementation.
 - Wrapped `ENOSPC` and permission errors are mapped and tested, but a future engine stage that discards its wrapped OS cause could still fall back to the safe internal category.
 - Batch-wide format intent is resolved independently per child, so concrete stream details can differ while honoring the selected cap/policy.
 - Privacy-safe local usage aggregates were deliberately deferred; this release adds no product-measurement persistence or upload path.
-- Final manual in-app visual comparison against the approved Penpot boards is still pending.

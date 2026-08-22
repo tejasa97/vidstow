@@ -1761,8 +1761,10 @@ func (m *Manager) queueViewLocked() QueueView {
 			row.Progress = snap.Progress
 			row.ProgressLabel = fmt.Sprintf("%.0f%%", snap.Progress*100)
 		}
-		row.SpeedLabel = queueSpeedLabel(snap.SpeedBps)
-		row.ETALabel = queueETALabel(snap.ETASeconds)
+		if lifecycle != jobmodel.LifecycleCompleted {
+			row.SpeedLabel = queueSpeedLabel(snap.SpeedBps)
+			row.ETALabel = queueETALabel(snap.ETASeconds)
+		}
 		view.Rows = append(view.Rows, row)
 		view.Summary.TotalJobs++
 		if row.OccupiesSlot {
