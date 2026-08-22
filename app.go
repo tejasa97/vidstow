@@ -149,7 +149,6 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 		return
 	}
 	a.store = st
-	a.setStartupStatus(status)
 
 	if err := prepareStartupStateRoots(st.Snapshot()); err != nil {
 		a.recordDiagnosticProblem("", classifyStartupRootProblem(err))
@@ -229,6 +228,10 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 	if err := a.configureAutomaticDiagnostics(settings.AutomaticDiagnostics); err != nil {
 		logAppErrorf(ctx, "desktop: clear disabled diagnostics outbox: %v", err)
 	}
+	// Publish healthy only after every authority needed by bound methods is
+	// installed. The frontend polls this status, so exposing the store's early
+	// healthy result would let it race root validation and queue restoration.
+	a.setStartupStatus(status)
 }
 
 // shutdown is called by Wails after the native close gate has permitted the
