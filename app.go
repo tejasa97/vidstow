@@ -45,6 +45,7 @@ var (
 		return recovery.Reconcile(ctx, state, recovery.Options{})
 	}
 	restoreStartupManager = func(manager *jobs.Manager, snapshot jobmodel.State) error { return manager.RestoreStateV2(snapshot) }
+	resolveDownloadPlan   = (*jobs.Manager).ResolvePlan
 	startStartupCleanup   = recovery.StartCleanupWorkerWithReport
 	logAppErrorf          = wailsruntime.LogErrorf
 	emitAppEvent          = wailsruntime.EventsEmit
@@ -649,7 +650,7 @@ func (a *App) StartDownload(req jobs.Request) (string, error) {
 	if req.PlanID == "" {
 		return "", errors.New("an analyzed output plan is required before starting a download")
 	}
-	plan, resolveErr := a.jobs.ResolvePlan(req.VideoID, req.PlanID)
+	plan, resolveErr := resolveDownloadPlan(a.jobs, req.VideoID, req.PlanID)
 	if resolveErr != nil {
 		return "", resolveErr
 	}

@@ -112,6 +112,43 @@ func TestPublishedSchemaMatchesStageCategoryContract(t *testing.T) {
 	}
 }
 
+func TestEveryAllowlistedStageCategoryPairValidates(t *testing.T) {
+	count := 0
+	for category, validStages := range categoryStages {
+		for stage := range validStages {
+			count++
+			event := testProblemEvent(t, time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC))
+			event.Problem = &Problem{Stage: stage, Category: category, Outcome: "terminal", RetryBucket: "none"}
+			if err := event.Validate(); err != nil {
+				t.Fatalf("%s/%s: %v", stage, category, err)
+			}
+		}
+	}
+	if count == 0 {
+		t.Fatal("no allowlisted stage/category pairs")
+	}
+}
+
+func TestCrossWiredStageCategoryPairsAreRejected(t *testing.T) {
+	rejected := 0
+	for stage := range stages {
+		for category := range categories {
+			if validStageCategory(stage, category) {
+				continue
+			}
+			rejected++
+			event := testProblemEvent(t, time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC))
+			event.Problem = &Problem{Stage: stage, Category: category, Outcome: "terminal", RetryBucket: "none"}
+			if err := event.Validate(); err == nil {
+				t.Fatalf("accepted invalid pair %s/%s", stage, category)
+			}
+		}
+	}
+	if rejected == 0 {
+		t.Fatal("expected invalid stage/category combinations")
+	}
+}
+
 func TestEventContainsNoIdentifiers(t *testing.T) {
 	event := testProblemEvent(t, time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC))
 	if err := event.Validate(); err != nil {
