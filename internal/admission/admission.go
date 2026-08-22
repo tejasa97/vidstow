@@ -21,8 +21,8 @@ import (
 	"github.com/tejasa97/vidstow/internal/reservation"
 	"github.com/tejasa97/vidstow/internal/reservationfs"
 	"github.com/tejasa97/vidstow/internal/store"
-	"github.com/tejasa97/youtube_dlp/engine"
-	"github.com/tejasa97/youtube_dlp/engine/value"
+	"github.com/tejasa97/ytdlp-go/engine"
+	"github.com/tejasa97/ytdlp-go/engine/value"
 )
 
 // Queue is the narrow manager seam needed after the State v2 admission

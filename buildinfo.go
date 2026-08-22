@@ -11,8 +11,8 @@ var diagnosticsEventsEndpoint = "https://diagnostics.vidstow.workers.dev/v1/even
 
 const (
 	appVersion          = "0.1.0-beta.4"
-	engineModulePath    = "github.com/tejasa97/youtube_dlp"
-	pinnedEngineVersion = "v0.2.3"
+	engineModulePath    = "github.com/tejasa97/ytdlp-go"
+	pinnedEngineVersion = "v0.3.0"
 )
 
 // BuildInfo is the single backend-owned release identity exposed to the UI

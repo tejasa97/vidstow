@@ -10,7 +10,7 @@ import (
 	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/jobs"
 	"github.com/tejasa97/vidstow/internal/store"
-	"github.com/tejasa97/youtube_dlp/engine"
+	"github.com/tejasa97/ytdlp-go/engine"
 )
 
 func privateStoreTestDir(t *testing.T) string {

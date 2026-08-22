@@ -12,7 +12,7 @@ import (
 	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/vidstow/internal/reservationfs"
 	"github.com/tejasa97/vidstow/internal/store"
-	"github.com/tejasa97/youtube_dlp/engine/value"
+	"github.com/tejasa97/ytdlp-go/engine/value"
 )
 
 func collectionFixture(t *testing.T) (*Coordinator, *reservationfs.Root, *store.V2Store, *recordingQueue, CollectionRequest) {

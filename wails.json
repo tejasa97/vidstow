@@ -7,11 +7,11 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "preBuildHooks": {
-    "windows/*": "go build -trimpath -o ytdlp-js-helper.exe github.com/tejasa97/youtube_dlp/cmd/ytdlp-js-helper"
+    "windows/*": "go build -trimpath -o ytdlp-js-helper.exe github.com/tejasa97/ytdlp-go/cmd/ytdlp-js-helper"
   },
   "postBuildHooks": {
     "darwin/*": "../../scripts/package-js-helper.sh ${bin}",
-    "linux/*": "go build -trimpath -o ytdlp-js-helper github.com/tejasa97/youtube_dlp/cmd/ytdlp-js-helper"
+    "linux/*": "go build -trimpath -o ytdlp-js-helper github.com/tejasa97/ytdlp-go/cmd/ytdlp-js-helper"
   },
   "author": {
     "name": "VidStow contributors",

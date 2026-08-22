@@ -14,7 +14,7 @@ import (
 	"github.com/tejasa97/vidstow/internal/ffmpegdetect"
 	"github.com/tejasa97/vidstow/internal/jobs"
 	"github.com/tejasa97/vidstow/internal/outputplan"
-	"github.com/tejasa97/youtube_dlp/engine"
+	"github.com/tejasa97/ytdlp-go/engine"
 )
 
 func TestDiagnosticPolicyCapsAndDoesNotSerializeOperationIDs(t *testing.T) {

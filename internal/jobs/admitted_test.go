@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/tejasa97/vidstow/internal/outputplan"
-	"github.com/tejasa97/youtube_dlp/engine"
-	"github.com/tejasa97/youtube_dlp/engine/value"
+	"github.com/tejasa97/ytdlp-go/engine"
+	"github.com/tejasa97/ytdlp-go/engine/value"
 )
 
 func TestSubmitAdmittedPreservesIDAndUsesExistingManager(t *testing.T) {

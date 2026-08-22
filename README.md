@@ -149,14 +149,14 @@ application and engine versions and by artifact-specific validation.
 | Package | [`v0.1.0-beta.4`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.4) installs on Apple Silicon through the [`vidstow/tap`](https://github.com/vidstow/homebrew-tap) Homebrew cask |
 | Source | Apache-2.0 source and self-build instructions |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
-| Engine | [ytdlp-go](https://github.com/tejasa97/ytdlp-go); `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.3` |
+| Engine | [ytdlp-go](https://github.com/tejasa97/ytdlp-go); `go.mod` pins `github.com/tejasa97/ytdlp-go v0.3.0` |
 | Resume | Session reuse is evidence-dependent; no universal transfer continuation or guaranteed byte reuse |
 | Updates | Manual downloads from GitHub Releases |
 
 The underlying [`ytdlp-go`](https://github.com/tejasa97/ytdlp-go)
 project has broader extractor and CLI capabilities. VidStow supports only the
-workflow documented here and exposed by its desktop UI. The Go module path
-remains `github.com/tejasa97/youtube_dlp`.
+workflow documented here and exposed by its desktop UI. The Go module path is
+`github.com/tejasa97/ytdlp-go`.
 
 ## Prerequisites
 
