@@ -331,6 +331,7 @@ type ActionRequiredReview struct {
 	CanRetryRecovery   bool   `json:"canRetryRecovery"`
 	CanRetryFreshLink  bool   `json:"canRetryFreshLink"`
 	CanDiscard         bool   `json:"canDiscard"`
+	CanRemove          bool   `json:"canRemove"`
 	CanRetryCleanup    bool   `json:"canRetryCleanup"`
 }
 
@@ -2036,10 +2037,10 @@ func queueCapabilitiesFor(state *jobState, snap JobSnapshot) QueueJobCapabilitie
 	case StatusComplete:
 		return QueueJobCapabilities{Open: snap.AbsolutePath != "", Remove: true}
 	case StatusActionRequired:
-		// Review is read-only and preserves the evidence-bearing row. Any next
-		// step is separately authorized; the frontend never derives recovery
-		// authority from the action-required reason or presentation copy.
-		return QueueJobCapabilities{Review: true}
+		// Review is read-only and preserves the evidence-bearing row. Remove
+		// only forgets the queue entry; it never retries, discards, or deletes
+		// uncertain session data. Pending cleanup still revokes Remove below.
+		return QueueJobCapabilities{Review: true, Remove: true}
 	default:
 		return QueueJobCapabilities{}
 	}
@@ -2271,7 +2272,7 @@ func (m *Manager) QueueRemove(id, token string) error {
 	if _, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Remove }); err != nil {
 		return err
 	}
-	return m.Remove(id)
+	return m.removeQueueRow(id)
 }
 
 // QueueActionRequiredReview returns bounded recovery guidance for the exact row
@@ -2285,8 +2286,8 @@ func (m *Manager) QueueActionRequiredReview(id, token string) (ActionRequiredRev
 	if state == nil || token == "" || token != state.commandToken || !m.queueCapabilitiesLocked(state, state.snap).Review {
 		return ActionRequiredReview{}, errors.New("jobs: queue action is no longer available")
 	}
-	_, quarantined := m.cleanupStatusLocked(id)
-	return actionRequiredReview(state, quarantined), nil
+	cleanupPresent, cleanupQuarantined := m.cleanupStatusLocked(id)
+	return actionRequiredReview(state, cleanupPresent, cleanupQuarantined), nil
 }
 
 // QueueActionRequiredStartOverURL releases only the persisted source URL after
@@ -2304,8 +2305,8 @@ func (m *Manager) QueueActionRequiredStartOverURL(id, token string) (string, err
 	if state.snap.Status != StatusActionRequired {
 		return "", errors.New("jobs: starting over is not available for this item")
 	}
-	_, quarantined := m.cleanupStatusLocked(id)
-	review := actionRequiredReview(state, quarantined)
+	cleanupPresent, cleanupQuarantined := m.cleanupStatusLocked(id)
+	review := actionRequiredReview(state, cleanupPresent, cleanupQuarantined)
 	if !review.CanStartOver {
 		return "", errors.New("jobs: starting over is not available for this item")
 	}
@@ -2499,7 +2500,7 @@ func (m *Manager) QueueRetryCleanup(id, token string) error {
 	return nil
 }
 
-func actionRequiredReview(state *jobState, cleanupQuarantined bool) ActionRequiredReview {
+func actionRequiredReview(state *jobState, cleanupPresent, cleanupQuarantined bool) ActionRequiredReview {
 	code := strings.TrimSpace(state.snap.ErrorReason)
 	if state.fromStateV2 && state.durable.ActionRequiredCode != "" {
 		code = state.durable.ActionRequiredCode
@@ -2531,11 +2532,12 @@ func actionRequiredReview(state *jobState, cleanupQuarantined bool) ActionRequir
 	return ActionRequiredReview{
 		JobID: state.snap.ID, Title: state.snap.Title,
 		Heading: "This download needs your decision", Message: message,
-		PreservationNotice: "The original queue item and its saved temporary data will stay in place unless you explicitly discard it. Starting over uses a new destination reservation and never reuses uncertain data.",
+		PreservationNotice: "Removing this row only forgets it from VidStow's queue; saved temporary data stays on disk. Discard saved data uses safe cleanup. Starting over uses a new destination reservation and never reuses uncertain data.",
 		CanStartOver:       url != "",
 		CanRetryRecovery:   canManageSession && canRetryActionRequiredRecovery(state),
 		CanRetryFreshLink:  canManageSession && canRetryActionRequiredFresh(state),
 		CanDiscard:         canManageSession,
+		CanRemove:          !cleanupPresent,
 	}
 }
 
@@ -2677,7 +2679,7 @@ func (m *Manager) QueueRemoveCollection(id, token string) (int, error) {
 		return 0, err
 	}
 	defer m.finishCollectionCommand(id)
-	return runCollectionCommand(children, m.Remove)
+	return runCollectionCommand(children, m.removeQueueRow)
 }
 
 func (m *Manager) QueueDownloadAgainRequest(id, token string) (Request, error) {
@@ -3822,8 +3824,14 @@ func stringPtr(value string) *string {
 
 func newSessionID() string { return strings.ReplaceAll(uuid.NewString(), "-", "") }
 
-// Remove drops a terminal job from the manager entirely.
-func (m *Manager) Remove(id string) error {
+// Remove supports the legacy un-tokened UI only for ordinary settled rows.
+// Action-required rows must use QueueRemove so stale review authority cannot
+// dismiss evidence-bearing state.
+func (m *Manager) Remove(id string) error { return m.remove(id, false) }
+
+func (m *Manager) removeQueueRow(id string) error { return m.remove(id, true) }
+
+func (m *Manager) remove(id string, allowActionRequired bool) error {
 	m.mu.Lock()
 	if m.closing || m.closed {
 		m.mu.Unlock()
@@ -3836,6 +3844,11 @@ func (m *Manager) Remove(id string) error {
 	}
 	switch state.snap.Status {
 	case StatusComplete, StatusFailed, StatusCanceled:
+	case StatusActionRequired:
+		if !allowActionRequired {
+			m.mu.Unlock()
+			return errors.New("jobs: action-required removal needs current queue authority")
+		}
 	default:
 		m.mu.Unlock()
 		return errors.New("jobs: only terminal jobs can be removed")

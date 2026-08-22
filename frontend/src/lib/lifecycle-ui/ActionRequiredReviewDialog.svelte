@@ -7,6 +7,7 @@
     review: ActionRequiredReviewViewModel | null;
     busy?: boolean;
     onClose?: () => void;
+    onRemove?: () => void;
     onStartOver?: () => void;
     onRetryRecovery?: () => void;
     onRetryFreshLink?: () => void;
@@ -14,7 +15,7 @@
     onRetryCleanup?: () => void;
   }
 
-  let { open, review, busy = false, onClose, onStartOver, onRetryRecovery, onRetryFreshLink, onDiscard, onRetryCleanup }: Props = $props();
+  let { open, review, busy = false, onClose, onRemove, onStartOver, onRetryRecovery, onRetryFreshLink, onDiscard, onRetryCleanup }: Props = $props();
 
   function close(): void {
     if (!busy) onClose?.();
@@ -52,12 +53,15 @@
         {#if review.canStartOver}
           <p class="next-step">Starting over takes you to Home for fresh analysis and a new destination reservation, avoiding conflicts with the preserved attempt.</p>
         {:else if !review.canRetryCleanup}
-          <p class="next-step">Starting over is unavailable for this item. Keep the row while inspecting the saved application data.</p>
+          <p class="next-step">Starting over is unavailable for this item. You can keep the row for review{review.canRemove ? ' or remove it without deleting saved temporary data' : ''}.</p>
         {/if}
       </div>
 
       <footer class="dialog-footer">
         <button type="button" class="app-btn" disabled={busy} onclick={close}>Keep for now</button>
+        {#if review.canRemove}
+          <button type="button" class="app-btn" disabled={busy} onclick={() => onRemove?.()}>Remove from queue</button>
+        {/if}
         {#if review.canDiscard}
           <button type="button" class="app-btn danger" disabled={busy} onclick={() => onDiscard?.()}>Discard saved data</button>
         {/if}

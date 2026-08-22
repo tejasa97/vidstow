@@ -231,6 +231,25 @@ describe('backend-authored capabilities', () => {
     expect(onStartAgain.mock.calls[0][0].detail).toEqual({ jobId: 'disk-1', commandToken: 'disk-command-token' });
   });
 
+  test('action-required rows expose independently authorized Review and queue-only Remove', async () => {
+    const onReview = vi.fn<(event: CustomEvent<LifecycleJobEventDetail>) => void>();
+    const onRemove = vi.fn<(event: CustomEvent<LifecycleJobEventDetail>) => void>();
+    const user = userEvent.setup();
+    render(LifecycleJobRow, {
+      props: {
+        job: {
+          id: 'action-1', title: 'Saved video', lifecycle: 'action-required', occupiesSlot: false,
+          capabilities: { review: true, remove: true }, commandToken: 'action-command-token',
+        },
+      },
+      events: { review: onReview, remove: onRemove },
+    });
+    await user.click(screen.getByRole('button', { name: 'Review' }));
+    await user.click(screen.getByRole('button', { name: 'Remove download' }));
+    expect(onReview.mock.calls[0][0].detail).toEqual({ jobId: 'action-1', commandToken: 'action-command-token' });
+    expect(onRemove.mock.calls[0][0].detail).toEqual({ jobId: 'action-1', commandToken: 'action-command-token' });
+  });
+
   test('cleanup-phase terminal rows can expose backend-authorized Review without Remove', async () => {
     const onReview = vi.fn<(event: CustomEvent<LifecycleJobEventDetail>) => void>();
     const user = userEvent.setup();
@@ -278,8 +297,8 @@ describe('action-required recovery', () => {
   const review: ActionRequiredReviewViewModel = {
     jobId: 'action-1', title: 'Saved video', heading: 'This download needs your decision',
     message: 'The saved session could not be inspected safely.',
-    preservationNotice: 'The original row and saved data stay in place.', canStartOver: true,
-    canRetryRecovery: true, canRetryFreshLink: true, canDiscard: true, canRetryCleanup: false,
+    preservationNotice: 'Removing the row leaves saved data on disk.', canStartOver: true,
+    canRetryRecovery: true, canRetryFreshLink: true, canDiscard: true, canRemove: true, canRetryCleanup: false,
   };
 
   test('offers a fresh Home analysis while clearly preserving the original row', async () => {
@@ -295,10 +314,22 @@ describe('action-required recovery', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  test('offers queue-only removal only when the backend authorizes it', async () => {
+    const onRemove = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(ActionRequiredReviewDialog, { props: { open: true, review, onRemove } });
+    await user.click(screen.getByRole('button', { name: 'Remove from queue' }));
+    expect(onRemove).toHaveBeenCalledOnce();
+
+    await rerender({ open: true, review: { ...review, canRemove: false }, onRemove });
+    expect(screen.queryByRole('button', { name: 'Remove from queue' })).not.toBeInTheDocument();
+  });
+
   test('does not advertise start-over when the backend withholds it', () => {
     render(ActionRequiredReviewDialog, { props: { open: true, review: { ...review, canStartOver: false } } });
     expect(screen.queryByRole('button', { name: 'Start over from Home' })).not.toBeInTheDocument();
     expect(screen.getByText(/Starting over is unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove from queue' })).toBeInTheDocument();
   });
 
   test('offers explicit recovery, discard, and quarantined-cleanup actions only when authorized', async () => {
@@ -315,7 +346,7 @@ describe('action-required recovery', () => {
     expect(onRetryFreshLink).toHaveBeenCalledOnce();
     expect(onDiscard).toHaveBeenCalledOnce();
 
-    await rerender({ open: true, review: { ...review, canStartOver: false, canRetryRecovery: false, canRetryFreshLink: false, canDiscard: false, canRetryCleanup: true }, onRetryRecovery, onRetryFreshLink, onDiscard, onRetryCleanup });
+    await rerender({ open: true, review: { ...review, canStartOver: false, canRetryRecovery: false, canRetryFreshLink: false, canDiscard: false, canRemove: false, canRetryCleanup: true }, onRetryRecovery, onRetryFreshLink, onDiscard, onRetryCleanup });
     await user.click(screen.getByRole('button', { name: 'Retry cleanup' }));
     expect(onRetryCleanup).toHaveBeenCalledOnce();
     expect(screen.queryByRole('button', { name: 'Discard saved data' })).not.toBeInTheDocument();

@@ -31,9 +31,28 @@
   let actionRequiredAuthority: LifecycleJobEventDetail | null = null;
   let startingOver = false;
 
-  async function refresh(): Promise<void> {
+  async function refresh(): Promise<QueueView> {
     const next = await api.queue.get();
     queueView.update((current) => newestQueueView(current, next));
+    return next;
+  }
+
+  async function reloadActionRequiredReview(jobId: string): Promise<void> {
+    try {
+      const next = await refresh();
+      const row = next.rows.find((candidate) => candidate.id === jobId);
+      const commandToken = row?.commandToken;
+      if (row?.capabilities?.review !== true || typeof commandToken !== 'string' || commandToken.length === 0) {
+        throw new Error('review authority is no longer available');
+      }
+      const authority = { jobId, commandToken };
+      const review = await api.queue.reviewActionRequired(jobId, commandToken);
+      actionRequiredAuthority = authority;
+      actionRequiredReview = review;
+    } catch {
+      actionRequiredReview = null;
+      actionRequiredAuthority = null;
+    }
   }
 
   async function action(detail: LifecycleJobEventDetail, operation: (id: string, token: string) => Promise<unknown>, fallback: string, success?: string) {
@@ -41,7 +60,10 @@
       await operation(detail.jobId, detail.commandToken);
       await refresh();
       if (success) showBanner('info', success);
-    } catch (err) { showError(err, fallback); }
+    } catch (err) {
+      await refresh().catch(() => undefined);
+      showError(err, fallback);
+    }
   }
 
   async function startAgain(detail: LifecycleJobEventDetail) {
@@ -88,6 +110,24 @@
       actionRequiredAuthority = null;
       await refresh().catch(() => undefined);
       showError(err, 'Could not start over from this download');
+    } finally {
+      startingOver = false;
+    }
+  }
+
+  async function removeActionRequired() {
+    if (!actionRequiredAuthority || startingOver) return;
+    const authority = actionRequiredAuthority;
+    startingOver = true;
+    try {
+      await api.queue.remove(authority.jobId, authority.commandToken);
+      actionRequiredReview = null;
+      actionRequiredAuthority = null;
+      await refresh();
+      showBanner('info', 'Removed from the queue. Saved temporary data was left on disk.');
+    } catch (err) {
+      await reloadActionRequiredReview(authority.jobId);
+      showError(err, 'Could not remove this download');
     } finally {
       startingOver = false;
     }
@@ -244,6 +284,7 @@
   review={actionRequiredReview}
   busy={startingOver}
   onClose={closeActionRequiredReview}
+  onRemove={removeActionRequired}
   onStartOver={startOverActionRequired}
   onRetryRecovery={retryActionRequiredRecovery}
   onRetryFreshLink={retryActionRequiredFreshLink}
