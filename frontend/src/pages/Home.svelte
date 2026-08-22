@@ -133,7 +133,7 @@
     }
   }
 
-  function editBatchLines() {
+  function editBatchURLs() {
     batchGeneration += 1;
     batchBusy = false;
     batchReview = null;
@@ -416,7 +416,7 @@
             <p aria-live="polite">{batchReviewSummary(batchReview)}</p>
             {#if !batchTokenValid}<p class="batch-expired" role="alert">This review expired. Edit the lines and review them again.</p>{/if}
           </div>
-          <button type="button" class="app-btn" on:click={editBatchLines} disabled={batchBusy}>Edit lines</button>
+          <button type="button" class="app-btn" on:click={editBatchURLs} disabled={batchBusy}>Edit URLs</button>
         </header>
 
         <div class="batch-lines" role="list" aria-label="Reviewed batch URLs">

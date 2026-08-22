@@ -102,6 +102,26 @@ describe('backend-authored capabilities', () => {
     expect(screen.getByRole('button', { name: 'Expand Fixture playlist' })).toHaveAttribute('aria-expanded', 'false');
   });
 
+  test('batch collection parents omit synthetic thumbnails', () => {
+    const { container } = render(QueueOverview, {
+      props: {
+        model: queueModel({
+          jobs: [],
+          collections: [{
+            id: 'batch-1', kind: 'batch', title: 'Batch download · 2 videos', thumbnailUrl: 'https://example.invalid/batch.jpg',
+            policy: 'video:720p', childJobIds: [], total: 2, completed: 0, failed: 0, canceled: 0,
+            active: 2, pending: 0, paused: 0, progress: 0.5, progressLabel: '0 of 2 complete',
+            capabilities: {}, commandToken: 'batch-token',
+          }],
+        }),
+      },
+    });
+
+    expect(screen.getByText('Batch download · 2 videos')).toBeInTheDocument();
+    expect(screen.getByText('video:720p')).toBeInTheDocument();
+    expect(container.querySelector('.parent-row > .thumbnail')).not.toBeInTheDocument();
+  });
+
   test('playlist collection actions fail closed without a valid token', async () => {
     const onCollectionAction = vi.fn();
     const user = userEvent.setup();

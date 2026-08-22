@@ -222,7 +222,7 @@ describe('Home analysis authority', () => {
     await user.click(screen.getByRole('button', { name: 'Review URLs' }));
     expect(await screen.findByRole('button', { name: 'Start 2 downloads' })).toBeEnabled();
     expect(screen.getByText('2 videos ready to download')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Edit lines' }));
+    await user.click(screen.getByRole('button', { name: 'Edit URLs' }));
     expect(screen.queryByRole('button', { name: 'Start 2 downloads' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('YouTube video or Short URLs')).toHaveValue('one\ntwo');
   });

@@ -32,7 +32,7 @@
 </script>
 
 <section class="collection" aria-labelledby={`${panelId}-title`}>
-  <div class="parent-row">
+  <div class="parent-row" class:without-thumbnail={collection.kind === 'batch'}>
     <button
       type="button"
       class="toggle"
@@ -44,10 +44,12 @@
       <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
     </button>
 
-    {#if collection.thumbnailUrl}
-      <img class="thumbnail" src={collection.thumbnailUrl} alt="" referrerpolicy="no-referrer" />
-    {:else}
-      <div class="thumbnail placeholder" aria-hidden="true">{collection.title.slice(0, 1).toUpperCase()}</div>
+    {#if collection.kind === 'playlist'}
+      {#if collection.thumbnailUrl}
+        <img class="thumbnail" src={collection.thumbnailUrl} alt="" referrerpolicy="no-referrer" />
+      {:else}
+        <div class="thumbnail placeholder" aria-hidden="true">{collection.title.slice(0, 1).toUpperCase()}</div>
+      {/if}
     {/if}
 
     <div class="identity">
@@ -100,6 +102,7 @@
   .collection { border-bottom: 1px solid var(--border-default); background: var(--surface-base); }
   .collection:last-child { border-bottom: 0; }
   .parent-row { display: grid; grid-template-columns: 36px 128px minmax(0, 1fr) auto; align-items: center; gap: var(--sp-3); padding: var(--sp-4); background: var(--surface-sunken); }
+  .parent-row.without-thumbnail { grid-template-columns: 36px minmax(0, 1fr) auto; }
   .toggle { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid var(--border-default); border-radius: var(--r-md); background: var(--surface-base); color: var(--text-primary); font-size: var(--fs-lg); }
   .toggle:hover { background: var(--surface-hover); }
   .thumbnail { width: 128px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--r-sm); background: var(--surface-base); }
@@ -117,6 +120,7 @@
 
   @media (max-width: 760px) {
     .parent-row { grid-template-columns: 36px 72px minmax(0, 1fr); }
+    .parent-row.without-thumbnail { grid-template-columns: 36px minmax(0, 1fr); }
     .thumbnail { width: 72px; height: 44px; }
     .actions { grid-column: 2 / -1; max-width: none; justify-content: flex-start; }
     .children { margin-left: 20px; }

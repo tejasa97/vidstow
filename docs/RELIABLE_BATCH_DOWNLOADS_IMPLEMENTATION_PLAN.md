@@ -35,7 +35,7 @@ This is the living implementation plan for reliable batch downloads. Keep the st
 10. The structured failure taxonomy applies to all jobs, not only batch children.
 11. Product measurements are local-only, privacy-safe aggregate counters. Stable message keys are introduced now; English remains the only copy in this release.
 12. Development occurs on a new branch from the latest `origin/main`.
-13. Pre-admission batch input and review remain on Home. Queue is shown only after successful admission; validation counts and **Edit lines / Start downloads** controls never appear on Queue.
+13. Pre-admission batch input and review remain on Home. Queue is shown only after successful admission; validation summary and **Edit URLs / Start downloads** controls never appear on Queue.
 14. The approved UI structure is the line-level Home review and expandable Queue parent documented in Section 5. The current polished application shell is authoritative for window dimensions and responsive behavior rather than the older 1280×800 feature frame.
 
 ## 3. Goals
@@ -81,7 +81,7 @@ The Batch URLs mode has four UI states:
    - Show every original non-empty line in input order with a status and safe explanation.
    - Show a 16:9 thumbnail for every successfully analyzed video, with a deterministic YouTube thumbnail fallback and a neutral placeholder when an image is unavailable. Keep non-ready rows aligned using the same placeholder slot.
    - For a duplicate, identify the first matching line, for example `Duplicate of line 1`.
-   - Provide **Edit lines** to return to input and invalidate the current review/token.
+   - Provide **Edit URLs** to return to input and invalidate the current review/token.
    - Show one format selector and the current default output folder with **Change…**.
    - Label the primary action with its concrete ready count, for example **Start 3 downloads**.
    - Enable the primary action only when at least two items are ready and the analysis token remains valid.
@@ -105,7 +105,7 @@ Review URLs
 Format       [Video | Audio]
 Save to      /Users/...                 [Change…]
 
-[Edit lines]                         [Start 3 downloads]
+[Edit URLs]                          [Start 3 downloads]
 ```
 
 The displayed URL must be a safe, visually truncated representation of the original line. It must not become telemetry or diagnostic data.
@@ -131,6 +131,7 @@ Batch download · 3 videos
 ```
 
 - Render a durable expandable parent titled from backend-authored collection data, with a fallback such as `Batch download · 3 videos`.
+- Do not show a synthetic thumbnail or letter placeholder on a pasted-batch parent. The compact parent begins with its disclosure control, title, policy, progress, and actions; individual child rows retain their video thumbnails. Playlist parents may continue using playlist artwork.
 - Derive the parent total, completion text, and progress bar from the same durable ordered child set. Never display contradictory totals.
 - Summarize child state accurately: queued, active, completed, action required, and failed.
 - Display every batch child in stable input order and make collection membership visually unambiguous.
@@ -393,7 +394,7 @@ If the aggregate store threatens the core feature schedule, keep instrumentation
 - Input, analyzing, review, stale response, expiry, and started states.
 - Mixed result counts and line statuses.
 - Start disabled with fewer than two ready items.
-- Edit lines invalidates the old review state.
+- Edit URLs invalidates the old review state.
 - One policy selector affects all ready items.
 - Validation review remains on Home and is absent from Queue after admission.
 - Every input line remains visible in review; duplicates identify the first matching line.
@@ -459,6 +460,7 @@ Keep this section current throughout implementation.
 - 2026-08-22: Manually tested a mixed five-line batch in the production macOS app: two ready videos, one canonical duplicate, one invalid host, and one safe analysis failure. Started both ready downloads, verified the expanded durable parent and stable child order, completed both files, restarted the app, and verified the restored `2 of 2 complete` collection.
 - 2026-08-22: Manual review exposed stale speed/ETA text on a completed child. Updated the backend queue projection to clear live transfer telemetry for completed rows and added a regression test.
 - 2026-08-22: Product review identified redundant review counts and missing analyzed-video artwork. Removed the duplicate count strip, made the remaining summary conditional and outcome-focused, added aligned 16:9 thumbnails/placeholders, and added a backend YouTube-thumbnail fallback plus regression coverage.
+- 2026-08-22: Follow-up product review removed the synthetic pasted-batch parent thumbnail while retaining child and playlist artwork, renamed **Edit lines** to the clearer **Edit URLs**, and switched the native macOS window appearance to Aqua so the centered title remains legible over the light title bar.
 
 ### Plan changes
 
