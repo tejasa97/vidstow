@@ -22,7 +22,9 @@ does not exist yet.
 
 ### Fixed
 
-- No entries yet.
+- Action-required downloads can be dismissed from the queue without retrying
+  or deleting their preserved temporary data. Rows with pending cleanup remain
+  visible until that cleanup settles.
 
 ## [0.1.0-beta.5] - 2026-08-22
 

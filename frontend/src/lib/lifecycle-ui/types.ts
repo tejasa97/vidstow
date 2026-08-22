@@ -187,6 +187,7 @@ export interface ActionRequiredReviewViewModel {
   canRetryRecovery: boolean;
   canRetryFreshLink: boolean;
   canDiscard: boolean;
+  canRemove: boolean;
   canRetryCleanup: boolean;
 }
 

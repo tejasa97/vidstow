@@ -74,11 +74,159 @@ func TestQueueViewLifecycleCapabilitiesAndAggregates(t *testing.T) {
 	if !rows["completed"].Capabilities.Open || !rows["completed"].Capabilities.Remove {
 		t.Fatal("completed row capability incorrect")
 	}
-	if !rows["action"].Capabilities.Review || rows["action"].Capabilities.Remove || rows["action"].Capabilities.Retry {
-		t.Fatal("action-required row must expose only the evidence-preserving Review action")
+	if !rows["action"].Capabilities.Review || !rows["action"].Capabilities.Remove || rows["action"].Capabilities.Retry {
+		t.Fatal("action-required row must expose Review and queue-only Remove without retry authority")
 	}
 	if !view.Capabilities.PauseAll || !view.Capabilities.ClearCompleted {
 		t.Fatal("queue-wide capabilities not backend authored")
+	}
+}
+
+func TestQueueActionRequiredRemovalIsAuthorizedDurableAndNonDestructive(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "action-remove")
+	job := &store.state.Jobs[0]
+	job.Lifecycle = jobmodel.LifecycleActionRequired
+	job.Desired = jobmodel.DesiredPaused
+	job.ActionRequiredCode = "session-manifest-corrupt"
+	job.LastErrorCode = job.ActionRequiredCode
+	store.state.History = []jobmodel.HistoryEntry{{ID: "completed-history", Title: "Existing download"}}
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	prepareCalls := 0
+	manager.prepareResumeDiscard = func(context.Context, engine.OutputRootRef, string) (*engine.ResumeDiscardHandle, error) {
+		prepareCalls++
+		return nil, errors.New("must not be called")
+	}
+
+	view := manager.QueueView()
+	if len(view.Rows) != 1 || !view.Rows[0].Capabilities.Review || !view.Rows[0].Capabilities.Remove {
+		t.Fatalf("action-required capabilities = %#v", view.Rows)
+	}
+	if err := manager.Remove(job.ID); err == nil {
+		t.Fatal("legacy un-tokened removal dismissed an action-required row")
+	}
+	if err := manager.QueueRemove(job.ID, "stale-token"); err == nil {
+		t.Fatal("stale token removed an action-required row")
+	}
+	if err := manager.QueueRemove(job.ID, view.Rows[0].CommandToken); err != nil {
+		t.Fatalf("QueueRemove: %v", err)
+	}
+	if _, ok := manager.Find(job.ID); ok {
+		t.Fatal("action-required row remained in the manager")
+	}
+	after := store.Snapshot()
+	if len(after.Jobs) != 0 {
+		t.Fatalf("durable jobs after removal = %#v", after.Jobs)
+	}
+	if len(after.History) != 1 || after.History[0].ID != "completed-history" {
+		t.Fatalf("queue removal changed download history = %#v", after.History)
+	}
+	if prepareCalls != 0 {
+		t.Fatalf("queue removal prepared engine discard %d times", prepareCalls)
+	}
+}
+
+func TestActionRequiredCleanupEvidenceBlocksRemoval(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "action-cleanup")
+	job := &store.state.Jobs[0]
+	job.Lifecycle = jobmodel.LifecycleActionRequired
+	job.Desired = jobmodel.DesiredPaused
+	job.ActionRequiredCode = "session-reconciliation-required"
+	job.LastErrorCode = job.ActionRequiredCode
+	store.state.Cleanup = []jobmodel.CleanupTombstone{{
+		JobID: job.ID, SessionID: job.SessionID, OutputRoot: job.OutputRoot, Reservation: job.Reservation,
+		State: jobmodel.CleanupQuarantined, LastErrorCode: "session-reconciliation-required",
+		CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
+	}}
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	view := manager.QueueView()
+	if len(view.Rows) != 1 || view.Rows[0].Capabilities.Remove || !view.Rows[0].Capabilities.Review {
+		t.Fatalf("cleanup-backed action-required row = %#v", view.Rows)
+	}
+	review, err := manager.QueueActionRequiredReview(job.ID, view.Rows[0].CommandToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.CanRemove {
+		t.Fatalf("cleanup-backed review exposed Remove: %#v", review)
+	}
+	if err := manager.QueueRemove(job.ID, view.Rows[0].CommandToken); err == nil {
+		t.Fatal("pending cleanup evidence was hidden by queue removal")
+	}
+	after := store.Snapshot()
+	if len(after.Jobs) != 1 || len(after.Cleanup) != 1 {
+		t.Fatalf("failed removal changed durable evidence: %#v", after)
+	}
+}
+
+func TestActionRequiredCollectionChildrenCanBeDismissedWithoutOrphaningParent(t *testing.T) {
+	store, _, _ := newV2TestStore(t, "first", "second")
+	createdAt := store.state.Jobs[0].CreatedAt
+	store.state.Collections = []jobmodel.DurableCollection{{
+		ID: "batch", Revision: 1, Kind: jobmodel.CollectionKindBatch,
+		Title: "Saved batch", Policy: "video:1080p", ChildJobIDs: []string{"first", "second"},
+		CreatedAt: createdAt, UpdatedAt: createdAt,
+	}}
+	for index := range store.state.Jobs {
+		job := &store.state.Jobs[index]
+		job.CollectionID = "batch"
+		job.CollectionIndex = index + 1
+		job.Lifecycle = jobmodel.LifecycleActionRequired
+		job.Desired = jobmodel.DesiredPaused
+		job.ActionRequiredCode = "session-manifest-corrupt"
+		job.LastErrorCode = job.ActionRequiredCode
+	}
+
+	manager := New(nil, nil)
+	defer manager.Close()
+	if err := manager.SetStateStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(store.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	view := manager.QueueView()
+	if len(view.Collections) != 1 || !view.Collections[0].Capabilities.Remove {
+		t.Fatalf("action-required batch capabilities = %#v", view.Collections)
+	}
+	firstToken := ""
+	for _, row := range view.Rows {
+		if row.ID == "first" {
+			firstToken = row.CommandToken
+		}
+	}
+	if err := manager.QueueRemove("first", firstToken); err != nil {
+		t.Fatalf("remove first child: %v", err)
+	}
+	afterFirst := store.Snapshot()
+	if len(afterFirst.Collections) != 1 || len(afterFirst.Collections[0].ChildJobIDs) != 1 || afterFirst.Collections[0].ChildJobIDs[0] != "second" {
+		t.Fatalf("batch after first removal = %#v", afterFirst.Collections)
+	}
+	view = manager.QueueView()
+	if len(view.Collections) != 1 || !view.Collections[0].Capabilities.Remove {
+		t.Fatalf("remaining batch capabilities = %#v", view.Collections)
+	}
+	if _, err := manager.QueueRemoveCollection("batch", view.Collections[0].CommandToken); err != nil {
+		t.Fatalf("remove remaining batch: %v", err)
+	}
+	afterFinal := store.Snapshot()
+	if len(afterFinal.Jobs) != 0 || len(afterFinal.Collections) != 0 {
+		t.Fatalf("final batch removal left durable state: jobs=%#v collections=%#v", afterFinal.Jobs, afterFinal.Collections)
 	}
 }
 
@@ -102,7 +250,7 @@ func TestQueueActionRequiredReviewIsAuthorizedAndPreservesEvidence(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if review.JobID != "action" || review.Title != "Saved video" || !review.CanStartOver || review.Message == "" || review.PreservationNotice == "" {
+	if review.JobID != "action" || review.Title != "Saved video" || !review.CanStartOver || !review.CanRemove || review.Message == "" || review.PreservationNotice == "" {
 		t.Fatalf("review = %#v", review)
 	}
 	url, err := m.QueueActionRequiredStartOverURL("action", token)
