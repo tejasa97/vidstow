@@ -13,6 +13,8 @@ This is the living implementation plan for reliable batch downloads. Keep the st
 - UI reference: Penpot project **VidStow · Product UI**
   - **Reliable batch downloads — exploration**: `206f7735-38a5-80c3-8008-8421bf7c2072`
   - **Batch URLs — MVP**: `b44c5d20-92db-805f-8008-8498f2b0d2e9`
+  - Linked **Batch URLs — Main** content board: `22fad558-50af-800a-8008-849f0af8a959`
+  - Use the newer **Polish · 02 · Queue** (`b44c5d20-92db-805f-8008-84b1df0f614a`) and **Polish · 08 · Playlist review** (`b44c5d20-92db-805f-8008-84b1e07a4069`) boards for the current shared shell, spacing, and control patterns.
 - Screenshot supplied during planning: `Screenshot 2026-08-22 at 11.48.50 AM.png`
 - Relevant architecture:
   - `docs/ARCHITECTURE.md`
@@ -33,6 +35,8 @@ This is the living implementation plan for reliable batch downloads. Keep the st
 10. The structured failure taxonomy applies to all jobs, not only batch children.
 11. Product measurements are local-only, privacy-safe aggregate counters. Stable message keys are introduced now; English remains the only copy in this release.
 12. Development occurs on a new branch from the latest `origin/main`.
+13. Pre-admission batch input and review remain on Home. Queue is shown only after successful admission; validation counts and **Edit lines / Start downloads** controls never appear on Queue.
+14. The approved UI structure is the line-level Home review and expandable Queue parent documented in Section 5. The current polished application shell is authoritative for window dimensions and responsive behavior rather than the older 1280×800 feature frame.
 
 ## 3. Goals
 
@@ -71,32 +75,85 @@ The Batch URLs mode has four UI states:
    - Disable duplicate submissions.
    - Show bounded progress without presenting unverified lines as valid.
 3. **Review**
+   - Remain on Home; do not render Queue jobs or Queue navigation state in this view.
    - Show counts for pasted, ready, duplicate, invalid, and analysis-failed lines.
-   - Show every line with a status and safe explanation.
-   - Provide **Edit lines** to return to input.
-   - Show one format selector and the current default output folder.
-   - Enable **Start batch** only when at least two items are ready and the analysis token remains valid.
+   - Show every original non-empty line in input order with a status and safe explanation.
+   - For a duplicate, identify the first matching line, for example `Duplicate of line 1`.
+   - Provide **Edit lines** to return to input and invalidate the current review/token.
+   - Show one format selector and the current default output folder with **Change…**.
+   - Label the primary action with its concrete ready count, for example **Start 3 downloads**.
+   - Enable the primary action only when at least two items are ready and the analysis token remains valid.
 4. **Started**
    - Confirm the admitted count.
-   - Navigate to Queue and focus or reveal the new batch parent.
+   - Navigate to Queue and focus or reveal the new batch parent, initially expanded.
+   - Do not carry the validation summary or review actions into Queue.
+
+Approved review structure:
+
+```text
+Batch URLs
+3 ready · 1 duplicate · 1 invalid
+
+[5 pasted] [3 ready] [1 duplicate] [1 invalid]
+
+1  youtube.com/...       Ready
+2  youtu.be/...          Duplicate of line 1
+3  youtube.com/...       Ready
+4  example.com/...       Invalid URL
+5  youtube.com/...       Ready
+
+Format       [Video | Audio]
+Save to      /Users/...                 [Change…]
+
+[Edit lines]                         [Start 3 downloads]
+```
+
+The displayed URL must be a safe, visually truncated representation of the original line. It must not become telemetry or diagnostic data.
 
 Suggested components:
 
 - `frontend/src/lib/batch/BatchURLComposer.svelte`
 - `frontend/src/lib/batch/BatchURLReview.svelte`
-- Reuse an existing output/format selector where practical rather than introducing parallel policy UI.
+- Reuse the current polished playlist-review format and output-folder controls rather than introducing parallel policy UI.
 
 ### 5.2 Queue flow
 
-- Render a durable expandable parent titled from backend-authored collection data, with a fallback such as `Batch download · 3 URLs`.
-- Summarize child state accurately: queued, active, completed, action required, and failed.
-- Display children in stable input order.
-- Do not remove successful children when siblings fail or retry.
-- Normalize the mockup inconsistency: displayed totals and `x of y complete` always derive from durable children.
-- Provide accessible text/icon state indicators; color must not be the only signal.
-- Ensure keyboard access and visible focus for mode selection, expansion, review rows, and recovery actions.
+After admission, use the normal Queue page and its current polished shell:
 
-### 5.3 Failure presentation
+```text
+Queue
+
+Batch download · 3 videos
+2 of 3 complete
+  ├─ Completed video
+  ├─ Completed video
+  └─ Paused after restart             [Resume] [Cancel]
+```
+
+- Render a durable expandable parent titled from backend-authored collection data, with a fallback such as `Batch download · 3 videos`.
+- Derive the parent total, completion text, and progress bar from the same durable ordered child set. Never display contradictory totals.
+- Summarize child state accurately: queued, active, completed, action required, and failed.
+- Display every batch child in stable input order and make collection membership visually unambiguous.
+- Use indentation, a subtle collection rail/background, or an equivalent grouping treatment; include clear spacing after the last child so the next standalone job cannot appear to belong to the batch.
+- Open the newly admitted batch expanded. Keep the parent easy to collapse because the MVP permits up to 20 children.
+- Do not remove successful children when siblings fail or retry.
+- Completed progress bars must be fully filled or omitted. Parent and child progress visuals must agree with their authored text.
+- Treat **Remove** as a backend-authored capability with explicit semantics. If ambiguity remains, confirmation copy must state whether unfinished children are cancelled and that completed files remain on disk.
+- Provide accessible text/icon state indicators; color must not be the only signal.
+- Ensure keyboard access and visible focus for expansion and recovery actions.
+
+### 5.3 Layout behavior
+
+- Use the existing shared application shell and current polished Queue/Home dimensions; do not hard-code the older feature board’s 1280×800 canvas or 160px sidebar.
+- Preserve the established 32px main-content padding and spacing rhythm where the active shell permits it.
+- Let the main page own vertical scrolling. Avoid a second nested scrollbar inside the batch collection.
+- Allow Home header/actions and review controls to wrap cleanly at the application’s supported minimum window width.
+- Truncate long URLs and video titles before they collide with status or action controls, while preserving the full accessible label where safe.
+- Use responsive/fill sizing for the summary and review list rather than the feature board’s fixed 560px summary strip plus disconnected validation copy.
+- Target approximately 40–44px for interactive controls and retain visible keyboard focus.
+- Use normal body sizing for important validation and recovery guidance; do not rely on 11px tertiary text for required actions.
+
+### 5.4 Failure presentation
 
 Each failed row receives a backend-authored failure projection:
 
@@ -338,10 +395,14 @@ If the aggregate store threatens the core feature schedule, keep instrumentation
 - Start disabled with fewer than two ready items.
 - Edit lines invalidates the old review state.
 - One policy selector affects all ready items.
-- Parent expansion and accurate completed/total labels.
+- Validation review remains on Home and is absent from Queue after admission.
+- Every input line remains visible in review; duplicates identify the first matching line.
+- Primary admission copy reflects the ready count.
+- Parent expansion, unambiguous child grouping, and accurate completed/total labels.
+- Completed and parent progress visuals agree with their text.
 - Failure headings, descriptions, and capability-backed actions.
 - Keyboard navigation, visible focus, live announcements, and non-color state cues.
-- Narrow and standard desktop layouts against the Penpot reference.
+- Narrow and standard desktop layouts using the current polished shared shell rather than fixed feature-board dimensions.
 
 ### 10.4 Required validation commands
 
@@ -380,7 +441,7 @@ The feature is complete only when:
 - Auth and permanent-unavailable failures do not offer false retry actions.
 - Disk/permission guidance and start-again behavior cannot silently overwrite or create conflicting reservations.
 - Single-download and playlist flows pass regression tests.
-- The UI meets the supplied Penpot behavior and accessibility expectations.
+- The UI matches the approved Home-review and Queue-after-admission structures in Section 5, uses the current polished shared shell, and meets accessibility expectations.
 - No URL, video identity, title, or path is added to diagnostics or product measurements.
 - All required validation is green and recorded below.
 
@@ -391,10 +452,11 @@ Keep this section current throughout implementation.
 ### Progress log
 
 - 2026-08-22: Reviewed the PRD, Penpot boards, current frontend/backend architecture, collection admission, retry/session semantics, State v2, reservations, and diagnostics contract. Confirmed scope decisions with the product owner. Created this implementation branch and plan. No feature implementation started.
+- 2026-08-22: Reviewed the linked Batch URLs Main board in context with the full MVP frame and the current polished Queue/playlist layouts. Product owner approved the revised Home review and Queue-after-admission structures. No feature implementation started.
 
 ### Plan changes
 
-- None yet.
+- 2026-08-22: Separated pre-admission review from Queue, adopted line-level validation with duplicate source-line references, added batch-wide format/folder placement, clarified collection grouping and progress consistency, and made the current polished shell authoritative for responsive layout.
 
 ### Validation results
 
