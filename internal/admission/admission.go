@@ -214,13 +214,14 @@ func (c *Coordinator) Admit(ctx context.Context, root *reservationfs.Root, reque
 
 	rootRef := jobmodel.OutputRootRef{CanonicalPath: facts.Volume.CanonicalPath, Identity: facts.Volume.Identity, EngineIdentity: engineRoot.Identity}
 	durableRequest := jobmodel.PersistedRequest{
-		SourceURL: request.Queue.URL,
-		VideoID:   request.Queue.VideoID,
-		Title:     request.Queue.Title,
-		Channel:   request.Queue.Channel,
-		Quality:   string(request.Queue.Quality),
-		PlanID:    request.Queue.PlanID,
-		Duration:  request.Queue.Duration,
+		SourceURL:     request.Queue.URL,
+		VideoID:       request.Queue.VideoID,
+		Title:         request.Queue.Title,
+		Channel:       request.Queue.Channel,
+		Quality:       string(request.Queue.Quality),
+		PlanID:        request.Queue.PlanID,
+		Duration:      request.Queue.Duration,
+		OutputOptions: request.Queue.Options.Clone(),
 	}
 	if durableRequest.Quality == "" {
 		durableRequest.Quality = string(jobs.QualityBest)

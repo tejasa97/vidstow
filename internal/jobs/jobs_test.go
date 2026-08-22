@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/youtube_dlp/engine"
 )
@@ -252,6 +253,86 @@ func TestSummarizeAccessUsesNeutralFallback(t *testing.T) {
 	}
 }
 
+func TestSummarizeAnalysisCollectsSubtitleLanguages(t *testing.T) {
+	raw := json.RawMessage(`{
+		"id":"abc123","title":"Demo",
+		"subtitles":{
+			"en":[{"ext":"vtt","name":"English","url":"https://example.invalid/en.vtt"}],
+			"es":[{"ext":"vtt","name":"Spanish"}],
+			"not a code":[{"ext":"vtt"}]
+		},
+		"automatic_captions":{
+			"en":[{"ext":"vtt","name":"English (auto-generated)"}],
+			"fr":[{"ext":"srv1"}]
+		}
+	}`)
+	summary, _, err := summarizeAnalysis(raw, "https://www.youtube.com/watch?v=abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SubtitleLanguage{
+		{Code: "en", Name: "English"},
+		{Code: "es", Name: "Spanish"},
+		{Code: "en", Name: "English (auto-generated)", Auto: true},
+		{Code: "fr", Auto: true},
+	}
+	if len(summary.Subtitles) != len(want) {
+		t.Fatalf("subtitles = %#v; want %#v", summary.Subtitles, want)
+	}
+	for index, expected := range want {
+		if summary.Subtitles[index] != expected {
+			t.Fatalf("subtitles[%d] = %#v; want %#v", index, summary.Subtitles[index], expected)
+		}
+	}
+}
+
+func TestSummarizeAnalysisOmitsSubtitlesWhenNoneReported(t *testing.T) {
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`{"id":"abc123","title":"Demo"}`),
+		json.RawMessage(`{"id":"abc123","title":"Demo","subtitles":{},"automatic_captions":{}}`),
+		json.RawMessage(`{"id":"abc123","title":"Demo","subtitles":null}`),
+	} {
+		summary, _, err := summarizeAnalysis(raw, "https://www.youtube.com/watch?v=abc123")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if summary.Subtitles != nil {
+			t.Fatalf("subtitles = %#v; want nil for %s", summary.Subtitles, raw)
+		}
+	}
+}
+
+func TestSummarizeAnalysisBoundsSubtitleCollections(t *testing.T) {
+	manual := map[string]any{}
+	automatic := map[string]any{}
+	for index := 0; index < maxAutomaticSubtitleLanguages+20; index++ {
+		code := fmt.Sprintf("l%03d", index)
+		if index%2 == 0 {
+			manual[code] = []any{map[string]any{"ext": "vtt"}}
+		}
+		automatic[code] = []any{map[string]any{"ext": "vtt"}}
+	}
+	payload, err := json.Marshal(map[string]any{"id": "abc123", "title": "Demo", "subtitles": manual, "automatic_captions": automatic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, _, err := summarizeAnalysis(payload, "https://www.youtube.com/watch?v=abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manualCount, automaticCount := 0, 0
+	for _, language := range summary.Subtitles {
+		if language.Auto {
+			automaticCount++
+		} else {
+			manualCount++
+		}
+	}
+	if manualCount != maxManualSubtitleLanguages || automaticCount != maxAutomaticSubtitleLanguages {
+		t.Fatalf("manual = %d, automatic = %d; want %d and %d", manualCount, automaticCount, maxManualSubtitleLanguages, maxAutomaticSubtitleLanguages)
+	}
+}
+
 func TestPlanSubmissionUsesCachedPrivateSelectorAndMP3Postprocessor(t *testing.T) {
 	manager := New(nil, nil)
 	manager.cachePlans("abc123", []outputplan.Plan{{
@@ -284,6 +365,129 @@ func TestPlanSubmissionUsesCachedPrivateSelectorAndMP3Postprocessor(t *testing.T
 		}
 	case <-time.After(time.Second):
 		t.Fatal("download runner did not receive a request")
+	}
+}
+
+func TestSubmitPropagatesOutputOptionsToEngineRequest(t *testing.T) {
+	subtitles := jobmodel.OutputOptions{
+		SubtitleMode:         jobmodel.SubtitleModeEmbed,
+		SubtitleLanguages:    []string{"en", "de"},
+		SubtitleAutoCaptions: true,
+		EmbedMetadata:        true,
+		EmbedThumbnail:       true,
+	}
+	sidecar := jobmodel.OutputOptions{
+		SubtitleMode:      jobmodel.SubtitleModeSidecar,
+		SubtitleFormat:    "srt",
+		SubtitleLanguages: []string{"es"},
+		EmbedChapters:     true,
+	}
+	for name, options := range map[string]jobmodel.OutputOptions{"embed": subtitles, "sidecar": sidecar} {
+		t.Run(name, func(t *testing.T) {
+			manager := New(nil, nil)
+			manager.cachePlans("abc123", []outputplan.Plan{{
+				ID: "video-1080-mp4", Kind: outputplan.KindVideo, Label: "MP4 1080p",
+				Container: "MP4", Selector: "137+140",
+			}})
+			started := make(chan engine.Request, 1)
+			manager.runDownload = func(_ context.Context, req engine.Request, _ engine.EventHandler) (engine.Result, error) {
+				started <- req
+				return engine.Result{}, nil
+			}
+			_, err := manager.Submit(Request{
+				URL: "https://example.invalid/watch?v=abc123", VideoID: "abc123",
+				PlanID: "video-1080-mp4", OutputDir: t.TempDir(), Options: options,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case req := <-started:
+				if !req.Subtitles.WriteManual {
+					t.Fatal("subtitle write mode must be manual")
+				}
+				if got := req.Subtitles.WriteAutomatic; got != options.SubtitleAutoCaptions {
+					t.Fatalf("WriteAutomatic = %v; want %v", got, options.SubtitleAutoCaptions)
+				}
+				if got := req.Subtitles.Embed; got != (options.SubtitleMode == jobmodel.SubtitleModeEmbed) {
+					t.Fatalf("Embed = %v; want %v", got, options.SubtitleMode == jobmodel.SubtitleModeEmbed)
+				}
+				wantConvert := options.SubtitleFormat
+				if options.SubtitleMode == jobmodel.SubtitleModeEmbed {
+					wantConvert = "vtt"
+				}
+				if req.Subtitles.ConvertFormat != wantConvert {
+					t.Fatalf("ConvertFormat = %q; want %q", req.Subtitles.ConvertFormat, wantConvert)
+				}
+				if strings.Join(req.Subtitles.Languages, ",") != strings.Join(options.SubtitleLanguages, ",") {
+					t.Fatalf("Languages = %v; want %v", req.Subtitles.Languages, options.SubtitleLanguages)
+				}
+				if req.EmbedMetadata != options.EmbedMetadata {
+					t.Fatalf("EmbedMetadata = %v; want %v", req.EmbedMetadata, options.EmbedMetadata)
+				}
+				if req.EmbedChapters == nil {
+					t.Fatal("explicit chapter choice must cross into the engine request")
+				}
+				if *req.EmbedChapters != options.EmbedChapters {
+					t.Fatalf("EmbedChapters = %v; want %v", *req.EmbedChapters, options.EmbedChapters)
+				}
+				if req.Thumbnails.Write != options.EmbedThumbnail || req.Thumbnails.Embed != options.EmbedThumbnail {
+					t.Fatalf("Thumbnails = %#v; want Write/Embed %v", req.Thumbnails, options.EmbedThumbnail)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("download runner did not receive a request")
+			}
+		})
+	}
+}
+
+func TestSubmitPropagatesDefaultOutputOptionsAsEngineDefaults(t *testing.T) {
+	manager := New(nil, nil)
+	manager.cachePlans("abc123", []outputplan.Plan{{ID: "video-1080-mp4", Kind: outputplan.KindVideo, Container: "MP4", Selector: "137+140"}})
+	started := make(chan engine.Request, 1)
+	manager.runDownload = func(_ context.Context, req engine.Request, _ engine.EventHandler) (engine.Result, error) {
+		started <- req
+		return engine.Result{}, nil
+	}
+	if _, err := manager.Submit(Request{
+		URL: "https://example.invalid/watch?v=abc123", VideoID: "abc123",
+		PlanID: "video-1080-mp4", OutputDir: t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case req := <-started:
+		if req.Subtitles.WriteManual || req.Subtitles.WriteAutomatic || req.Subtitles.Embed || req.Subtitles.ConvertFormat != "" || len(req.Subtitles.Languages) != 0 {
+			t.Fatalf("subtitles = %#v; want zero options for a plain download", req.Subtitles)
+		}
+		if req.EmbedMetadata || req.EmbedChapters != nil || req.Thumbnails.Embed {
+			t.Fatalf("embedding flags set for plain download: %#v", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("download runner did not receive a request")
+	}
+}
+
+func TestSubmitRejectsInvalidOutputOptions(t *testing.T) {
+	manager := New(nil, nil)
+	_, err := manager.Submit(Request{
+		URL: "https://example.invalid/watch?v=abc123", VideoID: "abc123",
+		OutputDir: t.TempDir(),
+		Options:   jobmodel.OutputOptions{SubtitleMode: "banana"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported subtitle mode") {
+		t.Fatalf("Submit() error = %v; want unsupported subtitle mode", err)
+	}
+}
+
+func TestQueueMetadataAppendsOptionsNote(t *testing.T) {
+	metadata := queueMetadata(JobSnapshot{Channel: "Creator", DurationLabel: "1:30", QualityLabel: "MP4 1080p"})
+	if strings.Contains(metadata, "subtitles") {
+		t.Fatalf("metadata = %q; want no options note by default", metadata)
+	}
+	metadata = queueMetadata(JobSnapshot{Channel: "Creator", DurationLabel: "1:30", QualityLabel: "MP4 1080p", OptionsNote: "subtitles (en)"})
+	if !strings.Contains(metadata, "· subtitles (en)") {
+		t.Fatalf("metadata = %q; want appended options note", metadata)
 	}
 }
 

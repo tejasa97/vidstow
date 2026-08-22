@@ -647,6 +647,9 @@ func (a *App) StartDownload(req jobs.Request) (string, error) {
 	if req.Quality == "" {
 		req.Quality = jobs.QualityBest
 	}
+	if err := req.Options.Validate(); err != nil {
+		return "", fmt.Errorf("invalid output options: %w", err)
+	}
 	if req.PlanID == "" {
 		return "", errors.New("an analyzed output plan is required before starting a download")
 	}
@@ -657,6 +660,9 @@ func (a *App) StartDownload(req jobs.Request) (string, error) {
 	if plan.RequiresFFmpeg && !a.ffmpegStatus().Available {
 		a.recordDiagnosticProblem(operationID, localdiagnostics.Problem{Stage: "postprocessing", Category: "ffmpeg_missing", Outcome: "terminal", RetryBucket: "none"})
 		return "", errors.New("this output needs FFmpeg; install FFmpeg or choose an original audio format")
+	}
+	if req.Options.RequiresFFmpeg() && !a.ffmpegStatus().Available {
+		return "", errors.New("subtitles and embedded details need FFmpeg; install FFmpeg or turn those options off")
 	}
 	req.OutputDir, err = canonicalOutputRequestPath(req.OutputDir)
 	if err != nil {

@@ -248,7 +248,7 @@ func (c *Coordinator) AdmitCollection(ctx context.Context, root *reservationfs.R
 				Revision: 1, AttemptID: child.attemptID, SessionID: child.sessionID,
 				QueueOrdinal: state.NextQueueOrdinal, Lifecycle: jobmodel.LifecyclePending,
 				Phase: jobmodel.PhasePreparing, Desired: jobmodel.DesiredRunning,
-				Request:    jobmodel.PersistedRequest{SourceURL: child.request.Queue.URL, VideoID: child.request.Queue.VideoID, Title: child.request.Queue.Title, Channel: child.request.Queue.Channel, Quality: string(quality), PlanID: child.request.Queue.PlanID, Duration: child.request.Queue.Duration},
+				Request:    jobmodel.PersistedRequest{SourceURL: child.request.Queue.URL, VideoID: child.request.Queue.VideoID, Title: child.request.Queue.Title, Channel: child.request.Queue.Channel, Quality: string(quality), PlanID: child.request.Queue.PlanID, Duration: child.request.Queue.Duration, OutputOptions: child.request.Queue.Options.Clone()},
 				Plan:       jobmodel.PersistedPlan{ID: child.plan.ID, Kind: string(child.plan.Kind), Label: child.plan.Label, Container: child.plan.Container, VideoCodec: child.plan.VideoCodec, AudioCodec: child.plan.AudioCodec, RequiresFFmpeg: child.plan.RequiresFFmpeg, PrivateSelector: child.plan.Selector},
 				OutputRoot: child.rootRef, Reservation: jobReservation, RetryMode: jobmodel.RetryModeNone,
 				CreatedAt: now, UpdatedAt: now,

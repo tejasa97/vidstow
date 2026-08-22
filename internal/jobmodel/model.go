@@ -2,7 +2,11 @@
 // has no dependency on the live jobs manager or engine implementation.
 package jobmodel
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 const StateVersion = 2
 
@@ -67,6 +71,164 @@ type Settings struct {
 	PerVideoSubfolder     bool   `json:"perVideoSubfolder"`
 	ConfirmBeforeDownload bool   `json:"confirmBeforeDownload"`
 	AutomaticDiagnostics  string `json:"automaticDiagnostics,omitempty"`
+	// OutputOptions seeds the per-download output choices shown before a
+	// download is queued. The zero value keeps VidStow's historical output.
+	OutputOptions OutputOptions `json:"outputOptions"`
+}
+
+// Subtitle delivery modes. The empty string means no subtitles.
+const (
+	SubtitleModeSidecar = "sidecar"
+	SubtitleModeEmbed   = "embed"
+)
+
+// maxSubtitleLanguages bounds the per-request language list well below the
+// engine's 64-track embedding ceiling so one download cannot fan out into an
+// unreasonable sidecar batch.
+const maxSubtitleLanguages = 16
+
+// OutputOptions carries per-download subtitle and embedding preferences. It
+// rides on requests, durable jobs, and the settings defaults, so it must stay
+// free of engine and UI dependencies. The zero value preserves VidStow's
+// historical output: media only, no sidecars, no container metadata.
+type OutputOptions struct {
+	// SubtitleMode is "" (off), SubtitleModeSidecar, or SubtitleModeEmbed.
+	SubtitleMode string `json:"subtitleMode,omitempty"`
+	// SubtitleLanguages selects track languages. Empty defers to the engine's
+	// default: manual English, then English, then the first language offered.
+	SubtitleLanguages []string `json:"subtitleLanguages,omitempty"`
+	// SubtitleAutoCaptions allows auto-generated tracks when a selected
+	// language has no manual captions.
+	SubtitleAutoCaptions bool `json:"subtitleAutoCaptions,omitempty"`
+	// SubtitleFormat converts sidecar files to "srt" or "vtt". Empty keeps
+	// the source format. Embedding always converts internally.
+	SubtitleFormat string `json:"subtitleFormat,omitempty"`
+	// EmbedMetadata writes title, channel, and related canonical fields into
+	// the media container.
+	EmbedMetadata bool `json:"embedMetadata,omitempty"`
+	// EmbedThumbnail attaches the artwork to the media container.
+	EmbedThumbnail bool `json:"embedThumbnail,omitempty"`
+	// EmbedChapters attaches chapter markers. When EmbedMetadata is set and
+	// EmbedChapters is not, the engine embeds chapters alongside metadata.
+	EmbedChapters bool `json:"embedChapters,omitempty"`
+}
+
+// IsZero reports whether every option is at its historical default.
+func (o OutputOptions) IsZero() bool {
+	return o.Equal(OutputOptions{})
+}
+
+// RequiresFFmpeg reports whether any choice needs FFmpeg post-processing:
+// embedding subtitles or metadata always remuxes, and sidecar conversion
+// re-encodes the subtitle file.
+func (o OutputOptions) RequiresFFmpeg() bool {
+	return o.SubtitleMode == SubtitleModeEmbed ||
+		o.EmbedMetadata || o.EmbedThumbnail || o.EmbedChapters ||
+		(o.SubtitleMode == SubtitleModeSidecar && o.SubtitleFormat != "")
+}
+
+// Equal compares two option sets, including language order.
+func (o OutputOptions) Equal(other OutputOptions) bool {
+	if o.SubtitleMode != other.SubtitleMode ||
+		o.SubtitleAutoCaptions != other.SubtitleAutoCaptions ||
+		o.SubtitleFormat != other.SubtitleFormat ||
+		o.EmbedMetadata != other.EmbedMetadata ||
+		o.EmbedThumbnail != other.EmbedThumbnail ||
+		o.EmbedChapters != other.EmbedChapters ||
+		len(o.SubtitleLanguages) != len(other.SubtitleLanguages) {
+		return false
+	}
+	for index, language := range o.SubtitleLanguages {
+		if other.SubtitleLanguages[index] != language {
+			return false
+		}
+	}
+	return true
+}
+
+// Clone returns an independent copy, including the language slice.
+func (o OutputOptions) Clone() OutputOptions {
+	out := o
+	out.SubtitleLanguages = append([]string(nil), o.SubtitleLanguages...)
+	return out
+}
+
+// Validate enforces the shapes the UI and engine agree on. Language entries
+// are deliberately tight (the engine's language rules also accept patterns;
+// VidStow only ever sends codes it listed during analysis) so persisted
+// requests cannot smuggle rule syntax through State v2.
+func (o OutputOptions) Validate() error {
+	switch o.SubtitleMode {
+	case "", SubtitleModeSidecar, SubtitleModeEmbed:
+	default:
+		return fmt.Errorf("unsupported subtitle mode %q", o.SubtitleMode)
+	}
+	switch o.SubtitleFormat {
+	case "", "srt", "vtt":
+	default:
+		return fmt.Errorf("unsupported subtitle format %q", o.SubtitleFormat)
+	}
+	if len(o.SubtitleLanguages) > maxSubtitleLanguages {
+		return fmt.Errorf("too many subtitle languages (max %d)", maxSubtitleLanguages)
+	}
+	for _, language := range o.SubtitleLanguages {
+		if !ValidSubtitleLanguage(language) {
+			return fmt.Errorf("invalid subtitle language %q", language)
+		}
+	}
+	return nil
+}
+
+// ValidSubtitleLanguage reports whether a language entry is a bounded,
+// pattern-free code. VidStow only ever lists codes the engine reported during
+// analysis, so anything outside this shape is out of contract.
+func ValidSubtitleLanguage(language string) bool {
+	if language == "" || len(language) > 16 {
+		return false
+	}
+	for _, r := range language {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// Note renders a short, human-readable summary of the non-default choices for
+// queue row metadata. It never includes private paths or engine details.
+func (o OutputOptions) Note() string {
+	parts := make([]string, 0, 2)
+	switch o.SubtitleMode {
+	case SubtitleModeSidecar:
+		parts = append(parts, "subtitles"+o.noteLanguages())
+	case SubtitleModeEmbed:
+		parts = append(parts, "embedded subtitles"+o.noteLanguages())
+	}
+	var embeds []string
+	if o.EmbedMetadata {
+		embeds = append(embeds, "metadata")
+	}
+	if o.EmbedThumbnail {
+		embeds = append(embeds, "thumbnail")
+	}
+	if o.EmbedChapters {
+		embeds = append(embeds, "chapters")
+	}
+	if len(embeds) > 0 {
+		parts = append(parts, "embedded "+strings.Join(embeds, ", "))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (o OutputOptions) noteLanguages() string {
+	if len(o.SubtitleLanguages) == 0 {
+		return ""
+	}
+	suffix := " (" + strings.Join(o.SubtitleLanguages, ", ") + ")"
+	if len(suffix) > 48 {
+		suffix = suffix[:48] + "…)"
+	}
+	return suffix
 }
 
 type State struct {
@@ -151,13 +313,14 @@ type DurableJob struct {
 // PersistedRequest is deliberately limited to safe, user-originated metadata.
 // It must never contain media URLs, headers, cookies, or credentials.
 type PersistedRequest struct {
-	SourceURL string `json:"sourceUrl"`
-	VideoID   string `json:"videoId"`
-	Title     string `json:"title"`
-	Channel   string `json:"channel"`
-	Quality   string `json:"quality"`
-	PlanID    string `json:"planId"`
-	Duration  string `json:"duration"`
+	SourceURL     string        `json:"sourceUrl"`
+	VideoID       string        `json:"videoId"`
+	Title         string        `json:"title"`
+	Channel       string        `json:"channel"`
+	Quality       string        `json:"quality"`
+	PlanID        string        `json:"planId"`
+	Duration      string        `json:"duration"`
+	OutputOptions OutputOptions `json:"outputOptions,omitempty"`
 }
 
 type PersistedPlan struct {
@@ -231,6 +394,7 @@ func CloneState(in State) State {
 	}
 	for i := range out.Jobs {
 		out.Jobs[i].Reservation.Artifacts = append([]ReservedArtifact(nil), in.Jobs[i].Reservation.Artifacts...)
+		out.Jobs[i].Request.OutputOptions = in.Jobs[i].Request.OutputOptions.Clone()
 	}
 	out.History = append([]HistoryEntry(nil), in.History...)
 	out.Cleanup = append([]CleanupTombstone(nil), in.Cleanup...)

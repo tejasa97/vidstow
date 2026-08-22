@@ -16,19 +16,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/jobs"
 )
 
 // Settings is the JSON-serialized user settings document.
 type Settings struct {
-	DownloadFolder        string `json:"downloadFolder"`
-	FFmpegPath            string `json:"ffmpegPath"`
-	WindowWidth           int    `json:"windowWidth"`
-	WindowHeight          int    `json:"windowHeight"`
-	DownloadConcurrency   int    `json:"downloadConcurrency"`
-	PerVideoSubfolder     bool   `json:"perVideoSubfolder"`
-	ConfirmBeforeDownload bool   `json:"confirmBeforeDownload"`
-	AutomaticDiagnostics  string `json:"automaticDiagnostics"`
+	DownloadFolder        string                 `json:"downloadFolder"`
+	FFmpegPath            string                 `json:"ffmpegPath"`
+	WindowWidth           int                    `json:"windowWidth"`
+	WindowHeight          int                    `json:"windowHeight"`
+	DownloadConcurrency   int                    `json:"downloadConcurrency"`
+	PerVideoSubfolder     bool                   `json:"perVideoSubfolder"`
+	ConfirmBeforeDownload bool                   `json:"confirmBeforeDownload"`
+	OutputOptions         jobmodel.OutputOptions `json:"outputOptions"`
+	AutomaticDiagnostics  string                 `json:"automaticDiagnostics"`
 }
 
 // HistoryEntry is one completed download shown in the Downloads page.
@@ -198,6 +200,9 @@ func (s *Store) Settings() Settings {
 
 // SetSettings replaces the settings atomically and persists the result.
 func (s *Store) SetSettings(next Settings) error {
+	if err := next.OutputOptions.Validate(); err != nil {
+		return fmt.Errorf("store: invalid output options: %w", err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state.Settings = normalizeSettings(next)
