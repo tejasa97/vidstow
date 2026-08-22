@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/tejasa97/vidstow/internal/outputplan"
-	"github.com/tejasa97/youtube_dlp/engine"
+	"github.com/tejasa97/ytdlp-go/engine"
 )
 
 type memoryPersistence struct {

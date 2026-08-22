@@ -25,8 +25,8 @@ import (
 	"github.com/tejasa97/vidstow/internal/reservationfs"
 	"github.com/tejasa97/vidstow/internal/store"
 	"github.com/tejasa97/vidstow/internal/urlcheck"
-	"github.com/tejasa97/youtube_dlp/engine"
-	"github.com/tejasa97/youtube_dlp/engine/value"
+	"github.com/tejasa97/ytdlp-go/engine"
+	"github.com/tejasa97/ytdlp-go/engine/value"
 )
 
 var errRecoveryRequired = errors.New("vidstow: recovery required")

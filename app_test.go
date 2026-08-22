@@ -20,13 +20,13 @@ import (
 	"github.com/tejasa97/vidstow/internal/recovery"
 	"github.com/tejasa97/vidstow/internal/reservationfs"
 	"github.com/tejasa97/vidstow/internal/store"
-	"github.com/tejasa97/youtube_dlp/engine"
+	"github.com/tejasa97/ytdlp-go/engine"
 )
 
 func TestCurrentBuildInfoHasReleaseAndPlatformIdentity(t *testing.T) {
 	info := currentBuildInfo()
-	if info.Version != appVersion || info.EngineVersion == "" || info.OS == "" || info.Architecture == "" || info.GoVersion == "" {
-		t.Fatalf("build info = %#v; want complete release identity", info)
+	if info.Version != appVersion || info.EngineVersion != pinnedEngineVersion || info.OS == "" || info.Architecture == "" || info.GoVersion == "" {
+		t.Fatalf("build info = %#v; want complete release identity with engine %q", info, pinnedEngineVersion)
 	}
 }
 

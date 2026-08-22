@@ -43,7 +43,7 @@ jobs:
           test "$GITHUB_REF" = "refs/heads/main"
           test "$(git rev-parse "refs/tags/$REQUESTED_TAG^{commit}")" = "$GITHUB_SHA"
           grep -Eq "appVersion[[:space:]]*= \"$APP_VERSION\"" buildinfo.go
-          engine_version=$(awk '$1 == "github.com/tejasa97/youtube_dlp" {print $2}' go.mod)
+          engine_version=$(awk '$1 == "github.com/tejasa97/ytdlp-go" {print $2}' go.mod)
           test -n "$engine_version"
           grep -Fq "pinnedEngineVersion = \"$engine_version\"" buildinfo.go
 
@@ -117,11 +117,11 @@ jobs:
           test "$(lipo -archs "$archived_app/Contents/MacOS/ytdlp-js-helper")" = "arm64"
           codesign --verify --deep --strict --verbose=2 "$archived_app"
           test "$(/usr/libexec/PlistBuddy -c 'Print :VidStowReleaseVersion' "$archived_app/Contents/Info.plist")" = "$APP_VERSION"
-          engine_version=$(go list -m -f '{{.Version}}' github.com/tejasa97/youtube_dlp)
+          engine_version=$(go list -m -f '{{.Version}}' github.com/tejasa97/ytdlp-go)
           {
             echo "VidStow version: $APP_VERSION"
             echo "VidStow commit: $GITHUB_SHA"
-            echo "youtube_dlp module: $engine_version"
+            echo "ytdlp-go module: $engine_version"
             echo "Go: $(go version)"
             echo "Node: $(node --version)"
             echo "Wails: $WAILS_VERSION"

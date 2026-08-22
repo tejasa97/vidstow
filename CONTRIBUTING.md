@@ -3,7 +3,7 @@
 Keep changes focused on the Desktop product and preserve the deliberate
 boundary between the UI workflow and the engine/provider composition.
 VidStow must continue to use the public engine + providers/youtube packages
-from the ytdlp-go module github.com/tejasa97/youtube_dlp; do not reach into its
+from the ytdlp-go module github.com/tejasa97/ytdlp-go; do not reach into its
 internal packages or the broad pkg/ytdlp facade.
 
 Before submitting a change:

@@ -43,7 +43,7 @@ trap 'rm -f "$temporary_path"' EXIT HUP INT TERM
 printf '%s\n' "package-js-helper: building sibling helper ($helper_name)"
 (
   cd "$repo_dir"
-  CGO_ENABLED=0 go build -trimpath -o "$temporary_path" github.com/tejasa97/youtube_dlp/cmd/ytdlp-js-helper
+  CGO_ENABLED=0 go build -trimpath -o "$temporary_path" github.com/tejasa97/ytdlp-go/cmd/ytdlp-js-helper
 )
 chmod 755 "$temporary_path" 2>/dev/null || true
 mv -f "$temporary_path" "$helper_path"

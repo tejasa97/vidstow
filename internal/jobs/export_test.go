@@ -3,7 +3,7 @@ package jobs
 import (
 	"context"
 
-	"github.com/tejasa97/youtube_dlp/engine"
+	"github.com/tejasa97/ytdlp-go/engine"
 )
 
 // InstallDownloadHooksForTest replaces the manager's inspect and download
