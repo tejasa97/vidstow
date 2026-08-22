@@ -44,6 +44,18 @@
     } catch (err) { showError(err, fallback); }
   }
 
+  async function startAgain(detail: LifecycleJobEventDetail) {
+    try {
+      const url = await api.queue.startAgain(detail.jobId, detail.commandToken);
+      pendingUrl.set(url);
+      route.set('home');
+      showBanner('info', 'The old failed item was removed. Check the default folder, then confirm this download again.');
+    } catch (err) {
+      await refresh().catch(() => undefined);
+      showError(err, 'Could not start this item again');
+    }
+  }
+
   async function reviewActionRequired(detail: LifecycleJobEventDetail) {
     try {
       const review = await api.queue.reviewActionRequired(detail.jobId, detail.commandToken);
@@ -165,6 +177,9 @@
   }
 
   async function collectionAction(detail: QueueCollectionActionEvent) {
+    const collection = model.collections?.find((candidate) => candidate.id === detail.collectionId);
+    const collectionLabel = collection?.kind === 'batch' ? 'batch' : 'playlist';
+    const collectionTitle = collection?.title ?? `This ${collectionLabel}`;
     const operations = {
       pause: api.queue.pauseCollection,
       cancel: api.queue.cancelCollection,
@@ -176,16 +191,15 @@
       try {
         const count = await operations[detail.action](detail.collectionId, detail.commandToken);
         await refresh();
-        showBanner('info', `${detail.action === 'remove' ? 'Removed' : 'Updated'} ${count} playlist item${count === 1 ? '' : 's'}.`);
-      } catch (err) { showError(err, `Could not ${detail.action} the playlist`); }
+        showBanner('info', `${detail.action === 'remove' ? 'Removed' : 'Updated'} ${count} ${collectionLabel} item${count === 1 ? '' : 's'}.`);
+      } catch (err) { showError(err, `Could not ${detail.action} the ${collectionLabel}`); }
     };
     if (detail.action === 'cancel' || detail.action === 'remove') {
-      const collection = model.collections?.find((candidate) => candidate.id === detail.collectionId);
       modal.set({
         kind: 'confirm',
-        title: detail.action === 'cancel' ? 'Cancel this playlist?' : 'Remove this playlist from the queue?',
-        message: `${collection?.title ?? 'This playlist'} contains ${collection?.total ?? 0} queue item${collection?.total === 1 ? '' : 's'}.`,
-        actions: [{ label: detail.action === 'cancel' ? 'Cancel Playlist' : 'Remove Playlist', primary: true, action: execute }],
+        title: detail.action === 'cancel' ? `Cancel this ${collectionLabel}?` : `Remove this ${collectionLabel} from the queue?`,
+        message: `${collectionTitle} contains ${collection?.total ?? 0} queue item${collection?.total === 1 ? '' : 's'}. Completed files remain on disk.`,
+        actions: [{ label: detail.action === 'cancel' ? `Cancel ${collectionLabel === 'batch' ? 'Batch' : 'Playlist'}` : `Remove ${collectionLabel === 'batch' ? 'Batch' : 'Playlist'}`, primary: true, action: execute }],
       });
       return;
     }
@@ -216,6 +230,9 @@
     else if (event.action === 'cancel') action(event, api.queue.cancel, 'Could not cancel the download');
     else if (event.action === 'resume') action(event, api.queue.resume, 'Could not resume the download', 'Download resumed.');
     else if (event.action === 'retry') action(event, api.queue.retry, 'Could not retry the download', 'Retry added to the queue.');
+    else if (event.action === 'start-again') startAgain(event);
+    else if (event.action === 'open-source') action(event, api.queue.openSource, 'Could not open the source');
+    else if (event.action === 'copy-link') action(event, api.queue.copyLink, 'Could not copy the source link', 'Source link copied.');
     else if (event.action === 'review') reviewActionRequired(event);
     else if (event.action === 'open') action(event, api.queue.open, 'Could not open the downloaded file');
     else if (event.action === 'remove') action(event, api.queue.remove, 'Could not remove the download');

@@ -923,6 +923,7 @@ func installAppTestSeams(t *testing.T) func() {
 	oldDiagnosticsEndpoint := diagnosticsEventsEndpoint
 	oldDiagnosticID := newDiagnosticID
 	oldClipboard := clipboardSetText
+	oldBrowserOpen := browserOpenURL
 	logAppErrorf = func(context.Context, string, ...interface{}) {}
 	emitAppEvent = func(context.Context, string, ...interface{}) {}
 	return func() {
@@ -940,5 +941,6 @@ func installAppTestSeams(t *testing.T) func() {
 		diagnosticsEventsEndpoint = oldDiagnosticsEndpoint
 		newDiagnosticID = oldDiagnosticID
 		clipboardSetText = oldClipboard
+		browserOpenURL = oldBrowserOpen
 	}
 }

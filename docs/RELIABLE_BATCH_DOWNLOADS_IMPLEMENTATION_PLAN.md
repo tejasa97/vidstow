@@ -1,6 +1,6 @@
 # Reliable Batch Downloads — Implementation Plan
 
-**Status:** Planning complete; implementation not started  
+**Status:** Core implementation complete; final manual UI QA pending
 **Branch:** `feat/reliable-batch-downloads`  
 **Base:** `origin/main` at `1007c0b`  
 **Last updated:** 2026-08-22
@@ -410,24 +410,23 @@ Run the repository’s canonical formatting, generated-binding, Go test, fronten
 
 ## 11. Delivery sequence
 
-- [ ] **Phase 1 — Contracts and persistence**
-  - Generalize durable collections and add backward-compatible normalization.
-  - Define batch/failure API DTOs and stable message keys.
-  - Add schema and contract tests.
-- [ ] **Phase 2 — Analysis service**
-  - Add parser, canonical dedupe, bounded concurrent analysis, private expiring plan cache, and tests.
-- [ ] **Phase 3 — Atomic admission**
-  - Build all children/reservations, persist in one transaction, submit FIFO, and cover failure injection/restart.
-- [ ] **Phase 4 — Home UI**
-  - Add mode control, composer, review, common policy selection, admission flow, and accessibility tests.
-- [ ] **Phase 5 — Queue parent**
-  - Render durable batch parents/children with accurate aggregate progress and restart behavior.
-- [ ] **Phase 6 — Failure taxonomy and recovery**
-  - Add typed classification, backend failure projection, capability-aware actions, and safe start-again flow.
-- [ ] **Phase 7 — Local aggregate measurements**
-  - Add privacy-safe local counters only if the constraints in Section 9 can be met without expanding scope.
+- [x] **Phase 1 — Contracts and persistence**
+  - Generalized durable collections with backward-compatible playlist normalization.
+  - Added batch/failure DTOs, stable message keys, strict validation, and contract tests.
+- [x] **Phase 2 — Analysis service**
+  - Added bounded parsing, canonical dedupe, four-worker analysis, cancellation handling, bounded expiring single-claim tokens, and tests.
+- [x] **Phase 3 — Atomic admission**
+  - Added per-child plan/root resolution, one-transaction collection admission, FIFO submission, and durable post-commit recovery behavior.
+- [x] **Phase 4 — Home UI**
+  - Added mode control, composer, line-level review, shared policy/folder controls, token expiry, stale-response protection, and accessibility tests.
+- [x] **Phase 5 — Queue parent**
+  - Added durable batch parents/children with initial expansion, stable order, grouping, and consistent aggregate progress/title projection.
+- [x] **Phase 6 — Failure taxonomy and recovery**
+  - Added typed failure projection, stable copy keys, capability-aware actions, permanent auth/unavailable handling, and safe disk/permission start-again.
+- [x] **Phase 7 — Local aggregate measurements (explicitly deferred)**
+  - No usage store or upload path ships in this change. This avoids weakening the existing diagnostics privacy contract; instrumentation can be proposed separately.
 - [ ] **Phase 8 — Hardening and release validation**
-  - Regression, race, persistence, accessibility, full build/test, manual Penpot comparison, and documentation updates.
+  - Automated regression, race, persistence, accessibility, production build, and documentation validation are complete. Final manual in-app comparison with Penpot remains.
 
 ## 12. Completion criteria
 
@@ -452,7 +451,10 @@ Keep this section current throughout implementation.
 ### Progress log
 
 - 2026-08-22: Reviewed the PRD, Penpot boards, current frontend/backend architecture, collection admission, retry/session semantics, State v2, reservations, and diagnostics contract. Confirmed scope decisions with the product owner. Created this implementation branch and plan. No feature implementation started.
-- 2026-08-22: Reviewed the linked Batch URLs Main board in context with the full MVP frame and the current polished Queue/playlist layouts. Product owner approved the revised Home review and Queue-after-admission structures. No feature implementation started.
+- 2026-08-22: Reviewed the linked Batch URLs Main board in context with the full MVP frame and the current polished Queue/playlist layouts. Product owner approved the revised Home review and Queue-after-admission structures.
+- 2026-08-22: Implemented bounded batch parsing/analysis, canonical within-batch dedupe, expiring single-claim analysis authority, atomic durable admission, generalized playlist/batch collection persistence, and per-video-subfolder reservation roots.
+- 2026-08-22: Implemented Home composer/review states, batch-wide policy and folder controls, durable Queue parent/children, accurate progress, typed failure projections, capability-backed recovery actions, and disk/permission Start again.
+- 2026-08-22: Added backend, persistence, race, frontend DOM/accessibility, and production Wails build coverage. Deferred local usage aggregates rather than coupling them to terminal diagnostics.
 
 ### Plan changes
 
@@ -460,11 +462,21 @@ Keep this section current throughout implementation.
 
 ### Validation results
 
-- Not run; implementation has not started.
+- `gofmt -w ...` — passed for all changed Go files.
+- `go test -count=1 ./...` — passed across all Go packages.
+- `go test -race -count=1 ./...` — passed across all Go packages.
+- `cd frontend && npm run check` — passed with 0 errors and one pre-existing unused-selector warning in `About.svelte`.
+- `cd frontend && npm run test:ui` — passed: 27 Node contract tests and 43 Vitest DOM tests.
+- `cd frontend && npm run build` — passed.
+- `go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -clean` — passed; produced the signed macOS application bundle.
+- Launched the production bundle with an isolated Home directory and visually verified the current 1280×800 polished shell and Single URL / Batch URLs mode control.
+- `git diff --check` — passed.
 
 ### Known residual risks
 
 - Batch analysis metadata is intentionally ephemeral; an app restart before admission requires reanalysis.
 - Disk/permission recovery creates a new standalone job rather than preserving historical batch membership.
-- Current engine/platform error wrapping may need strengthening to guarantee typed disk classification on every output stage.
-- Batch-wide format intent must be resolved independently per child without surprising quality differences; final UI copy should make this clear.
+- Wrapped `ENOSPC` and permission errors are mapped and tested, but a future engine stage that discards its wrapped OS cause could still fall back to the safe internal category.
+- Batch-wide format intent is resolved independently per child, so concrete stream details can differ while honoring the selected cap/policy.
+- Privacy-safe local usage aggregates were deliberately deferred; this release adds no product-measurement persistence or upload path.
+- Final manual in-app visual comparison against the approved Penpot boards is still pending.

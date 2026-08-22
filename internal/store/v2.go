@@ -346,6 +346,7 @@ func (s *V2Store) Transaction(preconditions []JobPrecondition, mutate func(*jobm
 	if err := mutate(&next); err != nil {
 		return err
 	}
+	normalizeStateV2(&next)
 	next.Version = jobmodel.StateVersion
 	if next.StoreRevision == maxDurableCounter {
 		return &commitError{err: errors.New("store: store revision exhausted")}
@@ -561,6 +562,7 @@ func readStateV2(path string) (decodedState, bool, error) {
 		max  int
 	}{
 		{name: "jobs", max: maxJobs},
+		{name: "collections", max: maxCollections},
 		{name: "history", max: maxHistory},
 		{name: "cleanup", max: maxCleanup},
 	} {
@@ -578,7 +580,23 @@ func readStateV2(path string) (decodedState, bool, error) {
 	if err := decodeStrict(data, &state); err != nil {
 		return decodedState{}, false, fmt.Errorf("store: invalid v2 state: %w", err)
 	}
+	normalizeStateV2(&state)
 	return decodedState{State: state, raw: data}, false, nil
+}
+
+// normalizeStateV2 upgrades fields added within the State v2 schema. Older
+// playlist collections predate the explicit kind discriminator; treating an
+// absent kind as playlist preserves strict decoding while ensuring the next
+// transaction writes the normalized representation.
+func normalizeStateV2(state *jobmodel.State) {
+	if state == nil {
+		return
+	}
+	for index := range state.Collections {
+		if state.Collections[index].Kind == "" {
+			state.Collections[index].Kind = jobmodel.CollectionKindPlaylist
+		}
+	}
 }
 
 // preflightJSONArray counts one top-level JSON array without materializing its
@@ -820,10 +838,10 @@ func validateState(state jobmodel.State) error {
 	seenCollections := map[string]struct{}{}
 	for _, collection := range state.Collections {
 		if !validID(collection.ID) || collection.Revision == 0 || collection.Revision > maxDurableCounter ||
-			!validText(collection.PlaylistID, maxIDBytes, true) || !validText(collection.SourceURL, maxText, true) ||
-			!validText(collection.Title, maxText, true) || !validText(collection.Channel, maxText, false) ||
-			!validText(collection.Thumbnail, maxText, false) || !validText(collection.Policy, maxShortText, true) ||
-			!validTimestampPair(collection.CreatedAt, collection.UpdatedAt) || len(collection.ChildJobIDs) == 0 || len(collection.ChildJobIDs) > maxCollectionChildren {
+			!validCollectionSource(collection) || !validText(collection.Title, maxText, true) ||
+			!validText(collection.Channel, maxText, false) || !validText(collection.Thumbnail, maxText, false) ||
+			!validText(collection.Policy, maxShortText, true) || !validTimestampPair(collection.CreatedAt, collection.UpdatedAt) ||
+			len(collection.ChildJobIDs) == 0 || len(collection.ChildJobIDs) > maxCollectionChildren {
 			return errors.New("store: invalid durable collection")
 		}
 		if _, duplicate := seenCollections[collection.ID]; duplicate {
@@ -917,6 +935,17 @@ func validateReservation(root jobmodel.OutputRootRef, reservation jobmodel.Reser
 		seenNames[name], seenIdentities[artifactKey] = struct{}{}, struct{}{}
 	}
 	return nil
+}
+
+func validCollectionSource(collection jobmodel.DurableCollection) bool {
+	switch collection.Kind {
+	case jobmodel.CollectionKindPlaylist:
+		return validText(collection.PlaylistID, maxIDBytes, true) && validText(collection.SourceURL, maxText, true)
+	case jobmodel.CollectionKindBatch:
+		return collection.PlaylistID == "" && collection.SourceURL == ""
+	default:
+		return false
+	}
 }
 
 func validLifecycle(v jobmodel.Lifecycle) bool {

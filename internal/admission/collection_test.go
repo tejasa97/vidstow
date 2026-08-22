@@ -91,6 +91,31 @@ func TestCoordinatorAdmitsCollectionAtomicallyBeforeFIFO(t *testing.T) {
 	}
 }
 
+func TestCoordinatorAdmitsBatchChildrenAcrossDistinctReservationRoots(t *testing.T) {
+	coordinator, root, state, _, request := collectionFixture(t)
+	request.Collection = Collection{Kind: jobmodel.CollectionKindBatch, Title: "Batch download · 2 videos", Policy: "video:1080p"}
+	secondDir := t.TempDir()
+	secondRoot, err := reservationfs.OpenRoot(secondDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondRoot.Close()
+	request.Children[1].Root = secondRoot
+	request.Children[1].Request.Queue.OutputDir = secondDir
+
+	result, err := coordinator.AdmitCollection(context.Background(), root, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Collection.Kind != jobmodel.CollectionKindBatch || result.Collection.SourceURL != "" || result.Collection.PlaylistID != "" {
+		t.Fatalf("batch collection = %#v", result.Collection)
+	}
+	snapshot := state.Snapshot()
+	if len(snapshot.Jobs) != 2 || snapshot.Jobs[0].OutputRoot.CanonicalPath == snapshot.Jobs[1].OutputRoot.CanonicalPath || snapshot.Jobs[1].OutputRoot.CanonicalPath != secondDir {
+		t.Fatalf("batch child roots = %#v, %#v", snapshot.Jobs[0].OutputRoot, snapshot.Jobs[1].OutputRoot)
+	}
+}
+
 func TestCoordinatorCollectionManagerFailureLeavesWholeDurableCollection(t *testing.T) {
 	coordinator, root, state, queue, request := collectionFixture(t)
 	sentinel := errors.New("queue unavailable")

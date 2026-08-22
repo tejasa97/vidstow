@@ -17,6 +17,9 @@
     resume: LifecycleJobEventDetail;
     retry: LifecycleJobEventDetail;
     'download-again': LifecycleJobEventDetail;
+    'start-again': LifecycleJobEventDetail;
+    'open-source': LifecycleJobEventDetail;
+    'copy-link': LifecycleJobEventDetail;
     review: LifecycleJobEventDetail;
     open: LifecycleJobEventDetail;
     remove: LifecycleJobEventDetail;
@@ -58,6 +61,12 @@
     switch (action) {
       case 'download-again':
         return capabilities.downloadAgain === true;
+      case 'start-again':
+        return capabilities.startAgain === true;
+      case 'open-source':
+        return capabilities.openSource === true;
+      case 'copy-link':
+        return capabilities.copyLink === true;
       default:
         return capabilities[action] === true;
     }
@@ -122,12 +131,20 @@
         {:else if isTerminal}
           {#if enabled('retry')}
             <button type="button" class="app-btn primary" onclick={() => trigger('retry')}>Retry</button>
+          {:else if enabled('start-again')}
+            <button type="button" class="app-btn primary" onclick={() => trigger('start-again')}>Start again</button>
           {:else if enabled('download-again')}
             <button type="button" class="app-btn primary" onclick={() => trigger('download-again')}>Download again</button>
           {:else if enabled('review')}
             <button type="button" class="app-btn primary" onclick={() => trigger('review')}>Review</button>
           {:else if enabled('open')}
             <button type="button" class="app-btn primary" onclick={() => trigger('open')}>Open</button>
+          {/if}
+          {#if enabled('open-source')}
+            <button type="button" class="app-btn" onclick={() => trigger('open-source')}>Open source</button>
+          {/if}
+          {#if enabled('copy-link')}
+            <button type="button" class="app-btn" onclick={() => trigger('copy-link')}>Copy link</button>
           {/if}
           {#if enabled('remove')}
             <button
@@ -161,6 +178,13 @@
           {#if job.etaLabel}{job.speedLabel ? ' · ' : ''}ETA {job.etaLabel}{/if}
           {#if !job.speedLabel && !job.etaLabel && message}{message}{/if}
         </span>
+      </div>
+    {:else if job.failure}
+      <div class="failure" role="alert" data-category={job.failure.category}>
+        <strong>{job.failure.heading}</strong>
+        <span>{job.failure.message}</span>
+        <span class="recommended">{job.failure.recommendedAction}</span>
+        {#if job.failure.partialOutput}<small>Partial download data may remain until this item is removed or retried.</small>{/if}
       </div>
     {:else if message || queueLabel}
       <p class:terminal-message={isTerminal} class="message">{message ?? queueLabel}</p>
@@ -226,8 +250,6 @@
     min-width: 90px;
   }
 
-  .icon-button { width: 36px; min-height: 36px; }
-
   .progress-line {
     display: grid;
     grid-template-columns: minmax(120px, 1fr) auto minmax(180px, auto);
@@ -262,6 +284,18 @@
   .progress-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .message { margin: 0; min-height: 20px; }
   .terminal-message { color: var(--text-secondary); }
+
+  .failure {
+    display: grid;
+    gap: var(--sp-1);
+    padding-left: var(--sp-3);
+    border-left: 3px solid var(--status-danger);
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+  }
+  .failure strong { color: var(--text-primary); font-size: var(--fs-md); }
+  .failure .recommended { color: var(--text-primary); }
+  .failure small { color: var(--text-muted); font-size: var(--fs-xs); }
 
   @media (max-width: 780px) {
     .job-row { grid-template-columns: 96px minmax(0, 1fr); }

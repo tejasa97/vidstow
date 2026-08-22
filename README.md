@@ -67,10 +67,13 @@ verification details.
   original audio, or MP3 when the analyzed media supports those choices.
 - **Playlist review** — select up to 500 available entries, apply a bounded
   range, and admit the collection as one expandable parent with individual jobs.
+- **Reliable batch downloads** — review 2–20 individual video or Short URLs at
+  once, identify invalid and duplicate lines, then atomically admit every ready
+  item under one durable expandable queue parent.
 - **FIFO queue** — configure 1–10 concurrent downloads; the default is 2.
 - **Explicit lifecycle controls** — each queue row presents only the Pause,
-  Resume, Cancel, Retry, Open, or removal actions authorized by the application;
-  Pause All is available for eligible queued work.
+  Resume, Cancel, Retry, Start again, source, Open, or removal actions authorized
+  by the application; Pause All is available for eligible queued work.
 - **Durable application state** — State v2 stores queue lifecycle, settings,
   reservations, history, and pending cleanup obligations.
 - **Persistent download history** — completed downloads remain available across
@@ -142,7 +145,7 @@ application and engine versions and by artifact-specific validation.
 
 | Area | Supported boundary |
 | --- | --- |
-| Product | Beta; focused public YouTube video, Short, and playlist workflow |
+| Product | Beta; focused public YouTube video, Short, playlist, and 2–20 URL batch workflow |
 | Package | [`v0.1.0-beta.4`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.4) installs on Apple Silicon through the [`vidstow/tap`](https://github.com/vidstow/homebrew-tap) Homebrew cask |
 | Source | Apache-2.0 source and self-build instructions |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |

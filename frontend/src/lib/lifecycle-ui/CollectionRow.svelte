@@ -17,8 +17,9 @@
 
   let { collection, children, onAction, onCollectionAction }: Props = $props();
   let expanded = $state(true);
-  const panelId = $derived(`playlist-children-${collection.id.replace(/[^A-Za-z0-9_-]/g, '-')}`);
+  const panelId = $derived(`collection-children-${collection.id.replace(/[^A-Za-z0-9_-]/g, '-')}`);
   const progress = $derived(Math.max(0, Math.min(100, Math.round(collection.progress * 100))));
+  const collectionLabel = $derived(collection.kind === 'batch' ? 'batch' : 'playlist');
 
   function enabled(action: QueueCollectionAction): boolean {
     return isValidCommandToken(collection.commandToken) && collection.capabilities?.[action] === true;
@@ -51,7 +52,13 @@
 
     <div class="identity">
       <h3 id={`${panelId}-title`}>{collection.title}</h3>
-      <p>{collection.metadata ? `${collection.metadata} · ` : ''}{collection.policy} · {collection.total} videos</p>
+      <p>
+        {#if collection.kind === 'playlist'}
+          {collection.metadata ? `${collection.metadata} · ` : ''}{collection.policy} · {collection.total} videos
+        {:else}
+          {collection.policy}
+        {/if}
+      </p>
       <div class="progress-line">
         <div class="track" role="progressbar" aria-label={`${collection.title} progress`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={progress}>
           <span style={`width: ${progress}%`}></span>
@@ -62,7 +69,7 @@
       </div>
     </div>
 
-    <div class="actions" aria-label="Playlist actions">
+    <div class="actions" aria-label={`${collectionLabel} actions`}>
       {#if collection.capabilities?.resume}
         <button type="button" class="app-btn primary" disabled={!enabled('resume')} onclick={() => trigger('resume')}>Resume</button>
       {:else if collection.capabilities?.pause}
