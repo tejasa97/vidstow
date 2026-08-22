@@ -6,13 +6,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/tejasa97/vidstow/internal/admission"
+	"github.com/tejasa97/vidstow/internal/diagnostics"
+	"github.com/tejasa97/vidstow/internal/ffmpegdetect"
 	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/jobs"
 	"github.com/tejasa97/vidstow/internal/recovery"
+	"github.com/tejasa97/vidstow/internal/reservationfs"
 	"github.com/tejasa97/vidstow/internal/store"
 	"github.com/tejasa97/youtube_dlp/engine"
 )
@@ -78,7 +84,7 @@ func TestStartupRecoveryRequiredFailsClosedWithoutRuntimeFallback(t *testing.T) 
 			defer restore()
 			openStateV2 = func(string) (*store.V2Store, store.StartupStatus, error) { return nil, status, nil }
 			cleanupStarts := 0
-			startStartupCleanup = func(context.Context, recovery.StateStore, time.Duration) <-chan struct{} {
+			startStartupCleanup = func(context.Context, recovery.StateStore, time.Duration, func(recovery.CleanupPass)) <-chan struct{} {
 				cleanupStarts++
 				done := make(chan struct{})
 				close(done)
@@ -100,6 +106,157 @@ func TestStartupRecoveryRequiredFailsClosedWithoutRuntimeFallback(t *testing.T) 
 	}
 }
 
+func TestGetStartupStatusReturnsStartingUntilStartupCompletes(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	want := store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryUnsupportedVersion}
+	openStateV2 = func(string) (*store.V2Store, store.StartupStatus, error) {
+		close(entered)
+		<-release
+		return nil, want, nil
+	}
+
+	app := NewApp()
+	if got := app.GetStartupStatus(); got.Mode != store.StartupStarting {
+		t.Fatalf("initial startup status = %#v, want starting", got)
+	}
+	startupReturned := make(chan struct{})
+	go func() {
+		app.startupAt(context.Background(), filepath.Join(t.TempDir(), "state.json"))
+		close(startupReturned)
+	}()
+	<-entered
+	if got := app.GetStartupStatus(); got.Mode != store.StartupStarting {
+		t.Fatalf("in-flight startup status = %#v, want starting", got)
+	}
+
+	close(release)
+	select {
+	case <-startupReturned:
+	case <-time.After(time.Second):
+		t.Fatal("startupAt did not return")
+	}
+	if got := app.GetStartupStatus(); got != want {
+		t.Fatalf("startup status = %#v, want %#v", got, want)
+	}
+}
+
+func TestStartupStatusStaysStartingUntilRuntimeAuthorityIsReady(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+
+	enteredRootValidation := make(chan struct{})
+	releaseRootValidation := make(chan struct{})
+	prepareStartupStateRoots = func(jobmodel.State) error {
+		close(enteredRootValidation)
+		<-releaseRootValidation
+		return nil
+	}
+
+	app := NewApp()
+	statePath := filepath.Join(secureAppTempDir(t), "state.json")
+	startupReturned := make(chan struct{})
+	go func() {
+		app.startupAt(context.Background(), statePath)
+		close(startupReturned)
+	}()
+	<-enteredRootValidation
+	if app.store == nil {
+		t.Fatal("store was not opened before root validation")
+	}
+	if got := app.GetStartupStatus(); got.Mode != store.StartupStarting {
+		t.Fatalf("partially initialized startup status = %#v, want starting", got)
+	}
+	if app.jobs != nil || app.coordinator != nil {
+		t.Fatalf("runtime authority existed before root validation completed: %#v", app)
+	}
+
+	close(releaseRootValidation)
+	select {
+	case <-startupReturned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("startupAt did not return")
+	}
+	if got := app.GetStartupStatus(); !got.Healthy() {
+		t.Fatalf("completed startup status = %#v, want healthy", got)
+	}
+	if err := app.requireReady(); err != nil {
+		t.Fatalf("completed runtime authority is not ready: %v", err)
+	}
+	app.stopCleanup(context.Background())
+	if err := app.jobs.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStartupPathFailureSignalsTerminalStatus(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	oldDefaultStatePath := defaultStatePath
+	defer func() { defaultStatePath = oldDefaultStatePath }()
+	defaultStatePath = func() (string, error) { return "", errors.New("path unavailable") }
+
+	app := NewApp()
+	app.startup(context.Background())
+	want := store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryUnsafePermissions}
+	if got := app.GetStartupStatus(); got != want {
+		t.Fatalf("startup status = %#v, want %#v", got, want)
+	}
+}
+
+func TestPrepareStartupRootsIgnoresTerminalJobWorkspaceIdentity(t *testing.T) {
+	root := secureAppTempDir(t)
+	state := jobmodel.State{
+		Settings: jobmodel.Settings{DownloadFolder: root},
+		Jobs: []jobmodel.DurableJob{{
+			Lifecycle: jobmodel.LifecycleCompleted,
+			OutputRoot: jobmodel.OutputRootRef{
+				CanonicalPath: root,
+				Identity:      "stale-after-publication",
+			},
+		}},
+	}
+	for _, lifecycle := range []jobmodel.Lifecycle{jobmodel.LifecycleCompleted, jobmodel.LifecycleFailed, jobmodel.LifecycleCanceled} {
+		state.Jobs[0].Lifecycle = lifecycle
+		if err := prepareStartupRoots(state); err != nil {
+			t.Fatalf("%s workspace blocked startup: %v", lifecycle, err)
+		}
+	}
+
+	for _, lifecycle := range []jobmodel.Lifecycle{jobmodel.LifecyclePaused, jobmodel.LifecycleActionRequired} {
+		state.Jobs[0].Lifecycle = lifecycle
+		if err := prepareStartupRoots(state); err == nil {
+			t.Fatalf("%s workspace identity mismatch did not fail closed", lifecycle)
+		}
+	}
+}
+
+func TestStartupDurabilityWarningRecordsIndeterminateState(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	warning := store.StartupStatus{Mode: store.StartupHealthy, Warning: store.WarningDurabilityUncertain}
+	openStateV2 = func(string) (*store.V2Store, store.StartupStatus, error) { return nil, warning, nil }
+
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if got := app.GetStartupStatus(); got.Reason != store.RecoveryIndeterminate {
+		t.Fatalf("startup status = %#v, want indeterminate recovery", got)
+	}
+	events, err := app.diagnostics.Recent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Problem == nil || events[0].Problem.Category != "state_indeterminate" {
+		t.Fatalf("warning diagnostic = %#v", events)
+	}
+}
+
 func TestHealthyStartupReconcilesBeforeRestoringManager(t *testing.T) {
 	restore := installAppTestSeams(t)
 	defer restore()
@@ -116,7 +273,7 @@ func TestHealthyStartupReconcilesBeforeRestoringManager(t *testing.T) {
 		sequence = append(sequence, "restore")
 		return manager.RestoreStateV2(snapshot)
 	}
-	startStartupCleanup = func(ctx context.Context, _ recovery.StateStore, _ time.Duration) <-chan struct{} {
+	startStartupCleanup = func(ctx context.Context, _ recovery.StateStore, _ time.Duration, _ func(recovery.CleanupPass)) <-chan struct{} {
 		sequence = append(sequence, "cleanup")
 		done := make(chan struct{})
 		go func() {
@@ -147,6 +304,361 @@ func TestHealthyStartupReconcilesBeforeRestoringManager(t *testing.T) {
 	if err := app.store.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestLocalDiagnosticsRecordsStartupFailureAndCopiesSanitizedEvent(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	privateRoot := secureAppTempDir(t)
+	privateValue := filepath.Join(privateRoot, "must-not-appear")
+	prepareStartupStateRoots = func(jobmodel.State) error {
+		return fmt.Errorf("%s: %w", privateValue, reservationfs.ErrUnsafe)
+	}
+	var clipboard string
+	clipboardSetText = func(_ context.Context, text string) error {
+		clipboard = text
+		return nil
+	}
+
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(privateRoot, "state.json"))
+	if app.diagnostics == nil || !localdiagnosticsTestUUID(app.diagnosticSession) {
+		t.Fatalf("local diagnostics not initialized: recorder=%v session=%q", app.diagnostics, app.diagnosticSession)
+	}
+	events, err := app.diagnostics.Recent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Problem == nil || events[0].Problem.Stage != "filesystem" || events[0].Problem.Category != "unsafe_path" {
+		t.Fatalf("diagnostic events = %#v", events)
+	}
+	if batch, err := app.diagnosticOutbox.Batch(); err != nil || len(batch) != 0 {
+		t.Fatalf("automatic diagnostics queued without consent: batch=%#v err=%v", batch, err)
+	}
+	if _, err := app.CopyDiagnostics(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(clipboard, "filesystem/unsafe_path") {
+		t.Fatalf("clipboard lacks sanitized event: %q", clipboard)
+	}
+	if strings.Contains(clipboard, privateRoot) || strings.Contains(clipboard, "must-not-appear") {
+		t.Fatalf("clipboard leaked private error/path: %q", clipboard)
+	}
+	if err := app.ClearDiagnostics(); err != nil {
+		t.Fatal(err)
+	}
+	if events, err := app.diagnostics.Recent(); err != nil || len(events) != 0 {
+		t.Fatalf("events after clear = %#v, %v", events, err)
+	}
+}
+
+func TestAutomaticDiagnosticsRequiresConsentAndDisableClearsOutbox(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	privateRoot := secureAppTempDir(t)
+	statePath := filepath.Join(privateRoot, "state.json")
+	state, status, err := store.OpenV2(statePath)
+	if err != nil || !status.Healthy() {
+		t.Fatalf("OpenV2 = %#v, %v", status, err)
+	}
+	settings := state.Settings()
+	settings.AutomaticDiagnostics = "enabled"
+	if err := state.SetSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	prepareStartupStateRoots = func(jobmodel.State) error { return reservationfs.ErrUnsafe }
+
+	app := NewApp()
+	app.startupAt(context.Background(), statePath)
+	if app.diagnosticOutbox == nil {
+		t.Fatal("automatic diagnostics outbox was not opened")
+	}
+	batch, err := app.diagnosticOutbox.Batch()
+	if err != nil || len(batch) != 1 || batch[0].Problem == nil || batch[0].Problem.Category != "unsafe_path" {
+		t.Fatalf("outbox batch=%#v err=%v", batch, err)
+	}
+	if err := app.configureAutomaticDiagnostics("disabled"); err != nil {
+		t.Fatal(err)
+	}
+	batch, err = app.diagnosticOutbox.Batch()
+	if err != nil || len(batch) != 0 {
+		t.Fatalf("disabled outbox batch=%#v err=%v", batch, err)
+	}
+}
+
+func TestRepeatedDiagnosticEnableKeepsOneUploaderAndOptOutCancelsIt(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if app.store == nil || app.diagnosticOutbox == nil {
+		t.Fatalf("startup did not initialize diagnostics: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+	originalUploader := newDiagnosticUploader
+	starts := 0
+	newDiagnosticUploader = func(outbox *diagnostics.Outbox, endpoint string, client diagnostics.HTTPDoer) (*diagnostics.Uploader, error) {
+		starts++
+		return originalUploader(outbox, endpoint, client)
+	}
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 {
+		t.Fatalf("uploader starts = %d, want 1", starts)
+	}
+	if _, err := app.SetAutomaticDiagnostics("disabled"); err != nil {
+		t.Fatal(err)
+	}
+	if app.diagnosticUploadCancel != nil {
+		t.Fatal("opt-out left an uploader active")
+	}
+}
+
+func TestDiagnosticOptOutFailsClosedWhenSettingsPersistenceFails(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if app.store == nil || app.diagnosticOutbox == nil {
+		t.Fatalf("startup did not initialize diagnostics: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err != nil {
+		t.Fatal(err)
+	}
+	setAppSettings = func(*store.V2Store, store.Settings) error { return errors.New("injected settings write failure") }
+	if _, err := app.SetAutomaticDiagnostics("disabled"); err == nil {
+		t.Fatal("opt-out accepted an injected settings write failure")
+	}
+	app.diagnosticMu.Lock()
+	forcedOff := app.diagnosticForcedOff
+	app.diagnosticMu.Unlock()
+	if !forcedOff {
+		t.Fatal("failed opt-out left automatic diagnostics enabled at runtime")
+	}
+	app.recordDiagnosticProblem("after-opt-out", diagnostics.Problem{Stage: "internal", Category: "unexpected_internal", Outcome: "terminal", RetryBucket: "none"})
+	batch, err := app.diagnosticOutbox.Batch()
+	if err != nil || len(batch) != 0 {
+		t.Fatalf("failed opt-out queued diagnostics: %#v err=%v", batch, err)
+	}
+}
+
+func TestAutomaticOutboxContinuesWhenLocalHistoryWriteFails(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if app.store == nil || app.diagnostics == nil || app.diagnosticOutbox == nil {
+		t.Fatalf("startup did not initialize diagnostics: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err != nil {
+		t.Fatal(err)
+	}
+	path := app.diagnostics.Path()
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(path)
+
+	app.recordDiagnosticProblem("local-history-failure", diagnostics.Problem{Stage: "internal", Category: "unexpected_internal", Outcome: "terminal", RetryBucket: "none"})
+	batch, err := app.diagnosticOutbox.Batch()
+	if err != nil || len(batch) != 1 || batch[0].Problem == nil || batch[0].Problem.Category != "unexpected_internal" {
+		t.Fatalf("outbox batch=%#v err=%v; want queued event despite local-history failure", batch, err)
+	}
+}
+
+func TestDiagnosticOptOutPrecedesFolderValidationAndBlocksStaleOutbox(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	privateRoot := secureAppTempDir(t)
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(privateRoot, "state.json"))
+	if app.store == nil || app.diagnosticOutbox == nil {
+		t.Fatalf("startup did not initialize settings/outbox: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+
+	invalidFolder := filepath.Join(privateRoot, "not-a-directory")
+	if err := os.WriteFile(invalidFolder, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	next := app.GetSettings()
+	next.DownloadFolder = invalidFolder
+	next.AutomaticDiagnostics = "disabled"
+	if _, err := app.UpdateSettings(next); err == nil {
+		t.Fatal("UpdateSettings accepted a file as a download folder")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("opt-out preference = %q, want disabled despite folder validation failure", got)
+	}
+
+	optIn := app.GetSettings()
+	optIn.DownloadFolder = invalidFolder
+	optIn.AutomaticDiagnostics = "enabled"
+	if _, err := app.UpdateSettings(optIn); err == nil {
+		t.Fatal("UpdateSettings accepted an opt-in with an invalid download folder")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("opt-in preference = %q after invalid settings, want disabled", got)
+	}
+	if app.diagnosticUploadCancel != nil {
+		t.Fatal("uploader started despite invalid general settings")
+	}
+	staleGeneralSettings := app.GetSettings()
+	staleGeneralSettings.AutomaticDiagnostics = "enabled"
+	if _, err := app.UpdateSettings(staleGeneralSettings); err != nil {
+		t.Fatalf("UpdateSettings with a stale opt-in snapshot: %v", err)
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("stale general settings overwrote opt-out: %q", got)
+	}
+
+	outboxDirectory := filepath.Join(privateRoot, "diagnostics")
+	if err := os.RemoveAll(outboxDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outboxDirectory, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SetAutomaticDiagnostics("disabled"); err == nil {
+		t.Fatal("disabling diagnostics accepted an outbox purge failure")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("preference after failed purge = %q, want disabled", got)
+	}
+	if _, err := app.SetAutomaticDiagnostics("enabled"); err == nil {
+		t.Fatal("enabling diagnostics accepted stale outbox data that could not be purged")
+	}
+	if got := app.GetSettings().AutomaticDiagnostics; got != "disabled" {
+		t.Fatalf("preference after rejected enable = %q, want disabled", got)
+	}
+	if app.diagnosticUploadCancel != nil {
+		t.Fatal("uploader started despite failed stale-outbox purge")
+	}
+}
+
+func TestAnalysisDiagnosticOperationsAreUniqueAndIdentifierFree(t *testing.T) {
+	first := newAnalysisDiagnosticOperation()
+	second := newAnalysisDiagnosticOperation()
+	if first == "" || second == "" || first == second || !strings.HasPrefix(first, "analysis:") || !strings.HasPrefix(second, "analysis:") {
+		t.Fatalf("analysis operation IDs = %q, %q; want unique local IDs", first, second)
+	}
+}
+
+func TestStartDownloadRejectsMalformedPreAdmissionRequestWithoutDiagnostic(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app := NewApp()
+	app.startupAt(context.Background(), filepath.Join(secureAppTempDir(t), "state.json"))
+	if app.store == nil || app.jobs == nil || app.diagnostics == nil {
+		t.Fatalf("startup did not initialize app: %#v", app)
+	}
+	defer func() {
+		app.stopCleanup(context.Background())
+		_ = app.jobs.Close(context.Background())
+		_ = app.store.Close()
+	}()
+	if _, err := app.StartDownload(jobs.Request{URL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}); err == nil {
+		t.Fatal("StartDownload accepted a request without analyzed metadata")
+	}
+	events, err := app.diagnostics.Recent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("pre-admission validation recorded diagnostics: %#v", events)
+	}
+}
+
+func TestStartupRootDiagnosticClassificationUsesTypedErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		category string
+	}{
+		{name: "permission", err: os.ErrPermission, category: "permission_denied"},
+		{name: "disk full", err: syscall.ENOSPC, category: "disk_full"},
+		{name: "unsafe", err: reservationfs.ErrUnsafe, category: "unsafe_path"},
+		{name: "unsupported", err: reservationfs.ErrUnsupported, category: "path_unavailable"},
+		{name: "missing", err: os.ErrNotExist, category: "path_unavailable"},
+		{name: "unknown", err: errors.New("closed unknown failure"), category: "path_unavailable"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			problem := classifyStartupRootProblem(test.err)
+			if problem.Stage != "filesystem" || problem.Category != test.category {
+				t.Fatalf("classification = %#v, want filesystem/%s", problem, test.category)
+			}
+		})
+	}
+}
+
+func TestCopyDiagnosticsOmitsConfiguredPathComponents(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	privateRoot := secureAppTempDir(t)
+	state, status, err := store.OpenV2(filepath.Join(privateRoot, "state.json"))
+	if err != nil || !status.Healthy() {
+		t.Fatalf("OpenV2 = %#v, %v", status, err)
+	}
+	defer state.Close()
+	settings := state.Settings()
+	settings.DownloadFolder = filepath.Join(privateRoot, "private-download-name")
+	settings.FFmpegPath = filepath.Join(privateRoot, "private-tools", "private-ffmpeg-name")
+	if err := state.SetSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	var clipboard string
+	clipboardSetText = func(_ context.Context, text string) error {
+		clipboard = text
+		return nil
+	}
+	app := NewApp()
+	app.ctx = context.Background()
+	app.store = state
+	app.lastFFmpeg = ffmpegdetect.Status{Path: settings.FFmpegPath, Message: "ffmpeg configured"}
+	if _, err := app.CopyDiagnostics(); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{privateRoot, "private-download-name", "private-tools", "private-ffmpeg-name"} {
+		if strings.Contains(clipboard, forbidden) {
+			t.Fatalf("diagnostics leaked path component %q: %q", forbidden, clipboard)
+		}
+	}
+	if !strings.Contains(clipboard, "Download folder: configured") || !strings.Contains(clipboard, "FFmpeg: ffmpeg configured") {
+		t.Fatalf("diagnostics omitted safe configuration status: %q", clipboard)
+	}
+}
+
+func localdiagnosticsTestUUID(value string) bool {
+	return len(value) == 36 && value[14] == '4'
 }
 
 func secureAppTempDir(t *testing.T) string {
@@ -246,24 +758,189 @@ func TestShutdownDeadlineKeepsStateOpenUntilLateWorkSettles(t *testing.T) {
 	}
 }
 
+func TestDeleteDownloadFileRemovesCompletedQueueRow(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app, mediaPath := newCompletedDownloadApp(t)
+
+	if err := app.DeleteDownloadFile("completed-job"); err != nil {
+		t.Fatalf("DeleteDownloadFile: %v", err)
+	}
+	if _, err := os.Stat(mediaPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted media still present: %v", err)
+	}
+	if got := app.ListDownloads(); len(got) != 0 {
+		t.Fatalf("history after delete = %#v; want empty", got)
+	}
+	if _, ok := app.jobs.Find("completed-job"); ok {
+		t.Fatal("completed queue row remained after deleting the download")
+	}
+	if _, ok := app.jobs.Find("failed-job"); !ok {
+		t.Fatal("unrelated failed queue row was removed")
+	}
+}
+
+func TestRemoveDownloadKeepsCompletedQueueRowAndFile(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app, mediaPath := newCompletedDownloadApp(t)
+
+	if err := app.RemoveDownload("completed-job"); err != nil {
+		t.Fatalf("RemoveDownload: %v", err)
+	}
+	if _, err := os.Stat(mediaPath); err != nil {
+		t.Fatalf("history-only remove deleted media: %v", err)
+	}
+	if got := app.ListDownloads(); len(got) != 0 {
+		t.Fatalf("history after remove = %#v; want empty", got)
+	}
+	if _, ok := app.jobs.Find("completed-job"); !ok {
+		t.Fatal("completed queue row was removed by history-only removal")
+	}
+}
+
+func TestDeleteDownloadFileSucceedsWhenQueueRowAlreadyGone(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	app, mediaPath := newCompletedDownloadApp(t)
+	if err := app.jobs.Remove("completed-job"); err != nil {
+		t.Fatalf("Remove completed job: %v", err)
+	}
+
+	if err := app.DeleteDownloadFile("completed-job"); err != nil {
+		t.Fatalf("DeleteDownloadFile after queue removal: %v", err)
+	}
+	if _, err := os.Stat(mediaPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted media still present: %v", err)
+	}
+	if got := app.ListDownloads(); len(got) != 0 {
+		t.Fatalf("history after delete = %#v; want empty", got)
+	}
+}
+
+func newCompletedDownloadApp(t *testing.T) (*App, string) {
+	t.Helper()
+	root := secureAppTempDir(t)
+	downloads := filepath.Join(root, "downloads")
+	if err := os.Mkdir(downloads, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mediaPath := filepath.Join(downloads, "Demo.mp4")
+	if err := os.WriteFile(mediaPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := filepath.Join(root, "state.json")
+	st, status, err := store.OpenV2(statePath)
+	if err != nil || !status.Healthy() || st == nil {
+		t.Fatalf("OpenV2 = %v, %#v, %v", st, status, err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	settings := st.Settings()
+	settings.DownloadFolder = downloads
+	if err := st.SetSettings(settings); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+
+	now := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	plan := jobmodel.PersistedPlan{ID: "video-1080-mp4", Kind: "video", Label: "1080p", Container: "MP4"}
+	rootRef := jobmodel.OutputRootRef{CanonicalPath: downloads, Identity: "volume-test"}
+	completed := jobmodel.DurableJob{
+		ID: "completed-job", Revision: 1, AttemptID: "attempt-completed", SessionID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		QueueOrdinal: 1, Lifecycle: jobmodel.LifecycleCompleted, Phase: jobmodel.PhaseReadyToPublish, Desired: jobmodel.DesiredRunning,
+		Request: jobmodel.PersistedRequest{
+			SourceURL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", VideoID: "dQw4w9WgXcQ",
+			Title: "Demo", Channel: "Creator", Quality: "best", PlanID: plan.ID,
+		},
+		Plan: plan, OutputRoot: rootRef,
+		Reservation: jobmodel.ReservationSet{
+			GroupID: "completed-job", Directory: rootRef,
+			Artifacts: []jobmodel.ReservedArtifact{{Kind: string(engine.ArtifactKindPrimary), Identity: "primary", Basename: "Demo.mp4"}},
+		},
+		RetryMode: jobmodel.RetryModeNone, CreatedAt: now, UpdatedAt: now,
+	}
+	failed := completed
+	failed.ID = "failed-job"
+	failed.AttemptID = "attempt-failed"
+	failed.SessionID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	failed.QueueOrdinal = 2
+	failed.Lifecycle = jobmodel.LifecycleFailed
+	failed.Phase = jobmodel.PhaseDownloading
+	failed.Reservation.GroupID = "failed-job"
+	failed.Reservation.Artifacts = []jobmodel.ReservedArtifact{{Kind: string(engine.ArtifactKindPrimary), Identity: "primary", Basename: "Other.mp4"}}
+	failed.LastErrorCode = "download-failed"
+
+	if err := st.Transaction(nil, func(state *jobmodel.State) error {
+		state.NextQueueOrdinal = 3
+		state.Jobs = []jobmodel.DurableJob{completed, failed}
+		state.History = []jobmodel.HistoryEntry{{
+			ID: completed.ID, VideoID: completed.Request.VideoID, Title: completed.Request.Title,
+			Channel: completed.Request.Channel, Quality: "1080p", Container: "MP4",
+			Filename: "Demo.mp4", AbsolutePath: mediaPath, SizeBytes: int64(len("fixture")),
+			CompletedAt: now.Format(time.RFC3339Nano),
+		}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed completed download: %v", err)
+	}
+
+	manager := jobs.New(nil, nil)
+	t.Cleanup(func() { _ = manager.Close() })
+	if err := manager.SetStateStore(st); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RestoreStateV2(st.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := admission.NewCoordinator(admission.Dependencies{Store: st, Resolver: manager, Queue: manager})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.store = st
+	app.jobs = manager
+	app.coordinator = coordinator
+	app.setStartupStatus(store.StartupStatus{Mode: store.StartupHealthy})
+	return app, mediaPath
+}
+
 func installAppTestSeams(t *testing.T) func() {
 	t.Helper()
 	oldOpen := openStateV2
+	oldSetAppSettings := setAppSettings
 	oldPrepare := prepareStartupStateRoots
 	oldReconcile := reconcileStartupState
 	oldRestore := restoreStartupManager
 	oldCleanup := startStartupCleanup
 	oldLog := logAppErrorf
 	oldEmit := emitAppEvent
+	oldOpenDiagnostics := openDiagnostics
+	oldOpenDiagnosticOutbox := openDiagnosticOutbox
+	oldNewDiagnosticUploader := newDiagnosticUploader
+	oldDiagnosticsEndpoint := diagnosticsEventsEndpoint
+	oldDiagnosticID := newDiagnosticID
+	oldClipboard := clipboardSetText
+	oldBrowserOpen := browserOpenURL
 	logAppErrorf = func(context.Context, string, ...interface{}) {}
 	emitAppEvent = func(context.Context, string, ...interface{}) {}
 	return func() {
 		openStateV2 = oldOpen
+		setAppSettings = oldSetAppSettings
 		prepareStartupStateRoots = oldPrepare
 		reconcileStartupState = oldReconcile
 		restoreStartupManager = oldRestore
 		startStartupCleanup = oldCleanup
 		logAppErrorf = oldLog
 		emitAppEvent = oldEmit
+		openDiagnostics = oldOpenDiagnostics
+		openDiagnosticOutbox = oldOpenDiagnosticOutbox
+		newDiagnosticUploader = oldNewDiagnosticUploader
+		diagnosticsEventsEndpoint = oldDiagnosticsEndpoint
+		newDiagnosticID = oldDiagnosticID
+		clipboardSetText = oldClipboard
+		browserOpenURL = oldBrowserOpen
 	}
 }

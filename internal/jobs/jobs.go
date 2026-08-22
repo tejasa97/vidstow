@@ -14,12 +14,15 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +30,7 @@ import (
 	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/vidstow/internal/reservation"
+	"github.com/tejasa97/vidstow/internal/reservationfs"
 	"github.com/tejasa97/youtube_dlp/engine"
 	provideryoutube "github.com/tejasa97/youtube_dlp/providers/youtube"
 )
@@ -234,9 +238,24 @@ type QueueJobCapabilities struct {
 	Resume        bool `json:"resume"`
 	Retry         bool `json:"retry"`
 	DownloadAgain bool `json:"downloadAgain"`
+	StartAgain    bool `json:"startAgain"`
+	OpenSource    bool `json:"openSource"`
+	CopyLink      bool `json:"copyLink"`
 	Review        bool `json:"review"`
 	Open          bool `json:"open"`
 	Remove        bool `json:"remove"`
+}
+
+// QueueFailure is stable, backend-authored failure copy. Retryable explains
+// the category but never grants authority; Capabilities remains authoritative.
+type QueueFailure struct {
+	Category          string `json:"category"`
+	MessageKey        string `json:"messageKey"`
+	Heading           string `json:"heading"`
+	Message           string `json:"message"`
+	RecommendedAction string `json:"recommendedAction"`
+	Retryable         bool   `json:"retryable"`
+	PartialOutput     bool   `json:"partialOutput"`
 }
 
 // QueueRow is the safe frontend projection of a job. Lifecycle, phase,
@@ -258,6 +277,7 @@ type QueueRow struct {
 	SpeedLabel      string                `json:"speedLabel,omitempty"`
 	ETALabel        string                `json:"etaLabel,omitempty"`
 	Message         string                `json:"message,omitempty"`
+	Failure         *QueueFailure         `json:"failure,omitempty"`
 	Capabilities    QueueJobCapabilities  `json:"capabilities"`
 	CommandToken    string                `json:"commandToken,omitempty"`
 }
@@ -272,6 +292,7 @@ type QueueCollectionCapabilities struct {
 
 type QueueCollection struct {
 	ID            string                      `json:"id"`
+	Kind          jobmodel.CollectionKind     `json:"kind"`
 	Title         string                      `json:"title"`
 	Metadata      string                      `json:"metadata,omitempty"`
 	ThumbnailURL  string                      `json:"thumbnailUrl,omitempty"`
@@ -307,6 +328,22 @@ type QueueCapabilities struct {
 	CommandToken   string `json:"commandToken,omitempty"`
 }
 
+// ActionRequiredReview is presentation-safe, backend-authored guidance for an
+// evidence-bearing row. It deliberately excludes paths, engine details, and
+// the source URL; the latter is released only by a second authorized command.
+type ActionRequiredReview struct {
+	JobID              string `json:"jobId"`
+	Title              string `json:"title"`
+	Heading            string `json:"heading"`
+	Message            string `json:"message"`
+	PreservationNotice string `json:"preservationNotice"`
+	CanStartOver       bool   `json:"canStartOver"`
+	CanRetryRecovery   bool   `json:"canRetryRecovery"`
+	CanRetryFreshLink  bool   `json:"canRetryFreshLink"`
+	CanDiscard         bool   `json:"canDiscard"`
+	CanRetryCleanup    bool   `json:"canRetryCleanup"`
+}
+
 // QueueView is the only live queue contract consumed by the V4 frontend.
 // It includes all aggregate facts so Svelte does not infer authority or
 // occupancy from a legacy status string.
@@ -337,6 +374,17 @@ type Event struct {
 	Queue       []JobSnapshot      `json:"queue"`
 	QueueView   *QueueView         `json:"queueView,omitempty"`
 	Persistence *PersistenceStatus `json:"persistence,omitempty"`
+	// Diagnostic is an allowlisted terminal failure classification. It never
+	// contains an error, URL, path, filename, or other user data.
+	Diagnostic *Diagnostic `json:"-"`
+}
+
+// Diagnostic is emitted only when an admitted download reaches a terminal
+// failure. App owns recording/transmission so jobs remains transport-agnostic.
+type Diagnostic struct {
+	Stage    string
+	Category string
+	Duration time.Duration
 }
 
 // PersistenceStatus reports whether the durable queue can currently be
@@ -405,6 +453,7 @@ type Manager struct {
 	runDownload          downloadRunner
 	runAnalyze           analyzeRunner
 	inspectResume        resumeInspector
+	prepareResumeDiscard resumeDiscardPreparer
 	ffmpegLocation       string
 	mu                   sync.Mutex
 	all                  map[string]*jobState
@@ -450,6 +499,8 @@ type analyzeRunner func(context.Context, engine.Request) (engine.Result, error)
 
 type resumeInspector func(context.Context, engine.OutputRootRef, string) (engine.ResumeSummary, error)
 
+type resumeDiscardPreparer func(context.Context, engine.OutputRootRef, string) (*engine.ResumeDiscardHandle, error)
+
 // worker is runtime-only attempt state. It is never restored from State v2;
 // active is the sole live occupancy authority and retains this value until
 // the runner and any session cleanup have exited.
@@ -485,8 +536,12 @@ type jobState struct {
 
 // New creates a Manager. listener may be nil for headless tests.
 func New(client *engine.Client, listener Listener) *Manager {
+	// One composition owns the bounded in-memory EJS preprocessing cache used
+	// by every short-lived download client created by this manager. Individual
+	// helpers remain isolated and are still closed when their job finishes.
+	composition := provideryoutube.NewComposition()
 	if client == nil {
-		client = newFocusedClient()
+		client = newFocusedClientWithComposition(composition)
 	}
 	lifecycleCtx, lifecycleCancel := context.WithCancelCause(context.Background())
 	manager := &Manager{
@@ -496,9 +551,10 @@ func New(client *engine.Client, listener Listener) *Manager {
 		eventDone:            make(chan struct{}),
 		lifecycleCtx:         lifecycleCtx,
 		lifecycleCancel:      lifecycleCancel,
-		runDownload:          defaultDownloadRunner,
+		runDownload:          downloadRunnerForComposition(composition),
 		runAnalyze:           client.Run,
 		inspectResume:        engine.InspectResumeState,
+		prepareResumeDiscard: engine.PrepareResumeDiscard,
 		all:                  make(map[string]*jobState),
 		active:               make(map[string]*worker),
 		concurrency:          DefaultDownloadConcurrency,
@@ -636,6 +692,9 @@ func stateFromDurable(durable jobmodel.DurableJob) (*jobState, error) {
 		snapshot.Message = "Paused after app restart"
 	case StatusFailed:
 		snapshot.Message = "Failed"
+		if durable.LastErrorCode == retryCodeFreshDownloadRequired {
+			snapshot.Message = freshDownloadRequiredNotice
+		}
 	case StatusCanceled:
 		snapshot.Message = "Canceled"
 	case StatusComplete:
@@ -871,11 +930,40 @@ func historyFromSnapshot(snap JobSnapshot) jobmodel.HistoryEntry {
 	}
 }
 
+// upsertJobCleanupTombstone records cleanup-pending evidence for one session
+// of a job. Entries are keyed by both job and session identity so a later
+// cancel cannot clobber an unrelated session's tombstone.
+func upsertJobCleanupTombstone(document *jobmodel.State, jobID, sessionID string, outputRoot jobmodel.OutputRootRef, reservation jobmodel.ReservationSet, errorCode string, now time.Time) {
+	for index := range document.Cleanup {
+		if document.Cleanup[index].JobID == jobID && document.Cleanup[index].SessionID == sessionID {
+			document.Cleanup[index].OutputRoot = outputRoot
+			document.Cleanup[index].Reservation = reservation
+			document.Cleanup[index].State = jobmodel.CleanupPending
+			document.Cleanup[index].LastErrorCode = errorCode
+			document.Cleanup[index].UpdatedAt = now
+			return
+		}
+	}
+	document.Cleanup = append(document.Cleanup, jobmodel.CleanupTombstone{
+		JobID:         jobID,
+		SessionID:     sessionID,
+		OutputRoot:    outputRoot,
+		Reservation:   reservation,
+		State:         jobmodel.CleanupPending,
+		LastErrorCode: errorCode,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	})
+}
+
 // settleDurable commits the terminal lifecycle and, where required, the
 // cleanup tombstone or completion history in the same State transaction.
 // The row precondition is the attempt's latest accepted revision, so a stale
 // callback can only fail and never replace a newer winner.
-func (m *Manager) settleDurable(state *jobState, lifecycle jobmodel.Lifecycle, desired jobmodel.DesiredState, phase jobmodel.Phase, snap JobSnapshot, errorCode string, cleanupPending bool) error {
+// failureCommittedBytes carries the checkpoint evidence a failed attempt
+// could read: -1 means unknown (non-v2 job or unreadable session) and leaves
+// previously recorded failure bookkeeping untouched.
+func (m *Manager) settleDurable(state *jobState, lifecycle jobmodel.Lifecycle, desired jobmodel.DesiredState, phase jobmodel.Phase, snap JobSnapshot, errorCode string, cleanupPending bool, failureCommittedBytes int64) error {
 	if durableStateAlready(state, lifecycle, desired, phase) {
 		return nil
 	}
@@ -902,40 +990,60 @@ func (m *Manager) settleDurable(state *jobState, lifecycle jobmodel.Lifecycle, d
 				document.History = append([]jobmodel.HistoryEntry{entry}, document.History...)
 			}
 		}
+		if lifecycle == jobmodel.LifecycleFailed && failureCommittedBytes >= 0 {
+			if failureCommittedBytes > 0 && job.LastFailureCommittedBytes == failureCommittedBytes {
+				job.ZeroProgressResumes++
+			} else {
+				job.ZeroProgressResumes = 0
+			}
+			job.LastFailureCommittedBytes = failureCommittedBytes
+		}
 		if lifecycle == jobmodel.LifecycleCanceled && cleanupPending {
-			found := false
-			for index := range document.Cleanup {
-				if document.Cleanup[index].JobID == job.ID {
-					found = true
-					document.Cleanup[index].SessionID = job.SessionID
-					document.Cleanup[index].OutputRoot = job.OutputRoot
-					document.Cleanup[index].Reservation = job.Reservation
-					document.Cleanup[index].State = jobmodel.CleanupPending
-					document.Cleanup[index].LastErrorCode = errorCode
-					document.Cleanup[index].UpdatedAt = time.Now().UTC()
-					break
-				}
-			}
-			if !found {
-				now := time.Now().UTC()
-				document.Cleanup = append(document.Cleanup, jobmodel.CleanupTombstone{
-					JobID:         job.ID,
-					SessionID:     job.SessionID,
-					OutputRoot:    job.OutputRoot,
-					Reservation:   job.Reservation,
-					State:         jobmodel.CleanupPending,
-					LastErrorCode: errorCode,
-					CreatedAt:     now,
-					UpdatedAt:     now,
-				})
-			}
+			upsertJobCleanupTombstone(document, job.ID, job.SessionID, job.OutputRoot, job.Reservation, errorCode, time.Now().UTC())
 		}
 		return nil
 	})
 }
 
 func (m *Manager) discardSession(state *jobState) (bool, string) {
-	handle, unavailable, err := prepareDiscardSession(state)
+	if state == nil {
+		return false, ""
+	}
+	return m.discardKnownSession(state, state.durable.SessionID)
+}
+
+// discardRetiredSession attempts immediate cleanup after Retry has atomically
+// rotated the durable row and recorded the old session as cleanup-pending.
+// Failure leaves that tombstone for the startup/periodic cleanup worker; only
+// a proven discard removes it.
+func (m *Manager) discardRetiredSession(state *jobState, sessionID string) {
+	cleanupPending, _ := m.discardKnownSession(state, sessionID)
+	if cleanupPending {
+		if state != nil {
+			logRetiredSessionLeak("vidstow: retired session cleanup remains pending for job %s and will be retried from durable state", state.snap.ID)
+		}
+		return
+	}
+	if state == nil || !state.fromStateV2 {
+		return
+	}
+	store := m.stateStoreSnapshot()
+	if store == nil {
+		return
+	}
+	_ = m.transaction(store, nil, func(document *jobmodel.State) error {
+		for index, tombstone := range document.Cleanup {
+			if tombstone.JobID == state.snap.ID && tombstone.SessionID == sessionID {
+				document.Cleanup = append(document.Cleanup[:index], document.Cleanup[index+1:]...)
+				break
+			}
+		}
+		return nil
+	})
+}
+
+func (m *Manager) discardKnownSession(state *jobState, sessionID string) (bool, string) {
+	handle, unavailable, err := m.prepareDiscardSession(state, sessionID)
 	if err != nil {
 		return true, "cleanup"
 	}
@@ -953,11 +1061,11 @@ func (m *Manager) discardSession(state *jobState) (bool, string) {
 // before State mutation. A missing workspace is a valid no-op: there is no
 // session evidence to tombstone. Any other failure is retained as cleanup
 // evidence and never silently treated as a successful discard.
-func prepareDiscardSession(state *jobState) (*engine.ResumeDiscardHandle, bool, error) {
-	if state == nil || !state.fromStateV2 || state.durable.SessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
+func (m *Manager) prepareDiscardSession(state *jobState, sessionID string) (*engine.ResumeDiscardHandle, bool, error) {
+	if state == nil || !state.fromStateV2 || sessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
 		return nil, true, nil
 	}
-	handle, err := engine.PrepareResumeDiscard(context.Background(), engineRootRef(state.durable.OutputRoot), state.durable.SessionID)
+	handle, err := m.prepareResumeDiscard(context.Background(), engineRootRef(state.durable.OutputRoot), sessionID)
 	if err != nil {
 		if strings.Contains(err.Error(), "workspace unavailable") {
 			return nil, true, nil
@@ -980,17 +1088,24 @@ func engineRootRef(root jobmodel.OutputRootRef) engine.OutputRootRef {
 	return engine.OutputRootRef{CanonicalPath: root.CanonicalPath, Identity: identity}
 }
 
-func defaultDownloadRunner(ctx context.Context, req engine.Request, handler engine.EventHandler) (engine.Result, error) {
-	client := newFocusedClient(engine.WithEventHandler(handler))
-	defer client.Close()
-	return client.Run(ctx, req)
+func downloadRunnerForComposition(composition engine.Composition) downloadRunner {
+	return func(ctx context.Context, req engine.Request, handler engine.EventHandler) (engine.Result, error) {
+		client := newFocusedClientWithComposition(composition, engine.WithEventHandler(handler))
+		defer client.Close()
+		return client.Run(ctx, req)
+	}
 }
 
-// newFocusedClient is the single Desktop composition factory. Analysis keeps
-// one instance and each download creates one with only its event handler
-// differing, so both paths receive the complete YouTube provider family.
+// newFocusedClient is the standalone Desktop composition factory used by
+// tests and one-off callers. When Manager owns its analysis client, it uses
+// newFocusedClientWithComposition so analysis and per-download clients share
+// one bounded in-memory EJS cache.
 func newFocusedClient(options ...engine.Option) *engine.Client {
-	return engine.NewClient(provideryoutube.NewComposition(), options...)
+	return newFocusedClientWithComposition(provideryoutube.NewComposition(), options...)
+}
+
+func newFocusedClientWithComposition(composition engine.Composition, options ...engine.Option) *engine.Client {
+	return engine.NewClient(composition, options...)
 }
 
 // Close stops new manager activity and joins manager-owned work only until
@@ -1597,6 +1712,17 @@ func (m *Manager) QueueView() QueueView {
 	return m.queueViewLocked()
 }
 
+// RefreshDurableMaintenance emits a fresh QueueView after the recovery worker
+// changes cleanup tombstones outside the manager's lifecycle transactions.
+func (m *Manager) RefreshDurableMaintenance() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closing || m.closed {
+		return
+	}
+	m.emitQueueLocked()
+}
+
 func (m *Manager) queueViewLocked() QueueView {
 	m.refreshQueueAuthorityLocked()
 	view := QueueView{
@@ -1631,15 +1757,34 @@ func (m *Manager) queueViewLocked() QueueView {
 			Progress: snap.Progress, Message: snap.Message,
 			Capabilities: m.queueCapabilitiesLocked(state, snap),
 		}
+		if lifecycle == jobmodel.LifecycleFailed {
+			failure := queueFailureFor(state, snap)
+			row.Failure = &failure
+		}
+		if present, quarantined := m.cleanupStatusLocked(snap.ID); present {
+			switch snap.Status {
+			case StatusCanceled, StatusFailed, StatusComplete:
+				if quarantined {
+					row.Message = "Temporary data needs attention and was preserved."
+				} else {
+					row.Message = "Cleaning up saved temporary data automatically…"
+				}
+			}
+		}
 		if row.Capabilities != (QueueJobCapabilities{}) {
 			row.CommandToken = state.commandToken
 		}
-		if snap.Total > 0 {
+		if lifecycle == jobmodel.LifecycleCompleted {
+			row.Progress = 1
+			row.ProgressLabel = "100%"
+		} else if snap.Total > 0 {
 			row.Progress = snap.Progress
 			row.ProgressLabel = fmt.Sprintf("%.0f%%", snap.Progress*100)
 		}
-		row.SpeedLabel = queueSpeedLabel(snap.SpeedBps)
-		row.ETALabel = queueETALabel(snap.ETASeconds)
+		if lifecycle != jobmodel.LifecycleCompleted {
+			row.SpeedLabel = queueSpeedLabel(snap.SpeedBps)
+			row.ETALabel = queueETALabel(snap.ETASeconds)
+		}
 		view.Rows = append(view.Rows, row)
 		view.Summary.TotalJobs++
 		if row.OccupiesSlot {
@@ -1680,9 +1825,20 @@ func (m *Manager) queueCollectionsLocked(rows []QueueRow) []QueueCollection {
 	collections := make([]QueueCollection, 0, len(durable.Collections))
 	liveAuthority := make(map[string]struct{}, len(durable.Collections))
 	for _, parent := range durable.Collections {
+		kind := parent.Kind
+		if kind == "" {
+			kind = jobmodel.CollectionKindPlaylist
+		}
 		collection := QueueCollection{
-			ID: parent.ID, Title: parent.Title, ThumbnailURL: parent.Thumbnail, Policy: parent.Policy,
+			ID: parent.ID, Kind: kind, Title: parent.Title, ThumbnailURL: parent.Thumbnail, Policy: parent.Policy,
 			ChildJobIDs: append([]string(nil), parent.ChildJobIDs...), Total: len(parent.ChildJobIDs),
+		}
+		if kind == jobmodel.CollectionKindBatch {
+			label := "videos"
+			if collection.Total == 1 {
+				label = "video"
+			}
+			collection.Title = fmt.Sprintf("Batch download · %d %s", collection.Total, label)
 		}
 		if parent.Channel != "" {
 			collection.Metadata = parent.Channel
@@ -1769,14 +1925,16 @@ func (m *Manager) refreshQueueAuthorityLocked() {
 			continue
 		}
 		caps := m.queueCapabilitiesLocked(state, state.snap)
-		sig := fmt.Sprintf("%s|%s|%s|%s|%d|%t|%d|%t%t|%t%t%t%t%t%t%t%t",
+		cleanupPresent, cleanupQuarantined := m.cleanupStatusLocked(id)
+		sig := fmt.Sprintf("%s|%s|%s|%s|%d|%t|%d|%t|%t|%t|%t|%t|%t|%t|%t|%t|%t|%t|%t|%t",
 			state.snap.Status, state.snap.Lifecycle, state.snap.Phase, state.snap.Desired,
 			state.authorityRevision, m.active[id] != nil, positions[id], m.closing, m.closed,
-			caps.Pause, caps.Cancel, caps.Resume, caps.Retry, caps.DownloadAgain, caps.Review, caps.Open, caps.Remove,
+			caps.Pause, caps.Cancel, caps.Resume, caps.Retry, caps.DownloadAgain, caps.StartAgain,
+			caps.OpenSource, caps.CopyLink, caps.Review, caps.Open, caps.Remove,
 		)
-		// Attempt identity is an authority boundary even when the presentation
-		// lifecycle happens to be unchanged.
-		sig += "|" + state.authorityAttemptID
+		// Attempt identity and cleanup disposition are authority boundaries even
+		// when the presentation lifecycle happens to be unchanged.
+		sig += fmt.Sprintf("|%s|%t|%t", state.authorityAttemptID, cleanupPresent, cleanupQuarantined)
 		if state.authoritySig != sig {
 			state.commandToken = uuid.NewString()
 			state.authoritySig = sig
@@ -1883,7 +2041,13 @@ func queueCapabilitiesFor(state *jobState, snap JobSnapshot) QueueJobCapabilitie
 	case StatusPaused:
 		return QueueJobCapabilities{Resume: true, Cancel: true}
 	case StatusFailed:
-		return QueueJobCapabilities{Retry: true, Remove: true}
+		failure := queueFailureFor(state, snap)
+		caps := QueueJobCapabilities{Remove: true}
+		caps.Retry = failure.Retryable && !retryExhausted(state)
+		caps.StartAgain = failure.Category == "disk_full" || failure.Category == "permission_denied"
+		caps.OpenSource = snap.URL != "" && (failure.Category == "authentication_required" || failure.Category == "resource_unavailable")
+		caps.CopyLink = caps.OpenSource
+		return caps
 	case StatusCanceled:
 		// A fresh admission must resolve the persisted server-owned plan after
 		// restart. That resolver is not available in this manager yet, so do
@@ -1892,11 +2056,99 @@ func queueCapabilitiesFor(state *jobState, snap JobSnapshot) QueueJobCapabilitie
 	case StatusComplete:
 		return QueueJobCapabilities{Open: snap.AbsolutePath != "", Remove: true}
 	case StatusActionRequired:
-		// The pinned engine lacks the public inspection/re-reservation facade
-		// required for an authoritative Review command, so this fails closed.
-		return QueueJobCapabilities{}
+		// Review is read-only and preserves the evidence-bearing row. Any next
+		// step is separately authorized; the frontend never derives recovery
+		// authority from the action-required reason or presentation copy.
+		return QueueJobCapabilities{Review: true}
 	default:
 		return QueueJobCapabilities{}
+	}
+}
+
+func queueFailureFor(state *jobState, snap JobSnapshot) QueueFailure {
+	code := strings.TrimSpace(snap.ErrorReason)
+	partial := snap.Bytes > 0
+	if state != nil && state.fromStateV2 {
+		if state.durable.LastErrorCode != "" {
+			code = state.durable.LastErrorCode
+		}
+		partial = partial || state.durable.LastFailureCommittedBytes > 0
+	}
+	category := failureCategoryForCode(code)
+	failure := QueueFailure{Category: category, PartialOutput: partial}
+	switch category {
+	case "network_interrupted":
+		failure.MessageKey = "queue.failure.network_interrupted"
+		failure.Heading = "Download interrupted"
+		failure.Message = "The connection was interrupted before this download finished."
+		failure.RecommendedAction = "Check your connection, then retry this item."
+		failure.Retryable = true
+	case "authentication_required":
+		failure.MessageKey = "queue.failure.authentication_required"
+		failure.Heading = "Sign-in required"
+		failure.Message = "This video requires an authenticated session, which VidStow does not support in this release."
+		failure.RecommendedAction = "Open the source to confirm access, or remove this item."
+	case "resource_unavailable":
+		failure.MessageKey = "queue.failure.resource_unavailable"
+		failure.Heading = "Video unavailable"
+		failure.Message = "This video may be private, removed, blocked, or otherwise unavailable."
+		failure.RecommendedAction = "Open the source to check it, or remove this item."
+	case "disk_full":
+		failure.MessageKey = "queue.failure.disk_full"
+		failure.Heading = "Not enough disk space"
+		failure.Message = "VidStow could not finish writing this download."
+		failure.RecommendedAction = "Free space or change the default folder, then start this item again."
+	case "permission_denied":
+		failure.MessageKey = "queue.failure.permission_denied"
+		failure.Heading = "Folder is not writable"
+		failure.Message = "VidStow does not have permission to write this download."
+		failure.RecommendedAction = "Fix access or change the default folder, then start this item again."
+	case "security_blocked":
+		failure.MessageKey = "queue.failure.security_blocked"
+		failure.Heading = "Download blocked"
+		failure.Message = "VidStow stopped this download because a security check failed."
+		failure.RecommendedAction = "Remove this item. If the problem persists, copy diagnostics from Settings."
+	case "retry_exhausted":
+		failure.MessageKey = "queue.failure.retry_exhausted"
+		failure.Heading = "Retry limit reached"
+		failure.Message = "VidStow could not make progress after the allowed recovery attempts."
+		failure.RecommendedAction = "Remove this item and analyze the source again from Home."
+	default:
+		failure.MessageKey = "queue.failure.internal"
+		failure.Heading = "Download failed"
+		failure.Message = "VidStow could not complete this download."
+		failure.RecommendedAction = "Retry this item. If it fails again, copy diagnostics from Settings."
+		failure.Retryable = true
+	}
+	if failure.Retryable && state != nil && retryExhausted(state) {
+		failure.Category = "retry_exhausted"
+		failure.MessageKey = "queue.failure.retry_exhausted"
+		failure.Heading = "Retry limit reached"
+		failure.Message = "VidStow could not make progress after the allowed recovery attempts."
+		failure.RecommendedAction = "Remove this item and analyze the source again from Home."
+		failure.Retryable = false
+	}
+	return failure
+}
+
+func failureCategoryForCode(code string) string {
+	switch strings.TrimSpace(code) {
+	case "network", retryCodeMediaLinkExpired, retryCodeYouTubeChallengePreTransfer:
+		return "network_interrupted"
+	case "authentication":
+		return "authentication_required"
+	case "unsupported", "invalid_input":
+		return "resource_unavailable"
+	case "disk_full":
+		return "disk_full"
+	case "permission_denied":
+		return "permission_denied"
+	case "security":
+		return "security_blocked"
+	case retryCodeFreshDownloadRequired:
+		return "retry_exhausted"
+	default:
+		return "internal"
 	}
 }
 
@@ -1904,7 +2156,34 @@ func (m *Manager) queueCapabilitiesLocked(state *jobState, snap JobSnapshot) Que
 	if m.persistStatus.Available && !m.persistStatus.Healthy || !m.persistStatus.Available && m.stateStore != nil {
 		return QueueJobCapabilities{}
 	}
-	return queueCapabilitiesFor(state, snap)
+	capabilities := queueCapabilitiesFor(state, snap)
+	pendingCleanup, _ := m.cleanupStatusLocked(snap.ID)
+	if pendingCleanup {
+		// A retained row remains the visible owner of cleanup evidence. It can
+		// only be removed after the durable tombstones have settled. Terminal
+		// rows expose Review so a quarantined cleanup can be retried explicitly.
+		capabilities.Remove = false
+		capabilities.StartAgain = false
+		switch snap.Status {
+		case StatusCanceled, StatusFailed, StatusComplete:
+			capabilities.Review = true
+		}
+	}
+	return capabilities
+}
+
+func (m *Manager) cleanupStatusLocked(jobID string) (present, quarantined bool) {
+	if m.stateStore == nil || jobID == "" {
+		return false, false
+	}
+	for _, tombstone := range m.stateStore.Snapshot().Cleanup {
+		if tombstone.JobID != jobID {
+			continue
+		}
+		present = true
+		quarantined = quarantined || tombstone.State == jobmodel.CleanupQuarantined
+	}
+	return present, quarantined
 }
 
 func (m *Manager) authorizeQueueCommand(id, token string, allowed func(QueueJobCapabilities) bool) (*jobState, error) {
@@ -1942,11 +2221,386 @@ func (m *Manager) QueueRetry(id, token string) error {
 	}
 	return m.Retry(id)
 }
+
+// QueueStartAgainURL removes an eligible failed row and its durable
+// reservation before releasing the source URL for normal Home analysis. A
+// replacement is therefore always a new standalone logical job.
+func (m *Manager) QueueStartAgainURL(id, token string) (string, error) {
+	m.mu.Lock()
+	m.refreshQueueAuthorityLocked()
+	state := m.all[id]
+	if state == nil || token == "" || token != state.commandToken || !m.queueCapabilitiesLocked(state, state.snap).StartAgain {
+		m.mu.Unlock()
+		return "", errors.New("jobs: start again is no longer available")
+	}
+	state.commanding = true
+	url := strings.TrimSpace(state.snap.URL)
+	m.mu.Unlock()
+
+	if url == "" {
+		m.mu.Lock()
+		state.commanding = false
+		m.emitQueueLocked()
+		m.mu.Unlock()
+		return "", errors.New("jobs: source URL is unavailable")
+	}
+	if err := m.removeDurable(state); err != nil {
+		m.mu.Lock()
+		if m.all[id] == state {
+			state.commanding = false
+			m.emitQueueLocked()
+		}
+		m.mu.Unlock()
+		return "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.all[id] != state {
+		return "", errors.New("jobs: failed row changed before it could be removed")
+	}
+	delete(m.all, id)
+	m.removeFromOrderLocked(id)
+	m.emitQueueLocked()
+	return url, nil
+}
+
+func (m *Manager) QueueOpenSourceURL(id, token string) (string, error) {
+	return m.queueSourceURL(id, token, func(c QueueJobCapabilities) bool { return c.OpenSource })
+}
+
+func (m *Manager) QueueCopySourceURL(id, token string) (string, error) {
+	return m.queueSourceURL(id, token, func(c QueueJobCapabilities) bool { return c.CopyLink })
+}
+
+func (m *Manager) queueSourceURL(id, token string, allowed func(QueueJobCapabilities) bool) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshQueueAuthorityLocked()
+	state := m.all[id]
+	if state == nil || token == "" || token != state.commandToken || !allowed(m.queueCapabilitiesLocked(state, state.snap)) {
+		return "", errors.New("jobs: queue action is no longer available")
+	}
+	url := strings.TrimSpace(state.snap.URL)
+	if url == "" {
+		return "", errors.New("jobs: source URL is unavailable")
+	}
+	return url, nil
+}
+
 func (m *Manager) QueueRemove(id, token string) error {
 	if _, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Remove }); err != nil {
 		return err
 	}
 	return m.Remove(id)
+}
+
+// QueueActionRequiredReview returns bounded recovery guidance for the exact row
+// authorized by token. Opening Review does not mutate, discard, or reinterpret
+// retained engine evidence.
+func (m *Manager) QueueActionRequiredReview(id, token string) (ActionRequiredReview, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshQueueAuthorityLocked()
+	state := m.all[id]
+	if state == nil || token == "" || token != state.commandToken || !m.queueCapabilitiesLocked(state, state.snap).Review {
+		return ActionRequiredReview{}, errors.New("jobs: queue action is no longer available")
+	}
+	_, quarantined := m.cleanupStatusLocked(id)
+	return actionRequiredReview(state, quarantined), nil
+}
+
+// QueueActionRequiredStartOverURL releases only the persisted source URL after
+// rechecking the same backend authority. The caller must perform normal Home
+// analysis and admission, which creates fresh job, attempt, session, and
+// reservation identities; this command never reuses or deletes old evidence.
+func (m *Manager) QueueActionRequiredStartOverURL(id, token string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.refreshQueueAuthorityLocked()
+	state := m.all[id]
+	if state == nil || token == "" || token != state.commandToken || !m.queueCapabilitiesLocked(state, state.snap).Review {
+		return "", errors.New("jobs: queue action is no longer available")
+	}
+	if state.snap.Status != StatusActionRequired {
+		return "", errors.New("jobs: starting over is not available for this item")
+	}
+	_, quarantined := m.cleanupStatusLocked(id)
+	review := actionRequiredReview(state, quarantined)
+	if !review.CanStartOver {
+		return "", errors.New("jobs: starting over is not available for this item")
+	}
+	return strings.TrimSpace(state.snap.URL), nil
+}
+
+// QueueActionRequiredDiscard uses the existing prepare-then-commit Cancel
+// protocol. Unsafe or indeterminate engine evidence therefore leaves the row
+// untouched; cleanup-pending outcomes remain durable and visible.
+func (m *Manager) QueueActionRequiredDiscard(id, token string) error {
+	state, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Review })
+	if err != nil || state.snap.Status != StatusActionRequired {
+		return errors.New("jobs: discarding saved data is no longer available")
+	}
+	m.mu.Lock()
+	if m.all[id] != state || state.commanding || state.settling || m.active[id] != nil {
+		m.mu.Unlock()
+		return errors.New("jobs: discarding saved data is no longer available")
+	}
+	state.commanding = true
+	m.mu.Unlock()
+	return m.cancelIdle(state)
+}
+
+// QueueActionRequiredRetryFreshLink rotates away from uncertain session
+// evidence atomically, retains it for durable cleanup, and starts the same row
+// with a fresh engine session so media URLs are resolved again.
+func (m *Manager) QueueActionRequiredRetryFreshLink(id, token string) error {
+	state, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Review })
+	if err != nil || state.snap.Status != StatusActionRequired || !canRetryActionRequiredFresh(state) {
+		return errors.New("jobs: fresh-link retry is no longer available")
+	}
+	m.mu.Lock()
+	if m.all[id] != state || state.commanding || state.settling {
+		m.mu.Unlock()
+		return errors.New("jobs: fresh-link retry is no longer available")
+	}
+	state.commanding = true
+	m.mu.Unlock()
+	if !freshRetryDestinationAvailable(state.durable) {
+		m.mu.Lock()
+		state.commanding = false
+		m.emitQueueLocked()
+		m.mu.Unlock()
+		return errors.New("jobs: the reserved destination is no longer available; start over from Home to choose a new name")
+	}
+
+	previousSessionID := state.durable.SessionID
+	freshSessionID := newSessionID()
+	if err := m.commitDurable(state, func(job *jobmodel.DurableJob, document *jobmodel.State) error {
+		upsertJobCleanupTombstone(document, job.ID, previousSessionID, job.OutputRoot, job.Reservation, "cleanup", time.Now().UTC())
+		if document.NextQueueOrdinal == ^uint64(0) {
+			return errors.New("jobs: queue ordinal exhausted")
+		}
+		job.Lifecycle = jobmodel.LifecyclePending
+		job.Desired = jobmodel.DesiredRunning
+		job.Phase = jobmodel.PhasePreparing
+		job.AttemptID = uuid.NewString()
+		job.SessionID = freshSessionID
+		job.RetryMode = jobmodel.RetryModeRestartNewSession
+		job.ActionRequiredCode = ""
+		job.LastErrorCode = ""
+		job.LastFailureCommittedBytes = 0
+		job.ZeroProgressResumes = 0
+		job.SessionRestarts++
+		job.QueueOrdinal = document.NextQueueOrdinal
+		document.NextQueueOrdinal++
+		return nil
+	}); err != nil {
+		m.mu.Lock()
+		state.commanding = false
+		m.mu.Unlock()
+		return err
+	}
+	m.discardRetiredSession(state, previousSessionID)
+
+	m.mu.Lock()
+	if m.closing || m.closed || m.all[id] != state || !state.commanding {
+		state.commanding = false
+		m.mu.Unlock()
+		return errors.New("jobs: stale fresh-link retry")
+	}
+	state.snap.Status = StatusPending
+	state.snap.Progress = 0
+	state.snap.Bytes = 0
+	state.snap.Total = 0
+	state.snap.SpeedBps = 0
+	state.snap.ETASeconds = 0
+	state.snap.Message = "Queued with a fresh media link"
+	state.snap.ErrorReason = ""
+	state.snap.StartedAt = ""
+	state.snap.CompletedAt = ""
+	state.commanding = false
+	m.order = append(m.order, id)
+	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	m.maybeStartNextLocked()
+	m.emitQueueLocked()
+	m.mu.Unlock()
+	return nil
+}
+
+// QueueActionRequiredRetryRecovery re-inspects preserved evidence. Only a
+// session the engine now classifies as reusable may re-enter ordinary Retry;
+// uncertainty remains action-required and no identity is changed.
+func (m *Manager) QueueActionRequiredRetryRecovery(id, token string) error {
+	state, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Review })
+	if err != nil || state.snap.Status != StatusActionRequired || !canRetryActionRequiredRecovery(state) {
+		return errors.New("jobs: recovery retry is no longer available")
+	}
+	m.mu.Lock()
+	if m.all[id] != state || state.commanding || state.settling {
+		m.mu.Unlock()
+		return errors.New("jobs: recovery retry is no longer available")
+	}
+	state.commanding = true
+	m.mu.Unlock()
+	clearCommand := func() {
+		m.mu.Lock()
+		if m.all[id] == state {
+			state.commanding = false
+			m.emitQueueLocked()
+		}
+		m.mu.Unlock()
+	}
+	summary, inspectErr := m.inspectResume(context.Background(), engineRootRef(state.durable.OutputRoot), state.durable.SessionID)
+	if inspectErr != nil {
+		clearCommand()
+		return errors.New("jobs: saved data is still unavailable; it was preserved")
+	}
+	decision, _ := classifyRetryResume(summary)
+	if decision != retryResumeReuse {
+		clearCommand()
+		return errors.New("jobs: saved data is still not safe to retry; it was preserved")
+	}
+	if err := m.commitDurable(state, func(job *jobmodel.DurableJob, _ *jobmodel.State) error {
+		job.Lifecycle = jobmodel.LifecycleFailed
+		job.Desired = jobmodel.DesiredPaused
+		job.ActionRequiredCode = ""
+		job.LastErrorCode = ""
+		return nil
+	}); err != nil {
+		clearCommand()
+		return err
+	}
+	m.mu.Lock()
+	if m.all[id] != state {
+		m.mu.Unlock()
+		return errors.New("jobs: stale recovery retry")
+	}
+	state.snap.Status = StatusFailed
+	state.snap.ErrorReason = ""
+	state.snap.Message = "Ready to retry"
+	state.commanding = false
+	m.mu.Unlock()
+	return m.Retry(id)
+}
+
+// QueueRetryCleanup re-enables explicitly reviewed quarantined tombstones.
+// The periodic worker performs the actual engine inspection and discard.
+func (m *Manager) QueueRetryCleanup(id, token string) error {
+	state, err := m.authorizeQueueCommand(id, token, func(c QueueJobCapabilities) bool { return c.Review })
+	if err != nil || state.snap.Status == StatusActionRequired {
+		return errors.New("jobs: cleanup retry is no longer available")
+	}
+	store := m.stateStoreSnapshot()
+	if store == nil {
+		return errors.New("jobs: State v2 store is not configured")
+	}
+	now := time.Now().UTC()
+	changed := false
+	if err := m.transaction(store, nil, func(document *jobmodel.State) error {
+		for index := range document.Cleanup {
+			tombstone := &document.Cleanup[index]
+			if tombstone.JobID == id && tombstone.State == jobmodel.CleanupQuarantined {
+				tombstone.State = jobmodel.CleanupPending
+				tombstone.LastErrorCode = "cleanup"
+				tombstone.UpdatedAt = now
+				changed = true
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if !changed {
+		return errors.New("jobs: cleanup retry is no longer available")
+	}
+	m.mu.Lock()
+	m.emitQueueLocked()
+	m.mu.Unlock()
+	return nil
+}
+
+func actionRequiredReview(state *jobState, cleanupQuarantined bool) ActionRequiredReview {
+	code := strings.TrimSpace(state.snap.ErrorReason)
+	if state.fromStateV2 && state.durable.ActionRequiredCode != "" {
+		code = state.durable.ActionRequiredCode
+	}
+	message := "VidStow cannot safely continue this saved download automatically."
+	switch code {
+	case "session-lease-contended":
+		message = "Another VidStow process may still be using this download’s saved data. Close the other process before starting over from Home."
+	case "publication-reconciliation-required":
+		message = "VidStow cannot prove whether the final file was published. Check your download folder before starting another copy."
+	case "session-manifest-corrupt", "session-version-unknown", "session-path-unsafe":
+		message = "The saved download data could not be validated, so VidStow will not resume or delete it automatically."
+	case "recovery-session-unavailable", "session-reconciliation-required":
+		message = "The saved download session could not be inspected safely, so VidStow has preserved it for review."
+	case "migration-reanalysis-required", "migration-private-plan-unverified":
+		message = "This item came from an older VidStow version and must be analyzed again before it can download."
+	}
+	url := strings.TrimSpace(state.snap.URL)
+	if state.snap.Status != StatusActionRequired {
+		message = "VidStow could not finish removing an older download session’s saved temporary data. The queue item remains visible so cleanup is never silently forgotten."
+		return ActionRequiredReview{
+			JobID: state.snap.ID, Title: state.snap.Title,
+			Heading: "Temporary data is still preserved", Message: message,
+			PreservationNotice: "Removing this queue item stays unavailable until cleanup succeeds. VidStow retries pending cleanup automatically after restart.",
+			CanRetryCleanup:    cleanupQuarantined,
+		}
+	}
+	canManageSession := state.fromStateV2 && state.durable.SessionID != "" && state.durable.OutputRoot.CanonicalPath != ""
+	return ActionRequiredReview{
+		JobID: state.snap.ID, Title: state.snap.Title,
+		Heading: "This download needs your decision", Message: message,
+		PreservationNotice: "The original queue item and its saved temporary data will stay in place unless you explicitly discard it. Starting over uses a new destination reservation and never reuses uncertain data.",
+		CanStartOver:       url != "",
+		CanRetryRecovery:   canManageSession && canRetryActionRequiredRecovery(state),
+		CanRetryFreshLink:  canManageSession && canRetryActionRequiredFresh(state),
+		CanDiscard:         canManageSession,
+	}
+}
+
+func freshRetryDestinationAvailable(job jobmodel.DurableJob) bool {
+	root, err := reservationfs.OpenRoot(job.OutputRoot.CanonicalPath)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	facts := root.Facts()
+	if facts.Volume.CanonicalPath != job.OutputRoot.CanonicalPath || facts.Volume.Identity != job.OutputRoot.Identity {
+		return false
+	}
+	for _, artifact := range job.Reservation.Artifacts {
+		availability, err := facts.Probe.Probe(context.Background(), facts.Volume, artifact.Basename)
+		if err != nil || availability != reservation.Available {
+			return false
+		}
+	}
+	return true
+}
+
+func canRetryActionRequiredRecovery(state *jobState) bool {
+	if state == nil || !state.fromStateV2 || state.durable.SessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
+		return false
+	}
+	switch state.durable.ActionRequiredCode {
+	case "session-lease-contended", "recovery-session-unavailable", "output-root-unavailable":
+		return true
+	default:
+		return false
+	}
+}
+
+func canRetryActionRequiredFresh(state *jobState) bool {
+	if state == nil || !state.fromStateV2 || strings.TrimSpace(state.snap.URL) == "" || state.durable.SessionID == "" || state.durable.OutputRoot.CanonicalPath == "" || len(state.durable.Reservation.Artifacts) == 0 || state.durable.SessionRestarts >= maxZeroProgressRestarts {
+		return false
+	}
+	code := state.durable.ActionRequiredCode
+	switch code {
+	case "publication-reconciliation-required", "output-root-unavailable", "session-path-unsafe", "session-lease-contended", "migration-reanalysis-required", "migration-private-plan-unverified":
+		return false
+	default:
+		return true
+	}
 }
 
 func (m *Manager) authorizeCollectionCommand(id, token string, allowed func(QueueCollectionCapabilities) bool, childAllowed func(QueueJobCapabilities) bool) ([]string, error) {
@@ -2241,17 +2895,17 @@ func (m *Manager) Cancel(id string) error {
 	m.detachedWG.Add(1)
 	go func() {
 		defer m.detachedWG.Done()
-		m.cancelIdle(state)
+		_ = m.cancelIdle(state)
 	}()
 	m.mu.Unlock()
 	return nil
 }
 
-func (m *Manager) cancelIdle(state *jobState) {
+func (m *Manager) cancelIdle(state *jobState) error {
 	if state == nil {
-		return
+		return errors.New("jobs: missing idle job")
 	}
-	handle, unavailable, prepareErr := prepareDiscardSession(state)
+	handle, unavailable, prepareErr := m.prepareDiscardSession(state, state.durable.SessionID)
 	if prepareErr != nil {
 		// Preserve the row and surface the failure through the existing
 		// runtime event stream; no destructive operation occurred.
@@ -2260,7 +2914,7 @@ func (m *Manager) cancelIdle(state *jobState) {
 		m.maybeStartNextLocked()
 		m.emitQueueLocked()
 		m.mu.Unlock()
-		return
+		return prepareErr
 	}
 	if err := m.transitionDurable(state, jobmodel.LifecycleCanceling, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp); err != nil {
 		if handle != nil {
@@ -2271,7 +2925,7 @@ func (m *Manager) cancelIdle(state *jobState) {
 		m.maybeStartNextLocked()
 		m.emitQueueLocked()
 		m.mu.Unlock()
-		return
+		return err
 	}
 	cleanupPending := false
 	cleanupCode := ""
@@ -2293,13 +2947,13 @@ func (m *Manager) cancelIdle(state *jobState) {
 	terminal.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	state.snap = terminal
 	m.mu.Unlock()
-	if err := m.settleDurable(state, jobmodel.LifecycleCanceled, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp, terminal, cleanupCode, cleanupPending); err != nil {
+	if err := m.settleDurable(state, jobmodel.LifecycleCanceled, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp, terminal, cleanupCode, cleanupPending, -1); err != nil {
 		m.mu.Lock()
 		state.commanding = false
 		m.maybeStartNextLocked()
 		m.emitQueueLocked()
 		m.mu.Unlock()
-		return
+		return err
 	}
 	m.mu.Lock()
 	if current := m.all[state.snap.ID]; current == state {
@@ -2311,6 +2965,7 @@ func (m *Manager) cancelIdle(state *jobState) {
 		m.emitQueueLocked()
 	}
 	m.mu.Unlock()
+	return nil
 }
 
 // Pause suspends a pending or actively downloading job. Active processing
@@ -2686,6 +3341,26 @@ const (
 	retryResumeActionRequired
 
 	retryCodeYouTubeChallengePreTransfer = "youtube-challenge-pre-transfer"
+	// retryCodeMediaLinkExpired marks a download-phase HTTP 403 from the
+	// signed googlevideo URL: the captured link is dead, so resuming the same
+	// session can never make progress.
+	retryCodeMediaLinkExpired = "media-link-expired"
+	// retryCodeFreshDownloadRequired marks a row whose escalation budget is
+	// spent; the only remaining escape is removing it and downloading again.
+	retryCodeFreshDownloadRequired = "retry-fresh-download-required"
+
+	// A validated resume that commits no new bytes is pinned to a dead signed
+	// URL. One such failure is evidence enough to demand a fresh session.
+	zeroProgressResumeThreshold = 1
+	// Retry stops auto-escalating after this many fresh-session restarts and
+	// tells the user to download the item again instead.
+	maxZeroProgressRestarts = 2
+)
+
+const (
+	mediaLinkExpiredMessage     = "The download link expired mid-download. Retry will restart it with a fresh link."
+	downloadStoppedMidMessage   = "The download stopped mid-download and part of the file is saved. Retry will resume it, or restart it with a fresh link if the download link has expired."
+	freshDownloadRequiredNotice = "Retry can no longer restart this download. Remove the item and download it again from Home."
 )
 
 // classifyRetryResume authorizes reuse only for an available, validated
@@ -2752,6 +3427,60 @@ func canRestartPreTransferFailure(state *jobState, summary engine.ResumeSummary)
 	return string(summary.Publication) == "" && string(summary.Cleanup) == "" && string(summary.Status) == ""
 }
 
+// committedBytesFromSummary sums the durable per-track checkpoints of a
+// session. It is the ground truth for "did this attempt make progress",
+// independent of progress telemetry that a dead URL never emits.
+func committedBytesFromSummary(summary engine.ResumeSummary) int64 {
+	var total int64
+	for _, component := range summary.Components {
+		if component.CommittedBytes > 0 {
+			total += component.CommittedBytes
+		}
+	}
+	return total
+}
+
+// shouldRestartZeroProgressFailure reports whether the validated session the
+// retry would resume is pinned to a dead signed media URL. Callers must have
+// classified the session as reusable first; this decision only escalates a
+// certain reuse, never an uncertain session. Two signals qualify: the failure
+// itself was a download-phase 403, or the previous resume attempt committed no
+// new bytes relative to the failure before it.
+func shouldRestartZeroProgressFailure(state *jobState, summary engine.ResumeSummary) bool {
+	if state == nil {
+		return false
+	}
+	if state.durable.LastErrorCode == retryCodeMediaLinkExpired {
+		return true
+	}
+	return state.durable.ZeroProgressResumes >= zeroProgressResumeThreshold && committedBytesFromSummary(summary) > 0
+}
+
+// retryExhausted reports the durable "download again from Home" marker. The
+// restart count alone must not exhaust a row: a fresh session that made
+// progress and then failed transiently is still a valid resume.
+func retryExhausted(state *jobState) bool {
+	if state == nil {
+		return false
+	}
+	return state.durable.LastErrorCode == retryCodeFreshDownloadRequired || state.snap.ErrorReason == retryCodeFreshDownloadRequired
+}
+
+// shouldSettleFreshDownloadRequired reports that Retry can no longer help:
+// the restart budget is spent and this failure would otherwise demand another
+// escalation — a dead link (download-phase 403) or a resume that froze the
+// checkpoint exactly where the previous failure left it. It applies the same
+// condition the retry-time decline gate uses.
+func shouldSettleFreshDownloadRequired(state *jobState, err error, committedBytes int64, sawPostprocess bool) bool {
+	if state == nil || state.durable.SessionRestarts < maxZeroProgressRestarts {
+		return false
+	}
+	if isExpiredMediaLinkError(err) {
+		return true
+	}
+	return committedBytes > 0 && !sawPostprocess && committedBytes == state.durable.LastFailureCommittedBytes
+}
+
 func (m *Manager) requireRetryAction(state *jobState, code string) error {
 	if code == "" {
 		code = "session-reconciliation-required"
@@ -2782,6 +3511,48 @@ func (m *Manager) requireRetryAction(state *jobState, code string) error {
 	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
 	m.emitQueueLocked()
 	return nil
+}
+
+// declineZeroProgressRetry stops auto-escalation once the restart budget is
+// spent. The row stays failed with durable guidance copy, because the only
+// remaining escape is removing the item and downloading it again from Home.
+func (m *Manager) declineZeroProgressRetry(state *jobState) error {
+	if err := m.commitDurable(state, func(job *jobmodel.DurableJob, _ *jobmodel.State) error {
+		job.LastErrorCode = retryCodeFreshDownloadRequired
+		job.ActionRequiredCode = ""
+		return nil
+	}); err != nil {
+		m.mu.Lock()
+		state.commanding = false
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.all[state.snap.ID] != state || state.snap.Status != StatusFailed || !state.commanding {
+		state.commanding = false
+		return errors.New("jobs: stale retry rejection")
+	}
+	state.commanding = false
+	state.snap.Message = freshDownloadRequiredNotice
+	state.snap.ErrorReason = retryCodeFreshDownloadRequired
+	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	m.emitQueueLocked()
+	return errors.New("jobs: retry escalation exhausted; remove the item and download it again")
+}
+
+// sessionCommittedBytes reads the session's durable checkpoints. It returns
+// -1 when the evidence is unavailable, which leaves any recorded failure
+// bookkeeping untouched rather than guessing zero.
+func (m *Manager) sessionCommittedBytes(state *jobState) int64 {
+	if state == nil || !state.fromStateV2 || state.durable.SessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
+		return -1
+	}
+	summary, err := m.inspectResume(context.Background(), engineRootRef(state.durable.OutputRoot), state.durable.SessionID)
+	if err != nil {
+		return -1
+	}
+	return committedBytesFromSummary(summary)
 }
 
 // Retry re-queues a failed job under the same logical ID. It always creates a
@@ -2832,8 +3603,12 @@ func (m *Manager) Retry(id string) error {
 	}
 
 	if state.fromStateV2 {
+		if retryExhausted(state) {
+			return m.declineZeroProgressRetry(state)
+		}
 		sessionID := state.durable.SessionID
 		retryMode := jobmodel.RetryModeResumeValidated
+		escalatedRestart := false
 		if sessionID == "" || state.durable.OutputRoot.CanonicalPath == "" {
 			sessionID = newSessionID()
 			retryMode = jobmodel.RetryModeRestartNewSession
@@ -2855,16 +3630,40 @@ func (m *Manager) Retry(id string) error {
 					} else {
 						return m.requireRetryAction(state, actionCode)
 					}
+				} else {
+					needsFreshSession := shouldRestartZeroProgressFailure(state, summary)
+					if needsFreshSession && state.durable.SessionRestarts >= maxZeroProgressRestarts {
+						return m.declineZeroProgressRetry(state)
+					}
+					if needsFreshSession {
+						// Rotate the durable row onto a fresh session first. Discard
+						// of the retired workspace is best-effort afterward; a
+						// mid-life tombstone cannot be persisted while the job is
+						// still live, and discarding before commit can strand the
+						// row as action-required if the rotation fails.
+						sessionID = newSessionID()
+						retryMode = jobmodel.RetryModeRestartNewSession
+						escalatedRestart = true
+					}
 				}
 			}
 		}
+		previousSessionID := state.durable.SessionID
 		if err := m.commitDurable(state, func(job *jobmodel.DurableJob, document *jobmodel.State) error {
+			if escalatedRestart && previousSessionID != "" && previousSessionID != sessionID {
+				upsertJobCleanupTombstone(document, job.ID, previousSessionID, job.OutputRoot, job.Reservation, "cleanup", time.Now().UTC())
+			}
 			job.Lifecycle = jobmodel.LifecyclePending
 			job.Desired = jobmodel.DesiredRunning
 			job.Phase = jobmodel.PhasePreparing
 			job.AttemptID = uuid.NewString()
 			job.SessionID = sessionID
 			job.RetryMode = retryMode
+			if escalatedRestart {
+				job.LastFailureCommittedBytes = 0
+				job.ZeroProgressResumes = 0
+				job.SessionRestarts++
+			}
 			if document.NextQueueOrdinal == ^uint64(0) {
 				return errors.New("jobs: queue ordinal exhausted")
 			}
@@ -2876,6 +3675,9 @@ func (m *Manager) Retry(id string) error {
 			state.commanding = false
 			m.mu.Unlock()
 			return err
+		}
+		if escalatedRestart && previousSessionID != "" && previousSessionID != sessionID {
+			m.discardRetiredSession(state, previousSessionID)
 		}
 	}
 
@@ -2966,6 +3768,9 @@ func (m *Manager) DownloadAgain(id string) (string, error) {
 			clone.RetryMode = jobmodel.RetryModeNone
 			clone.ActionRequiredCode = ""
 			clone.LastErrorCode = ""
+			clone.LastFailureCommittedBytes = 0
+			clone.ZeroProgressResumes = 0
+			clone.SessionRestarts = 0
 			clone.CreatedAt = time.Now().UTC()
 			clone.UpdatedAt = clone.CreatedAt
 			clone.Reservation.GroupID = newID
@@ -3055,6 +3860,10 @@ func (m *Manager) Remove(id string) error {
 	default:
 		m.mu.Unlock()
 		return errors.New("jobs: only terminal jobs can be removed")
+	}
+	if pendingCleanup, _ := m.cleanupStatusLocked(id); pendingCleanup {
+		m.mu.Unlock()
+		return errors.New("jobs: saved temporary data cleanup is still pending")
 	}
 	if state.commanding || state.settling {
 		m.mu.Unlock()
@@ -3312,6 +4121,7 @@ func subtitleEngineOptions(options jobmodel.OutputOptions) engine.SubtitleOption
 
 func (m *Manager) run(state *jobState, worker *worker) {
 	defer close(worker.Done)
+	started := time.Now()
 
 	m.mu.Lock()
 	req := engine.Request{
@@ -3372,7 +4182,12 @@ func (m *Manager) run(state *jobState, worker *worker) {
 	m.mu.Unlock()
 
 	processingHeld := false
+	sawPostprocess := false
+	sawDownload := false
 	handler := func(ctx context.Context, ev engine.Event) error {
+		if ev.Kind == engine.EventDownloadStarting {
+			sawDownload = true
+		}
 		if ev.Kind == engine.EventPostprocessStarting && !processingHeld {
 			select {
 			case m.processing <- struct{}{}:
@@ -3380,6 +4195,9 @@ func (m *Manager) run(state *jobState, worker *worker) {
 			case <-ctx.Done():
 				return ctx.Err()
 			}
+		}
+		if ev.Kind == engine.EventPostprocessStarting {
+			sawPostprocess = true
 		}
 		m.handleEventAttempt(state, worker, ev)
 		if ev.Kind == engine.EventPostprocessCompleted && processingHeld {
@@ -3390,6 +4208,7 @@ func (m *Manager) run(state *jobState, worker *worker) {
 	}
 
 	result, err := runner(ctx, req, handler)
+	diagnostic := terminalDownloadDiagnostic(err, sawDownload, sawPostprocess, time.Since(started))
 	if processingHeld {
 		<-m.processing
 	}
@@ -3399,6 +4218,16 @@ func (m *Manager) run(state *jobState, worker *worker) {
 	canceled := errors.Is(cause, errCancelRequested)
 	if !paused && !canceled && errors.Is(cause, context.Canceled) {
 		canceled = true
+	}
+	if paused || canceled {
+		diagnostic = nil
+	}
+
+	// Checkpoint evidence is read outside m.mu because inspection does disk
+	// I/O. -1 (unknown) keeps prior failure bookkeeping untouched.
+	failureCommitted := int64(-1)
+	if err != nil && !paused && !canceled {
+		failureCommitted = m.sessionCommittedBytes(state)
 	}
 
 	m.mu.Lock()
@@ -3420,8 +4249,12 @@ func (m *Manager) run(state *jobState, worker *worker) {
 		terminal.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	} else if err != nil {
 		terminal.Status = StatusFailed
-		terminal.Message = humanError(err)
+		terminal.Message = failureMessage(err, failureCommitted, sawPostprocess)
 		terminal.ErrorReason = errorReason(err)
+		if shouldSettleFreshDownloadRequired(state, err, failureCommitted, sawPostprocess) {
+			terminal.Message = freshDownloadRequiredNotice
+			terminal.ErrorReason = retryCodeFreshDownloadRequired
+		}
 		terminal.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 		if terminal.Bytes == 0 {
 			terminal.Progress = 0
@@ -3465,13 +4298,13 @@ func (m *Manager) run(state *jobState, worker *worker) {
 	if state.fromStateV2 {
 		switch {
 		case paused:
-			settleErr = m.settleDurable(state, jobmodel.LifecyclePaused, jobmodel.DesiredPaused, jobmodel.PhasePreparing, terminal, "", false)
+			settleErr = m.settleDurable(state, jobmodel.LifecyclePaused, jobmodel.DesiredPaused, jobmodel.PhasePreparing, terminal, "", false, -1)
 		case canceled:
-			settleErr = m.settleDurable(state, jobmodel.LifecycleCanceled, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp, terminal, cleanupCode, cleanupPending)
+			settleErr = m.settleDurable(state, jobmodel.LifecycleCanceled, jobmodel.DesiredCanceled, jobmodel.PhaseCleaningUp, terminal, cleanupCode, cleanupPending, -1)
 		case err != nil:
-			settleErr = m.settleDurable(state, jobmodel.LifecycleFailed, jobmodel.DesiredRunning, jobmodel.PhasePreparing, terminal, errorReason(err), false)
+			settleErr = m.settleDurable(state, jobmodel.LifecycleFailed, jobmodel.DesiredRunning, jobmodel.PhasePreparing, terminal, terminal.ErrorReason, false, failureCommitted)
 		default:
-			settleErr = m.settleDurable(state, jobmodel.LifecycleCompleted, jobmodel.DesiredRunning, jobmodel.PhaseReadyToPublish, terminal, "", false)
+			settleErr = m.settleDurable(state, jobmodel.LifecycleCompleted, jobmodel.DesiredRunning, jobmodel.PhaseReadyToPublish, terminal, "", false, -1)
 		}
 	}
 
@@ -3484,6 +4317,7 @@ func (m *Manager) run(state *jobState, worker *worker) {
 		state.snap.Status = StatusFailed
 		state.snap.Message = "Could not save lifecycle state"
 		state.snap.ErrorReason = "persistence"
+		diagnostic = &Diagnostic{Stage: "persistence", Category: "state_unavailable", Duration: time.Since(started)}
 	}
 	state.settling = false
 	state.commanding = false
@@ -3492,9 +4326,54 @@ func (m *Manager) run(state *jobState, worker *worker) {
 	state.snap.OccupiesSlot = false
 	delete(m.active, state.snap.ID)
 	state.worker = nil
-	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap, Diagnostic: diagnostic})
 	m.maybeStartNextLocked()
 	m.emitQueueLocked()
+}
+
+// terminalDownloadDiagnostic maps only typed engine facts. Unknown errors keep
+// a coarse stage-specific category rather than serializing or matching text.
+func terminalDownloadDiagnostic(err error, sawDownload, sawPostprocess bool, duration time.Duration) *Diagnostic {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		stage := "extraction"
+		if sawDownload {
+			stage = "media_transfer"
+		}
+		return &Diagnostic{Stage: stage, Category: "network_timeout", Duration: duration}
+	}
+	if errors.Is(err, context.Canceled) || engine.IsCategory(err, engine.ErrorCancelled) {
+		return nil
+	}
+	problem := &Diagnostic{Stage: "media_transfer", Category: "transfer_failed", Duration: duration}
+	if sawPostprocess {
+		problem.Stage, problem.Category = "postprocessing", "ffmpeg_failed"
+		return problem
+	}
+	if !sawDownload {
+		problem.Stage, problem.Category = "extraction", "extractor_failed"
+		var typed *engine.Error
+		if errors.As(err, &typed) {
+			switch typed.Category {
+			case engine.ErrorAuthentication:
+				problem.Category = "authentication_required"
+			case engine.ErrorUnsupported:
+				problem.Category = "unsupported_resource"
+			}
+		}
+		return problem
+	}
+	if code, ok := engine.DownloadHTTPStatusCode(err); ok {
+		switch code {
+		case http.StatusForbidden:
+			problem.Category = "http_403"
+		case http.StatusTooManyRequests:
+			problem.Category = "http_429"
+		}
+	}
+	return problem
 }
 
 func literalOutputTemplate(basename string) (string, error) {
@@ -3576,6 +4455,9 @@ func (m *Manager) handleEventAttempt(state *jobState, worker *worker, ev engine.
 	case engine.EventDownloadCancelled:
 		state.snap.Message = "Canceled"
 		m.emitLocked(Event{Name: EventJobUpdate, Job: state.snap})
+	case engine.EventJavaScriptChallenge:
+		// Secret-free engine diagnostics are available to dedicated event
+		// consumers, but must not replace the job's user-facing status text.
 	default:
 		if ev.Message != "" {
 			state.snap.Message = humanMessage(ev.Message)
@@ -3692,6 +4574,12 @@ func humanError(err error) string {
 	if err == nil {
 		return "Failed"
 	}
+	switch {
+	case errors.Is(err, syscall.ENOSPC):
+		return "Not enough disk space"
+	case errors.Is(err, os.ErrPermission):
+		return "The download folder is not writable"
+	}
 	var typed *engine.Error
 	if errors.As(err, &typed) {
 		switch typed.Category {
@@ -3722,6 +4610,30 @@ func isYouTubeChallengeTimeout(err error) bool {
 		strings.Contains(message, "JavaScript execution timed out")
 }
 
+// isExpiredMediaLinkError matches only a typed 403 from the media downloader,
+// so it cannot fire for extraction, API, post-processing, or coincidental error
+// text. A 403 from the signed googlevideo URL means the captured link is dead.
+func isExpiredMediaLinkError(err error) bool {
+	code, ok := engine.DownloadHTTPStatusCode(err)
+	return ok && code == http.StatusForbidden
+}
+
+// failureMessage humanizes a failed download attempt. Mid-transfer failures
+// explain what retry will do: a dead link restarts with a fresh session (the
+// manager escalates those on the next retry), anything else with saved bytes
+// resumes first and only restarts once a resume stops making progress.
+// committedBytes < 0 means checkpoint evidence is unknown. Post-processing
+// failures keep their own copy because their bytes are complete.
+func failureMessage(err error, committedBytes int64, sawPostprocess bool) string {
+	if isExpiredMediaLinkError(err) {
+		return mediaLinkExpiredMessage
+	}
+	if committedBytes > 0 && !sawPostprocess {
+		return downloadStoppedMidMessage
+	}
+	return humanError(err)
+}
+
 func humanMessage(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -3736,6 +4648,15 @@ func humanMessage(s string) string {
 func errorReason(err error) string {
 	if isYouTubeChallengeTimeout(err) {
 		return retryCodeYouTubeChallengePreTransfer
+	}
+	if isExpiredMediaLinkError(err) {
+		return retryCodeMediaLinkExpired
+	}
+	switch {
+	case errors.Is(err, syscall.ENOSPC):
+		return "disk_full"
+	case errors.Is(err, os.ErrPermission):
+		return "permission_denied"
 	}
 	var typed *engine.Error
 	if errors.As(err, &typed) {

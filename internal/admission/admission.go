@@ -322,17 +322,25 @@ func validateResolvedPlan(plan outputplan.Plan, requestedID string) error {
 
 func activeReservations(state jobmodel.State) []reservation.ReservationSet {
 	claims := make([]reservation.ReservationSet, 0, len(state.Jobs)+len(state.Cleanup))
-	for _, job := range state.Jobs {
-		if job.Lifecycle == jobmodel.LifecycleCanceled || job.Lifecycle == jobmodel.LifecycleCompleted || len(job.Reservation.Artifacts) == 0 {
-			continue
+	seen := make(map[string]struct{}, len(state.Jobs)+len(state.Cleanup))
+	appendClaim := func(set jobmodel.ReservationSet) {
+		if len(set.Artifacts) == 0 {
+			return
 		}
-		claims = append(claims, toReservation(job.Reservation))
+		key := set.GroupID + "\x00" + set.Directory.Identity + "\x00" + set.Directory.CanonicalPath
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		claims = append(claims, toReservation(set))
+	}
+	for _, job := range state.Jobs {
+		if job.Lifecycle != jobmodel.LifecycleCanceled && job.Lifecycle != jobmodel.LifecycleCompleted {
+			appendClaim(job.Reservation)
+		}
 	}
 	for _, tombstone := range state.Cleanup {
-		if len(tombstone.Reservation.Artifacts) == 0 {
-			continue
-		}
-		claims = append(claims, toReservation(tombstone.Reservation))
+		appendClaim(tombstone.Reservation)
 	}
 	return claims
 }

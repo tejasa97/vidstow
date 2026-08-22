@@ -9,6 +9,7 @@
   import type { JobSnapshot, QuitSummary, StartupStatus } from './lib/types.js';
   import { DEFAULT_RECOVERY_REQUIRED, type RecoveryRequiredViewModel } from './lib/lifecycle-ui/types.js';
   import QuitConfirmationDialog from './lib/lifecycle-ui/QuitConfirmationDialog.svelte';
+  import DiagnosticConsentDialog from './lib/lifecycle-ui/DiagnosticConsentDialog.svelte';
   import RecoveryRequiredShell from './lib/lifecycle-ui/RecoveryRequiredShell.svelte';
   import Sidebar from './lib/components/Sidebar.svelte';
   import Modal from './lib/components/Modal.svelte';
@@ -24,6 +25,9 @@
   let quitOpen = false;
   let quitModel: QuitSummary = { activeDownloads: 0, waitingOrPausedDownloads: 0 };
   let recoveryModel: RecoveryRequiredViewModel = DEFAULT_RECOVERY_REQUIRED;
+  let diagnosticChoiceOpen = false;
+  let diagnosticChoiceSaving = false;
+  let showFFmpegAfterDiagnosticChoice = false;
 
   onMount(async () => {
     unsubAll = [
@@ -48,8 +52,8 @@
     ].filter(Boolean) as Array<() => void>;
 
     try {
-      startupStatus = await api.app.startupStatus();
-      if (startupStatus?.mode === 'recovery-required') {
+      startupStatus = await waitForStartupStatus();
+      if (startupStatus.mode === 'recovery-required') {
         recoveryModel = {
           ...DEFAULT_RECOVERY_REQUIRED,
           stateFileStatus: startupStatus.reason ? `State v2: ${startupStatus.reason}` : DEFAULT_RECOVERY_REQUIRED.stateFileStatus,
@@ -70,13 +74,11 @@
       history.set(savedHistory ?? []);
       ffmpeg.set(ffmpegStatus);
       persistence.set(persistenceStatus);
-      if (!ffmpegStatus.available) {
-        modal.set({
-          kind: 'ffmpeg-missing',
-          title: 'FFmpeg is required for most downloads',
-          message: 'Install FFmpeg or point VidStow at it in Settings. You can still queue original audio that does not need merging.',
-          actions: [{ label: 'Open Settings', primary: true, action: () => navigate('settings') }],
-        });
+      if (!savedSettings.automaticDiagnostics) {
+        diagnosticChoiceOpen = true;
+        showFFmpegAfterDiagnosticChoice = !ffmpegStatus.available;
+      } else if (!ffmpegStatus.available) {
+        showFFmpegRequired();
       }
     } catch (err) {
       modal.set({
@@ -90,6 +92,23 @@
   onDestroy(() => {
     for (const off of unsubAll) off();
   });
+
+  // Never pass browser error/rejection data across the backend boundary: it
+  // can contain a URL, user input, or stack trace. The backend records only a
+  // fixed frontend_unhandled category and applies the session caps.
+  function reportFrontendFailure(): void {
+    void api.diagnostics.frontendFailure().catch(() => {});
+  }
+
+  async function waitForStartupStatus(): Promise<StartupStatus> {
+    // Wails can bind frontend calls before dispatching App.startup. Polling the
+    // explicit non-terminal status leaves that callback free to run.
+    for (;;) {
+      const status = await api.app.startupStatus();
+      if (status.mode !== 'starting') return status;
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+  }
 
   function updateJobInList(updated: JobSnapshot) {
     jobs.update((list) => {
@@ -110,6 +129,36 @@
 
   function navigate(target: 'home' | 'queue' | 'downloads' | 'settings' | 'about') {
     route.set(target);
+  }
+
+  function showFFmpegRequired() {
+    modal.set({
+      kind: 'ffmpeg-missing',
+      title: 'FFmpeg is required for most downloads',
+      message: 'Install FFmpeg or point VidStow at it in Settings. You can still queue original audio that does not need merging.',
+      actions: [{ label: 'Open Settings', primary: true, action: () => navigate('settings') }],
+    });
+  }
+
+  function closeDiagnosticChoice() {
+    diagnosticChoiceOpen = false;
+    if (showFFmpegAfterDiagnosticChoice) showFFmpegRequired();
+    showFFmpegAfterDiagnosticChoice = false;
+  }
+
+  async function chooseAutomaticDiagnostics(value: 'enabled' | 'disabled') {
+    if (diagnosticChoiceSaving) return;
+    diagnosticChoiceSaving = true;
+    try {
+      const saved = await api.settings.setAutomaticDiagnostics(value);
+      settings.set(saved);
+      closeDiagnosticChoice();
+    } catch (err) {
+      try { settings.set(await api.settings.get()); } catch { /* retain the last known value */ }
+      showBanner('danger', errorMessage(err, 'Could not save the diagnostics preference. Automatic sending remains off.'));
+    } finally {
+      diagnosticChoiceSaving = false;
+    }
   }
 
   async function copyRecoveryDiagnostics() {
@@ -173,9 +222,16 @@
   }
 </script>
 
-<svelte:window on:dragover={acceptDrop} on:drop={handleDrop} />
+<svelte:window on:dragover={acceptDrop} on:drop={handleDrop} on:error={reportFrontendFailure} on:unhandledrejection={reportFrontendFailure} />
 
-{#if startupStatus?.mode === 'recovery-required'}
+{#if startupStatus === null}
+  <main class="main startup-shell" aria-busy="true" aria-label="Starting VidStow">
+    <div class="startup-indicator">
+      <span class="startup-spinner" aria-hidden="true"></span>
+      <p>Restoring saved downloads…</p>
+    </div>
+  </main>
+{:else if startupStatus.mode === 'recovery-required'}
   <main class="main">
     <div class="scroll">
       <RecoveryRequiredShell
@@ -207,6 +263,14 @@
 
 <Modal />
 <Banner />
+<DiagnosticConsentDialog
+  open={diagnosticChoiceOpen}
+  busy={diagnosticChoiceSaving}
+  onClose={closeDiagnosticChoice}
+  onEnable={() => chooseAutomaticDiagnostics('enabled')}
+  onDisable={() => chooseAutomaticDiagnostics('disabled')}
+  onPrivacy={() => window.runtime.BrowserOpenURL('https://diagnostics.vidstow.workers.dev/privacy')}
+/>
 <QuitConfirmationDialog
   open={quitOpen}
   model={quitModel}
@@ -228,5 +292,29 @@
   .scroll {
     flex: 1;
     overflow-y: auto;
+  }
+  .startup-shell {
+    align-items: center;
+    justify-content: center;
+  }
+  .startup-indicator {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--sp-3);
+    color: var(--text-muted);
+  }
+  .startup-indicator p { margin: 0; }
+  .startup-spinner {
+    width: 28px;
+    height: 28px;
+    border: 2px solid var(--border-default);
+    border-top-color: var(--accent-400);
+    border-radius: 50%;
+    animation: startup-spin 0.8s linear infinite;
+  }
+  @keyframes startup-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .startup-spinner { animation: none; }
   }
 </style>

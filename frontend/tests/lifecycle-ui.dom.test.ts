@@ -3,11 +3,13 @@ import '@testing-library/jest-dom/vitest';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi } from 'vitest';
 
+import ActionRequiredReviewDialog from '../src/lib/lifecycle-ui/ActionRequiredReviewDialog.svelte';
 import DestinationConflictDialog from '../src/lib/lifecycle-ui/DestinationConflictDialog.svelte';
 import LifecycleJobRow from '../src/lib/lifecycle-ui/LifecycleJobRow.svelte';
 import QueueOverview from '../src/lib/lifecycle-ui/QueueOverview.svelte';
 import QuitConfirmationDialog from '../src/lib/lifecycle-ui/QuitConfirmationDialog.svelte';
 import type {
+  ActionRequiredReviewViewModel,
   DestinationConflictEventDetail,
   DestinationConflictViewModel,
   LifecycleJobEventDetail,
@@ -80,7 +82,7 @@ describe('backend-authored capabilities', () => {
             capabilities: { pause: true }, commandToken: 'child-token',
           }],
           collections: [{
-            id: 'collection-1', title: 'Fixture playlist', metadata: 'Creator', policy: 'video:1080p',
+            id: 'collection-1', kind: 'playlist', title: 'Fixture playlist', metadata: 'Creator', policy: 'video:1080p',
             childJobIds: ['child-1'], total: 1, completed: 0, failed: 0, canceled: 0,
             active: 0, pending: 1, paused: 0, progress: 0, progressLabel: '0 of 1 complete',
             capabilities: { pause: true }, commandToken: 'collection-token',
@@ -100,6 +102,26 @@ describe('backend-authored capabilities', () => {
     expect(screen.getByRole('button', { name: 'Expand Fixture playlist' })).toHaveAttribute('aria-expanded', 'false');
   });
 
+  test('batch collection parents omit synthetic thumbnails', () => {
+    const { container } = render(QueueOverview, {
+      props: {
+        model: queueModel({
+          jobs: [],
+          collections: [{
+            id: 'batch-1', kind: 'batch', title: 'Batch download · 2 videos', thumbnailUrl: 'https://example.invalid/batch.jpg',
+            policy: 'video:720p', childJobIds: [], total: 2, completed: 0, failed: 0, canceled: 0,
+            active: 2, pending: 0, paused: 0, progress: 0.5, progressLabel: '0 of 2 complete',
+            capabilities: {}, commandToken: 'batch-token',
+          }],
+        }),
+      },
+    });
+
+    expect(screen.getByText('Batch download · 2 videos')).toBeInTheDocument();
+    expect(screen.getByText('video:720p')).toBeInTheDocument();
+    expect(container.querySelector('.parent-row > .thumbnail')).not.toBeInTheDocument();
+  });
+
   test('playlist collection actions fail closed without a valid token', async () => {
     const onCollectionAction = vi.fn();
     const user = userEvent.setup();
@@ -108,7 +130,7 @@ describe('backend-authored capabilities', () => {
         model: queueModel({
           jobs: [],
           collections: [{
-            id: 'collection-1', title: 'Fixture playlist', policy: 'audio:original', childJobIds: [],
+            id: 'collection-1', kind: 'playlist', title: 'Fixture playlist', policy: 'audio:original', childJobIds: [],
             total: 0, completed: 0, failed: 0, canceled: 0, active: 0, pending: 0, paused: 0,
             progress: 0, progressLabel: '0 of 0 complete', capabilities: { remove: true }, commandToken: '',
           }],
@@ -184,6 +206,63 @@ describe('backend-authored capabilities', () => {
     expect(onResume.mock.calls[0][0].detail).toEqual({ jobId: 'paused-1', commandToken: 'backend-command-token' });
   });
 
+  test('failed rows render backend-authored recovery copy and capability-backed start again', async () => {
+    const onStartAgain = vi.fn<(event: CustomEvent<LifecycleJobEventDetail>) => void>();
+    const user = userEvent.setup();
+    render(LifecycleJobRow, {
+      props: {
+        job: {
+          id: 'disk-1', title: 'Interrupted video', lifecycle: 'failed', occupiesSlot: false,
+          failure: {
+            category: 'disk_full', messageKey: 'queue.failure.disk_full', heading: 'Not enough disk space',
+            message: 'VidStow could not finish writing this download.',
+            recommendedAction: 'Free space or change the default folder, then start this item again.',
+            retryable: false, partialOutput: true,
+          },
+          capabilities: { startAgain: true, remove: true }, commandToken: 'disk-command-token',
+        },
+      },
+      events: { 'start-again': onStartAgain },
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Not enough disk space');
+    expect(screen.getByRole('alert')).toHaveTextContent('Free space or change the default folder');
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Start again' }));
+    expect(onStartAgain.mock.calls[0][0].detail).toEqual({ jobId: 'disk-1', commandToken: 'disk-command-token' });
+  });
+
+  test('cleanup-phase terminal rows can expose backend-authorized Review without Remove', async () => {
+    const onReview = vi.fn<(event: CustomEvent<LifecycleJobEventDetail>) => void>();
+    const user = userEvent.setup();
+    render(LifecycleJobRow, {
+      props: {
+        job: {
+          id: 'cleanup-1', title: 'Preserved cleanup', lifecycle: 'canceled', phase: 'cleaning-up', occupiesSlot: false,
+          capabilities: { review: true, remove: false }, commandToken: 'cleanup-command-token',
+        },
+      },
+      events: { review: onReview },
+    });
+    await user.click(screen.getByRole('button', { name: 'Review' }));
+    expect(onReview.mock.calls[0][0].detail).toEqual({ jobId: 'cleanup-1', commandToken: 'cleanup-command-token' });
+    expect(screen.queryByRole('button', { name: 'Remove download' })).not.toBeInTheDocument();
+  });
+
+  test('cleanup-phase terminal rows expose Remove after backend cleanup settles', () => {
+    render(LifecycleJobRow, {
+      props: {
+        job: {
+          id: 'cleanup-settled', title: 'Settled cleanup', lifecycle: 'canceled', phase: 'cleaning-up', occupiesSlot: false,
+          capabilities: { review: false, remove: true }, commandToken: 'cleanup-settled-token',
+        },
+      },
+    });
+    expect(screen.getByRole('button', { name: 'Remove download' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Canceled')).toBeInTheDocument();
+    expect(screen.getByText('Canceled. Resumable data was removed.')).toBeInTheDocument();
+  });
+
   test('persistence-revoked queue data can render but cannot authorize controls', () => {
     render(QueueOverview, {
       props: { model: queueModel({ commandToken: undefined, canPauseAll: false, canClearCompleted: false, jobs: [{ id: 'active-1', title: 'Active', lifecycle: 'active', occupiesSlot: true, capabilities: {}, commandToken: undefined }] }) },
@@ -192,6 +271,54 @@ describe('backend-authored capabilities', () => {
     expect(screen.getByRole('button', { name: 'Clear Completed' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Pause download' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Cancel download' })).toBeDisabled();
+  });
+});
+
+describe('action-required recovery', () => {
+  const review: ActionRequiredReviewViewModel = {
+    jobId: 'action-1', title: 'Saved video', heading: 'This download needs your decision',
+    message: 'The saved session could not be inspected safely.',
+    preservationNotice: 'The original row and saved data stay in place.', canStartOver: true,
+    canRetryRecovery: true, canRetryFreshLink: true, canDiscard: true, canRetryCleanup: false,
+  };
+
+  test('offers a fresh Home analysis while clearly preserving the original row', async () => {
+    const onStartOver = vi.fn();
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(ActionRequiredReviewDialog, { props: { open: true, review, onStartOver, onClose } });
+
+    expect(screen.getByRole('dialog', { name: review.heading })).toBeInTheDocument();
+    expect(screen.getByText(review.preservationNotice)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Start over from Home' }));
+    expect(onStartOver).toHaveBeenCalledOnce();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  test('does not advertise start-over when the backend withholds it', () => {
+    render(ActionRequiredReviewDialog, { props: { open: true, review: { ...review, canStartOver: false } } });
+    expect(screen.queryByRole('button', { name: 'Start over from Home' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Starting over is unavailable/)).toBeInTheDocument();
+  });
+
+  test('offers explicit recovery, discard, and quarantined-cleanup actions only when authorized', async () => {
+    const onRetryRecovery = vi.fn();
+    const onRetryFreshLink = vi.fn();
+    const onDiscard = vi.fn();
+    const onRetryCleanup = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(ActionRequiredReviewDialog, { props: { open: true, review, onRetryRecovery, onRetryFreshLink, onDiscard, onRetryCleanup } });
+    await user.click(screen.getByRole('button', { name: 'Try recovery again' }));
+    await user.click(screen.getByRole('button', { name: 'Retry with fresh link' }));
+    await user.click(screen.getByRole('button', { name: 'Discard saved data' }));
+    expect(onRetryRecovery).toHaveBeenCalledOnce();
+    expect(onRetryFreshLink).toHaveBeenCalledOnce();
+    expect(onDiscard).toHaveBeenCalledOnce();
+
+    await rerender({ open: true, review: { ...review, canStartOver: false, canRetryRecovery: false, canRetryFreshLink: false, canDiscard: false, canRetryCleanup: true }, onRetryRecovery, onRetryFreshLink, onDiscard, onRetryCleanup });
+    await user.click(screen.getByRole('button', { name: 'Retry cleanup' }));
+    expect(onRetryCleanup).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: 'Discard saved data' })).not.toBeInTheDocument();
   });
 });
 

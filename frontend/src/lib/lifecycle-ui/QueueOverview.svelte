@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import LifecycleJobRow, { type LifecycleJobActionEvent } from './LifecycleJobRow.svelte';
-  import PlaylistCollectionRow from './PlaylistCollectionRow.svelte';
+  import CollectionRow from './CollectionRow.svelte';
   import QueueSummary from './QueueSummary.svelte';
   import { isValidCommandToken } from './types.js';
   import type { LifecycleJobEventDetail, LifecycleJobViewModel, QueueCollectionActionEvent, QueueOverviewViewModel } from './types.js';
@@ -14,6 +14,9 @@
     resume: LifecycleJobEventDetail;
     retry: LifecycleJobEventDetail;
     'download-again': LifecycleJobEventDetail;
+    'start-again': LifecycleJobEventDetail;
+    'open-source': LifecycleJobEventDetail;
+    'copy-link': LifecycleJobEventDetail;
     review: LifecycleJobEventDetail;
     open: LifecycleJobEventDetail;
     remove: LifecycleJobEventDetail;
@@ -104,7 +107,7 @@
     {#if model.jobs.length || collections.length}
       <div class="job-list">
         {#each collections as collection (collection.id)}
-          <PlaylistCollectionRow
+          <CollectionRow
             {collection}
             children={collectionChildren(collection.childJobIds)}
             onAction={forward}

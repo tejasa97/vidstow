@@ -12,7 +12,7 @@ flowchart LR
     Bridge --> Manager["Queue manager"]
     Admission --> State["State v2 store"]
     Manager --> State
-    Manager --> Engine["youtube_dlp engine"]
+    Manager --> Engine["ytdlp-go engine"]
     Engine --> Session["Engine session workspace"]
     Engine --> FFmpeg["FFmpeg / FFprobe"]
     Session --> Output["Reserved output"]
@@ -21,7 +21,7 @@ flowchart LR
 
 VidStow owns the desktop workflow, queue scheduling, durable application state,
 destination reservations, lifecycle commands, recovery presentation, and UI.
-The `youtube_dlp` engine owns extraction, transfer, protocol-specific resume
+The `ytdlp-go` engine owns extraction, transfer, protocol-specific resume
 validation, engine session workspaces, media processing, and output
 publication primitives.
 

@@ -113,3 +113,42 @@ func realTempDir(t *testing.T) string {
 	}
 	return path
 }
+
+// TestLiveRootsTrackOnlyReferencedSessions pins the discoverability half of
+// the retired-session recovery story: once the durable row rotates onto a
+// fresh session, the retired session is absent from the live set, so
+// CollectResumeOrphans may reclaim its workspace after OrphanAge — for as
+// long as the root itself stays referenced by a job, tombstone, or the
+// download-folder setting.
+func TestLiveRootsTrackOnlyReferencedSessions(t *testing.T) {
+	rootPath := realTempDir(t)
+	root, err := reservationfs.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := root.Facts()
+	if err := root.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rootRef := jobmodel.OutputRootRef{CanonicalPath: facts.Volume.CanonicalPath, Identity: facts.Volume.Identity}
+	freshSession := "0123456789abcdef0123456789abcde1"
+	retiredSession := "0123456789abcdef0123456789abcde0"
+	state := jobmodel.State{
+		Version: jobmodel.StateVersion,
+		Jobs: []jobmodel.DurableJob{{
+			ID: "job-retired", SessionID: freshSession, OutputRoot: rootRef,
+		}},
+	}
+
+	roots := liveRoots(state)
+	if len(roots) != 1 {
+		t.Fatalf("liveRoots() = %#v; want the single output root", roots)
+	}
+	live := roots[0].live
+	if _, referenced := live[freshSession]; !referenced {
+		t.Fatalf("fresh session %q missing from the live set %#v", freshSession, live)
+	}
+	if _, referenced := live[retiredSession]; referenced {
+		t.Fatalf("retired session %q still live; the orphan scan could never reclaim it", retiredSession)
+	}
+}

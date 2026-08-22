@@ -41,6 +41,130 @@ func TestOpenV2CreatesPrivateStateAndLock(t *testing.T) {
 	}
 }
 
+func TestOpenV2HealsMarkerForProvablyCommittedTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	initial, status, err := OpenV2(path)
+	if err != nil || initial == nil || !status.Healthy() {
+		t.Fatalf("initial OpenV2 = %v, %#v, %v", initial, status, err)
+	}
+	state := initial.Snapshot()
+	if err := initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	markerPath := path + ".recovery"
+	candidatePath := path + ".candidate"
+	candidateEvidence := []byte("preserve candidate evidence")
+	if err := os.WriteFile(candidatePath, candidateEvidence, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := recoveryMarker{
+		Version:       recoveryMarkerVersion,
+		TargetPath:    path,
+		TempPath:      candidatePath,
+		StoreRevision: state.StoreRevision,
+		CreatedAt:     time.Now().UTC(),
+	}
+	if result := writeRecoveryMarker(markerPath, marker); result.err != nil {
+		t.Fatal(result.err)
+	}
+
+	recovered, status, err := OpenV2(path)
+	if err != nil || recovered == nil || !status.Healthy() {
+		t.Fatalf("recovery OpenV2 = %v, %#v, %v", recovered, status, err)
+	}
+	if got := recovered.Snapshot(); got.StoreRevision != state.StoreRevision || got.Version != jobmodel.StateVersion {
+		t.Fatalf("recovered state = %#v, want revision %d", got, state.StoreRevision)
+	}
+	if _, statErr := os.Stat(markerPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("committed marker still exists: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(candidatePath); readErr != nil || !bytes.Equal(got, candidateEvidence) {
+		t.Fatalf("candidate evidence changed: %q, %v", got, readErr)
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, status, err := OpenV2(path)
+	if err != nil || second == nil || !status.Healthy() {
+		t.Fatalf("second OpenV2 = %v, %#v, %v", second, status, err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenV2RecoveryMarkerMismatchStaysFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		marker func(string, jobmodel.State) recoveryMarker
+	}{
+		{
+			name: "revision",
+			marker: func(path string, state jobmodel.State) recoveryMarker {
+				return recoveryMarker{Version: recoveryMarkerVersion, TargetPath: path, TempPath: path + ".candidate", StoreRevision: state.StoreRevision + 1, CreatedAt: time.Now().UTC()}
+			},
+		},
+		{
+			name: "target path",
+			marker: func(path string, state jobmodel.State) recoveryMarker {
+				return recoveryMarker{Version: recoveryMarkerVersion, TargetPath: path + ".other", TempPath: path + ".candidate", StoreRevision: state.StoreRevision, CreatedAt: time.Now().UTC()}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			initial, status, err := OpenV2(path)
+			if err != nil || initial == nil || !status.Healthy() {
+				t.Fatalf("initial OpenV2 = %v, %#v, %v", initial, status, err)
+			}
+			state := initial.Snapshot()
+			if err := initial.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if result := writeRecoveryMarker(path+".recovery", tc.marker(path, state)); result.err != nil {
+				t.Fatal(result.err)
+			}
+
+			recovered, status, err := OpenV2(path)
+			if err != nil || recovered != nil || status.Reason != RecoveryIndeterminate {
+				t.Fatalf("mismatched marker OpenV2 = %v, %#v, %v", recovered, status, err)
+			}
+			if _, statErr := os.Stat(path + ".recovery"); statErr != nil {
+				t.Fatalf("mismatched marker was removed: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestOpenV2RecoveryMarkerCleanupFailureStaysFailClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	initial, status, err := OpenV2(path)
+	if err != nil || initial == nil || !status.Healthy() {
+		t.Fatalf("initial OpenV2 = %v, %#v, %v", initial, status, err)
+	}
+	state := initial.Snapshot()
+	if err := initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	marker := recoveryMarker{Version: recoveryMarkerVersion, TargetPath: path, TempPath: path + ".candidate", StoreRevision: state.StoreRevision, CreatedAt: time.Now().UTC()}
+	if result := writeRecoveryMarker(path+".recovery", marker); result.err != nil {
+		t.Fatal(result.err)
+	}
+
+	oldSync := syncPrivateParent
+	syncPrivateParent = func(string) error { return errors.New("marker cleanup sync failure") }
+	defer func() { syncPrivateParent = oldSync }()
+	recovered, status, err := OpenV2(path)
+	syncPrivateParent = oldSync
+	if err != nil || recovered != nil || status.Reason != RecoveryIndeterminate {
+		t.Fatalf("cleanup failure OpenV2 = %v, %#v, %v", recovered, status, err)
+	}
+	if _, statErr := os.Stat(path + ".recovery"); statErr != nil {
+		t.Fatalf("cleanup failure dropped marker evidence: %v", statErr)
+	}
+}
+
 func TestOpenV2FailsClosedForCorruptUnknownAndUnsafeState(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
@@ -412,6 +536,64 @@ func TestV2ReservationAndLifecycleAxesFollowStructuralRules(t *testing.T) {
 	state.Jobs[0] = needsAdmission
 	if err := validateState(state); err == nil {
 		t.Fatal("action-required row without staged reservation was marked publish-ready")
+	}
+}
+
+func TestV2RetryEscalationCountersAreBounded(t *testing.T) {
+	valid := func() jobmodel.State {
+		state := defaultStateV2()
+		job := testJob()
+		job.LastFailureCommittedBytes = 3145728
+		job.ZeroProgressResumes = 1
+		job.SessionRestarts = 2
+		state.Jobs = []jobmodel.DurableJob{job}
+		state.NextQueueOrdinal = 2
+		return state
+	}
+	if err := validateState(valid()); err != nil {
+		t.Fatalf("in-range escalation counters rejected: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*jobmodel.DurableJob)
+	}{
+		{"negative committed bytes", func(job *jobmodel.DurableJob) { job.LastFailureCommittedBytes = -1 }},
+		{"negative zero-progress resumes", func(job *jobmodel.DurableJob) { job.ZeroProgressResumes = -1 }},
+		{"zero-progress resumes above bound", func(job *jobmodel.DurableJob) { job.ZeroProgressResumes = maxRetryEscalationCounter + 1 }},
+		{"negative session restarts", func(job *jobmodel.DurableJob) { job.SessionRestarts = -1 }},
+		{"session restarts above bound", func(job *jobmodel.DurableJob) { job.SessionRestarts = maxRetryEscalationCounter + 1 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := valid()
+			test.mutate(&state.Jobs[0])
+			if err := validateState(state); err == nil {
+				t.Fatal("out-of-range escalation counters were accepted")
+			}
+		})
+	}
+}
+
+func TestV2CleanupTombstoneRetainsRetiredSessionForLiveJob(t *testing.T) {
+	now := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+	state := defaultStateV2()
+	job := testJob()
+	job.Lifecycle = jobmodel.LifecyclePending
+	job.Desired = jobmodel.DesiredRunning
+	retired := "fedcba9876543210fedcba9876543210"
+	tomb := jobmodel.CleanupTombstone{
+		JobID: job.ID, SessionID: retired, OutputRoot: job.OutputRoot, Reservation: job.Reservation,
+		State: jobmodel.CleanupPending, CreatedAt: now, UpdatedAt: now,
+	}
+	state.Jobs = []jobmodel.DurableJob{job}
+	state.Cleanup = []jobmodel.CleanupTombstone{tomb}
+	state.NextQueueOrdinal = 2
+	if err := validateState(state); err != nil {
+		t.Fatalf("retired-session cleanup record was rejected: %v", err)
+	}
+	state.Cleanup[0].OutputRoot.Identity = "different-volume"
+	if err := validateState(state); err == nil {
+		t.Fatal("retired-session cleanup with a different root was accepted")
 	}
 }
 

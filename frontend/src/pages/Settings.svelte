@@ -63,12 +63,29 @@
     catch (err) { showError(err, 'Could not copy diagnostics'); }
   }
 
+  async function clearDiagnostics() {
+    try { await api.diagnostics.clear(); showBanner('info', 'Diagnostic history cleared'); }
+    catch (err) { showError(err, 'Could not clear diagnostic history'); }
+  }
+
   async function changeConcurrency(value: number) {
     await update({ ...$settings, downloadConcurrency: value });
   }
 
   async function updateOutputOptions(patch: Partial<OutputOptions>) {
     await update({ ...$settings, outputOptions: { ...$settings.outputOptions, ...patch } }, 'Output defaults updated');
+  }
+
+  async function setAutomaticDiagnostics(value: 'enabled' | 'disabled') {
+    try {
+      settings.set(await api.settings.setAutomaticDiagnostics(value));
+      showBanner('success', value === 'enabled' ? 'Automatic diagnostics enabled' : 'Automatic diagnostics disabled');
+    } catch (err) {
+      // Disabling remains persisted even if its best-effort local purge reports
+      // an error, so refresh instead of leaving the control misleadingly on.
+      try { settings.set(await api.settings.get()); } catch { /* retain the last known value */ }
+      showError(err, 'Could not save the diagnostics preference');
+    }
   }
 </script>
 
@@ -230,10 +247,23 @@
     <h2 id="diagnostics-title">Diagnostics</h2>
     <div class="setting">
       <div class="copy">
+        <strong>Send operational diagnostics</strong>
+        <span>When VidStow cannot complete a requested download or encounters an app failure, send a small sanitized report in the background. Video IDs, links, paths, filenames, cookies, tokens, and error text stay private.</span>
+        <small>Local diagnostic history remains available either way. Disabling this immediately deletes anything waiting to be sent.</small>
+        <button class="privacy-link" type="button" on:click={() => window.runtime.BrowserOpenURL('https://diagnostics.vidstow.workers.dev/privacy')}>Diagnostics privacy notice ↗</button>
+      </div>
+      <div class="actions choices" role="radiogroup" aria-label="Automatic diagnostics">
+        <label><input type="radio" name="automatic-diagnostics" checked={$settings.automaticDiagnostics === 'enabled'} on:change={() => setAutomaticDiagnostics('enabled')} /> Send diagnostics</label>
+        <label><input type="radio" name="automatic-diagnostics" checked={$settings.automaticDiagnostics === 'disabled'} on:change={() => setAutomaticDiagnostics('disabled')} /> Don’t send</label>
+      </div>
+    </div>
+    <div class="setting">
+      <div class="copy">
         <strong>Support report</strong>
-        <span>Includes app version and FFmpeg status. Paths stay private.</span>
+        <span>Includes app and FFmpeg status plus recent sanitized failures. URLs and paths stay private.</span>
       </div>
       <div class="actions">
+        <button type="button" class="app-btn" on:click={clearDiagnostics}>Clear history</button>
         <button type="button" class="app-btn primary" on:click={copyDiagnostics}>Copy Diagnostics</button>
       </div>
     </div>
@@ -287,6 +317,10 @@
   .copy .mono.empty { font-family: var(--font-sans); font-style: italic; }
   label.setting { cursor: pointer; }
   label.setting input { margin-left: 8px; flex-shrink: 0; }
+  .choices { align-items: flex-start; flex-direction: column; gap: 6px; min-width: 154px; }
+  .choices label { display: flex; gap: 7px; align-items: center; font-size: var(--fs-xs); cursor: pointer; }
+  .choices input { margin: 0; }
+  .privacy-link { margin-top: 6px; padding: 0; color: var(--accent-primary); font-size: var(--fs-xs); text-decoration: underline; text-underline-offset: 3px; }
 
   .actions {
     display: flex;

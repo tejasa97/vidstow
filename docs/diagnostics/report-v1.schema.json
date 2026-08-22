@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vidstow.github.io/schemas/diagnostics/report-v1.schema.json",
+  "title": "VidStow manual diagnostic report v1",
+  "description": "Closed schema for the exact payload shown in the manual report preview and submitted by the user.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_id",
+    "created_at",
+    "app_version",
+    "engine_version",
+    "platform"
+  ],
+  "anyOf": [
+    { "required": ["description"] },
+    { "required": ["page_url"] },
+    { "required": ["events"] }
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "report_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 40
+    },
+    "app_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "engine_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "os_major", "architecture"],
+      "properties": {
+        "os": {
+          "type": "string",
+          "enum": ["macos", "windows", "linux"]
+        },
+        "os_major": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16,
+          "pattern": "^[0-9]+$"
+        },
+        "architecture": {
+          "type": "string",
+          "enum": ["arm64", "amd64"]
+        }
+      }
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    },
+    "contact": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 320
+    },
+    "page_url": {
+      "type": "string",
+      "format": "uri",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^https://([A-Za-z0-9-]+\\.)?(youtube\\.com|youtu\\.be)/"
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "$ref": "event-v1.schema.json" }
+    },
+    "automatic_event_ids": {
+      "type": "array",
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+      }
+    }
+  }
+}

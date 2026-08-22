@@ -6,6 +6,8 @@
 // directly here. Wails injects these globals at app startup.
 
 import type {
+  BatchAnalysisView,
+  BatchStartResult,
   BuildInfo,
   FFmpegStatus,
   HistoryEntry,
@@ -20,7 +22,7 @@ import type {
   StartupStatus,
   UrlCheckResult,
 } from './types';
-import type { QueueView } from './lifecycle-ui/types.js';
+import type { ActionRequiredReviewViewModel, QueueView } from './lifecycle-ui/types.js';
 
 declare global {
   interface Window {
@@ -60,6 +62,12 @@ export interface StartPlaylistRequest {
   options?: OutputOptions;
 }
 
+export interface StartBatchRequest {
+  token: string;
+  quality: JobSnapshot['quality'];
+  audioBitrate?: number;
+}
+
 export interface StartRequest {
   url: string;
   videoId: string;
@@ -77,6 +85,7 @@ export const api = {
   settings: {
     get: () => call<Settings>('GetSettings'),
     update: (next: Settings) => call<Settings>('UpdateSettings', next),
+    setAutomaticDiagnostics: (preference: 'enabled' | 'disabled') => call<Settings>('SetAutomaticDiagnostics', preference),
   },
   ffmpeg: {
     status: () => call<FFmpegStatus>('GetFFmpegStatus'),
@@ -102,10 +111,12 @@ export const api = {
   analyse: {
     url: (raw: string) => call<InfoSummary>('AnalyzeURL', raw),
     playlist: (raw: string) => call<PlaylistSummary>('AnalyzePlaylist', raw),
+    batch: (raw: string) => call<BatchAnalysisView>('AnalyzeBatchURLs', raw),
   },
   jobs: {
     start: (req: StartRequest) => call<string>('StartDownload', req),
     startPlaylist: (req: StartPlaylistRequest) => call<string>('StartPlaylistDownload', req),
+    startBatch: (req: StartBatchRequest) => call<BatchStartResult>('StartBatchDownload', req),
     list: () => call<JobSnapshot[]>('ListJobs'),
     cancel: (id: string) => call<void>('CancelJob', id),
     pause: (id: string) => call<void>('PauseJob', id),
@@ -121,6 +132,15 @@ export const api = {
     cancel: (id: string, token: string) => call<void>('CancelQueueJob', id, token),
     resume: (id: string, token: string) => call<void>('ResumeQueueJob', id, token),
     retry: (id: string, token: string) => call<void>('RetryQueueJob', id, token),
+    startAgain: (id: string, token: string) => call<string>('StartAgainQueueJob', id, token),
+    openSource: (id: string, token: string) => call<void>('OpenQueueJobSource', id, token),
+    copyLink: (id: string, token: string) => call<void>('CopyQueueJobSource', id, token),
+    reviewActionRequired: (id: string, token: string) => call<ActionRequiredReviewViewModel>('ReviewActionRequiredQueueJob', id, token),
+    startOverActionRequired: (id: string, token: string) => call<string>('StartOverActionRequiredQueueJob', id, token),
+    retryActionRequired: (id: string, token: string) => call<void>('RetryActionRequiredQueueJob', id, token),
+    retryActionRequiredFreshLink: (id: string, token: string) => call<void>('RetryActionRequiredWithFreshLink', id, token),
+    discardActionRequired: (id: string, token: string) => call<void>('DiscardActionRequiredQueueJob', id, token),
+    retryCleanup: (id: string, token: string) => call<void>('RetryQueueJobCleanup', id, token),
     open: (id: string, token: string) => call<void>('OpenQueueJob', id, token),
     remove: (id: string, token: string) => call<void>('RemoveQueueJob', id, token),
     pauseCollection: (id: string, token: string) => call<number>('PauseQueueCollection', id, token),
@@ -143,6 +163,8 @@ export const api = {
   },
   diagnostics: {
     copy: () => call<string>('CopyDiagnostics'),
+    clear: () => call<void>('ClearDiagnostics'),
+    frontendFailure: () => call<void>('RecordFrontendFailure'),
   },
   events: {
     onJobUpdate: (cb: (job: JobSnapshot) => void) =>

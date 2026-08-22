@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "event_id": "d08a1054-7ad7-4d37-9a7f-803388e32281",
+  "session_id": "710f96b8-68a2-492f-8f27-373365132fca",
+  "occurred_at": "2026-08-18T12:03:00Z",
+  "app_version": "0.1.0-beta.3",
+  "engine_version": "0.2.3",
+  "platform": {"os": "macos", "os_major": "15", "architecture": "arm64"},
+  "type": "problem_observed",
+  "problem": {
+    "stage": "media_transfer",
+    "category": "http_403",
+    "outcome": "terminal",
+    "retry_bucket": "one",
+    "duration_bucket": "30_59s"
+  }
+}

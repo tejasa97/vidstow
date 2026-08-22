@@ -35,6 +35,9 @@ export type LifecycleJobAction =
   | 'resume'
   | 'retry'
   | 'download-again'
+  | 'start-again'
+  | 'open-source'
+  | 'copy-link'
   | 'review'
   | 'open'
   | 'remove';
@@ -45,9 +48,22 @@ export interface LifecycleJobCapabilities {
   resume?: boolean;
   retry?: boolean;
   downloadAgain?: boolean;
+  startAgain?: boolean;
+  openSource?: boolean;
+  copyLink?: boolean;
   review?: boolean;
   open?: boolean;
   remove?: boolean;
+}
+
+export interface QueueFailureViewModel {
+  category: string;
+  messageKey: string;
+  heading: string;
+  message: string;
+  recommendedAction: string;
+  retryable: boolean;
+  partialOutput: boolean;
 }
 
 /**
@@ -71,6 +87,7 @@ export interface LifecycleJobViewModel {
   speedLabel?: string;
   etaLabel?: string;
   message?: string;
+  failure?: QueueFailureViewModel;
   queuePosition?: number;
   queueLabel?: string;
   capabilities?: LifecycleJobCapabilities;
@@ -101,6 +118,7 @@ export interface QueueCollectionCapabilities {
 
 export interface QueueCollectionViewModel {
   id: string;
+  kind: 'playlist' | 'batch';
   title: string;
   metadata?: string;
   thumbnailUrl?: string;
@@ -159,6 +177,19 @@ export interface DestinationConflictViewModel {
   proposedNameAvailable: boolean;
 }
 
+export interface ActionRequiredReviewViewModel {
+  jobId: string;
+  title: string;
+  heading: string;
+  message: string;
+  preservationNotice: string;
+  canStartOver: boolean;
+  canRetryRecovery: boolean;
+  canRetryFreshLink: boolean;
+  canDiscard: boolean;
+  canRetryCleanup: boolean;
+}
+
 /** Mirrors the bridge queue contract without importing legacy JobSnapshot. */
 export interface QueueView {
   revision: number;
@@ -195,6 +226,9 @@ export type LifecycleJobEventName =
   | 'resume'
   | 'retry'
   | 'download-again'
+  | 'start-again'
+  | 'open-source'
+  | 'copy-link'
   | 'review'
   | 'open'
   | 'remove';

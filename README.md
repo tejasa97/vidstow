@@ -17,9 +17,11 @@ A local desktop application built with Go, Wails, and Svelte.
 
 [Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [Project status](#project-status) · [Run locally](#run-locally) · [How it works](#how-it-works) · [Contributing](CONTRIBUTING.md)
 
-</div>
+<video src="docs/assets/demo-walkthrough.mp4" width="800" autoplay muted loop playsinline controls>
+  VidStow playlist walkthrough: paste a link, review entries, and follow the local queue.
+</video>
 
-![VidStow analyzing Big Buck Bunny and showing video output choices](docs/assets/screenshots/video-options.png)
+</div>
 
 > [!IMPORTANT]
 > VidStow is beta software for public, on-demand YouTube video, Short, and playlist URLs.
@@ -28,15 +30,27 @@ A local desktop application built with Go, Wails, and Svelte.
 
 ## Download
 
-VidStow can be built from the Apache-2.0 source using the
-[local build instructions](#run-locally). When `v0.1.0-beta.1` is published, it
-will also provide a prebuilt `VidStow-0.1.0-beta.1-darwin-arm64.zip` for macOS
-Apple Silicon.
+[`v0.1.0-beta.4`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.4)
+is the current macOS Apple Silicon preview. The recommended installation
+uses VidStow's Homebrew tap:
 
-The beta release will include `SHA256SUMS` and build metadata identifying the
-exact source revision and engine dependency. FFmpeg and FFprobe are external
-requirements. Updates are installed manually from the project's GitHub Releases
-page.
+```sh
+brew tap vidstow/tap
+brew install --cask vidstow
+```
+
+The cask installs FFmpeg and FFprobe automatically. Upgrade later with
+`brew update && brew upgrade --cask vidstow`.
+
+> [!WARNING]
+> This beta is ad-hoc signed and is not notarized by Apple. After verifying the
+> release archive against its pinned SHA-256 checksum, the cask explicitly
+> removes macOS quarantine from VidStow so it can launch. Review the
+> [tap](https://github.com/vidstow/homebrew-tap), source, and published release
+> metadata before installing.
+
+VidStow can alternatively be built from the Apache-2.0 source using the
+[local build instructions](#run-locally).
 
 Windows, Linux, and macOS Intel packages are outside the supported release
 scope. See the [release guide](docs/RELEASE.md) for artifact packaging and
@@ -53,10 +67,13 @@ verification details.
   original audio, or MP3 when the analyzed media supports those choices.
 - **Playlist review** — select up to 500 available entries, apply a bounded
   range, and admit the collection as one expandable parent with individual jobs.
+- **Reliable batch downloads** — review 2–20 individual video or Short URLs at
+  once, identify invalid and duplicate lines, then atomically admit every ready
+  item under one durable expandable queue parent.
 - **FIFO queue** — configure 1–10 concurrent downloads; the default is 2.
 - **Explicit lifecycle controls** — each queue row presents only the Pause,
-  Resume, Cancel, Retry, Open, or removal actions authorized by the application;
-  Pause All is available for eligible queued work.
+  Resume, Cancel, Retry, Start again, source, Open, or removal actions authorized
+  by the application; Pause All is available for eligible queued work.
 - **Durable application state** — State v2 stores queue lifecycle, settings,
   reservations, history, and pending cleanup obligations.
 - **Persistent download history** — completed downloads remain available across
@@ -128,17 +145,18 @@ application and engine versions and by artifact-specific validation.
 
 | Area | Supported boundary |
 | --- | --- |
-| Product | Beta; focused public YouTube video, Short, and playlist workflow |
-| Package | `v0.1.0-beta.1` will provide a macOS Apple Silicon preview when published |
+| Product | Beta; focused public YouTube video, Short, playlist, and 2–20 URL batch workflow |
+| Package | [`v0.1.0-beta.4`](https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.4) installs on Apple Silicon through the [`vidstow/tap`](https://github.com/vidstow/homebrew-tap) Homebrew cask |
 | Source | Apache-2.0 source and self-build instructions |
 | Queue | State v2 persistence, revision-checked lifecycle transitions, FIFO admission, and startup reconciliation |
-| Engine | `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.1` |
+| Engine | [ytdlp-go](https://github.com/tejasa97/ytdlp-go); `go.mod` pins `github.com/tejasa97/youtube_dlp v0.2.3` |
 | Resume | Session reuse is evidence-dependent; no universal transfer continuation or guaranteed byte reuse |
 | Updates | Manual downloads from GitHub Releases |
 
-The underlying [`youtube_dlp`](https://github.com/tejasa97/youtube_dlp)
+The underlying [`ytdlp-go`](https://github.com/tejasa97/ytdlp-go)
 project has broader extractor and CLI capabilities. VidStow supports only the
-workflow documented here and exposed by its desktop UI.
+workflow documented here and exposed by its desktop UI. The Go module path
+remains `github.com/tejasa97/youtube_dlp`.
 
 ## Prerequisites
 
@@ -158,7 +176,7 @@ go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 ## Run locally
 
 ```sh
-git clone https://github.com/tejasa97/vidstow.git
+git clone https://github.com/vidstow/vidstow.git
 cd vidstow
 
 cd frontend
@@ -188,7 +206,7 @@ flowchart LR
     Bridge --> Manager["Queue manager"]
     Admission --> State["State v2 store"]
     Manager --> State
-    Manager --> Engine["youtube_dlp engine"]
+    Manager --> Engine["ytdlp-go engine"]
     Engine --> Session["Engine session workspace"]
     Engine --> FFmpeg["FFmpeg / FFprobe"]
     Session --> Output["Reserved output"]
@@ -214,7 +232,14 @@ configuration directory. State v2 can include:
 - canonical public YouTube watch URLs and video IDs;
 - display metadata such as title, channel, duration, and selected quality;
 - job, attempt, session, queue, lifecycle, reservation, and cleanup records;
-- completed-download history, including output paths and media metadata.
+- completed-download history, including output paths and media metadata; and
+- a separate owner-only diagnostic history, bounded to seven days, 200 typed
+  events, and 1 MiB. It contains sanitized failure categories and no YouTube
+  URLs, media URLs, arbitrary error text, or absolute paths.
+
+The diagnostic history stays on the device, can be cleared from Settings, and
+is included in **Copy Diagnostics** only as a bounded list of sanitized problem
+events. This release does not transmit diagnostic history automatically.
 
 Engine session work is stored beneath an engine-owned hidden directory in the
 selected output root.
@@ -263,7 +288,7 @@ VidStow does not support:
 - treating cleanup, publication, or recovery as successful when evidence is
   uncertain;
 - automatic updates or packages outside macOS Apple Silicon; or
-- feature parity with yt-dlp or the broader `youtube_dlp` CLI.
+- feature parity with yt-dlp or the broader `ytdlp-go` CLI.
 
 ## Responsible use
 

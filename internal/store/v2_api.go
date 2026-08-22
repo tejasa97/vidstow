@@ -50,6 +50,7 @@ func (s *V2Store) Settings() Settings {
 		PerVideoSubfolder:     state.Settings.PerVideoSubfolder,
 		ConfirmBeforeDownload: state.Settings.ConfirmBeforeDownload,
 		OutputOptions:         state.Settings.OutputOptions.Clone(),
+		AutomaticDiagnostics:  state.Settings.AutomaticDiagnostics,
 	}
 }
 
@@ -70,6 +71,7 @@ func (s *V2Store) SetSettings(next Settings) error {
 		PerVideoSubfolder:     next.PerVideoSubfolder,
 		ConfirmBeforeDownload: next.ConfirmBeforeDownload,
 		OutputOptions:         next.OutputOptions.Clone(),
+		AutomaticDiagnostics:  next.AutomaticDiagnostics,
 	}
 	if settings.DownloadFolder == "" {
 		settings.DownloadFolder = defaultStateV2().Settings.DownloadFolder

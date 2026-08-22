@@ -5,10 +5,14 @@ import (
 	"runtime/debug"
 )
 
+// diagnosticsEventsEndpoint is the reviewed production ingestion endpoint.
+// An empty value keeps automatic transport dormant for development builds.
+var diagnosticsEventsEndpoint = "https://diagnostics.vidstow.workers.dev/v1/events"
+
 const (
-	appVersion          = "0.1.0-beta.1"
+	appVersion          = "0.1.0-beta.4"
 	engineModulePath    = "github.com/tejasa97/youtube_dlp"
-	pinnedEngineVersion = "v0.2.1"
+	pinnedEngineVersion = "v0.2.3"
 )
 
 // BuildInfo is the single backend-owned release identity exposed to the UI

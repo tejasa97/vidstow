@@ -399,6 +399,22 @@ func TestCoordinatorClaimsActiveAndCleanupTombstoneBeforeSelectingSuffix(t *test
 	}
 }
 
+func TestActiveReservationsPreserveActionRequiredDestinationAndDeduplicateCleanup(t *testing.T) {
+	root := jobmodel.OutputRootRef{CanonicalPath: "/tmp/downloads", Identity: "volume-1"}
+	reservationSet := jobmodel.ReservationSet{
+		GroupID: "job-action", Directory: root,
+		Artifacts: []jobmodel.ReservedArtifact{{Kind: "primary", Identity: "primary", Basename: "Video.mp4"}},
+	}
+	state := jobmodel.State{
+		Jobs:    []jobmodel.DurableJob{{ID: "job-action", Lifecycle: jobmodel.LifecycleActionRequired, OutputRoot: root, Reservation: reservationSet}},
+		Cleanup: []jobmodel.CleanupTombstone{{JobID: "job-action", SessionID: "0123456789abcdef0123456789abcdef", OutputRoot: root, Reservation: reservationSet, State: jobmodel.CleanupPending}},
+	}
+	claims := activeReservations(state)
+	if len(claims) != 1 || claims[0].Artifacts[0].Basename != "Video.mp4" {
+		t.Fatalf("active reservations = %#v; want one preserved destination claim", claims)
+	}
+}
+
 func admissionFixture(t *testing.T, plan outputplan.Plan) (*Coordinator, *reservationfs.Root, *store.V2Store, Request, *recordingQueue) {
 	t.Helper()
 	outputDir := t.TempDir()

@@ -30,6 +30,7 @@ type Settings struct {
 	PerVideoSubfolder     bool                   `json:"perVideoSubfolder"`
 	ConfirmBeforeDownload bool                   `json:"confirmBeforeDownload"`
 	OutputOptions         jobmodel.OutputOptions `json:"outputOptions"`
+	AutomaticDiagnostics  string                 `json:"automaticDiagnostics"`
 }
 
 // HistoryEntry is one completed download shown in the Downloads page.

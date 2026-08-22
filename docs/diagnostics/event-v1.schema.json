@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vidstow.github.io/schemas/diagnostics/event-v1.schema.json",
+  "title": "VidStow automatic diagnostic event v1",
+  "description": "Closed, opt-in schema for one terminal download or app failure. Unknown fields are forbidden.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "session_id", "occurred_at", "app_version", "engine_version", "platform", "type", "problem"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"$ref": "#/$defs/uuid"},
+    "session_id": {"$ref": "#/$defs/uuid"},
+    "occurred_at": {"type": "string", "format": "date-time", "maxLength": 40},
+    "app_version": {"type": "string", "minLength": 1, "maxLength": 64},
+    "engine_version": {"type": "string", "minLength": 1, "maxLength": 64},
+    "platform": {"$ref": "#/$defs/platform"},
+    "type": {"const": "problem_observed"},
+    "problem": {"$ref": "#/$defs/problem"}
+  },
+  "$defs": {
+    "uuid": {"type": "string", "format": "uuid", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"},
+    "platform": {
+      "type": "object", "additionalProperties": false, "required": ["os", "os_major", "architecture"],
+      "properties": {
+        "os": {"enum": ["macos", "windows", "linux"]},
+        "os_major": {"type": "string", "minLength": 1, "maxLength": 16, "pattern": "^[0-9]+$"},
+        "architecture": {"enum": ["arm64", "amd64"]}
+      }
+    },
+    "problem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stage", "category", "outcome", "retry_bucket"],
+      "properties": {
+        "stage": {"enum": ["startup", "persistence", "extraction", "ejs_preprocess", "ejs_solve", "helper", "media_transfer", "postprocessing", "filesystem", "frontend", "internal"]},
+        "category": {"enum": ["http_403", "http_429", "network_timeout", "network_offline", "dns_failure", "tls_failure", "resource_unavailable", "resource_restricted", "authentication_required", "unsupported_resource", "extractor_failed", "helper_start_failed", "helper_timeout", "helper_crashed", "helper_security_limit", "preprocess_failed", "solve_failed", "invalid_solver_result", "range_rejected", "resume_invalid", "remote_content_changed", "incomplete_transfer", "transfer_failed", "ffmpeg_missing", "ffmpeg_start_failed", "ffmpeg_failed", "permission_denied", "disk_full", "path_unavailable", "destination_conflict", "unsafe_path", "state_unavailable", "state_corrupt", "state_unsupported", "state_contended", "state_indeterminate", "frontend_unhandled", "backend_panic", "unexpected_internal"]},
+        "outcome": {"const": "terminal"},
+        "retry_bucket": {"enum": ["none", "one", "two", "three_plus"]},
+        "duration_bucket": {"enum": ["lt_100ms", "100_499ms", "500_1999ms", "2_9s", "10_29s", "30_59s", "gte_60s"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"stage": {"const": "startup"}}}, "then": {"properties": {"category": {"enum": ["state_unavailable", "state_corrupt", "state_unsupported", "state_contended", "state_indeterminate"]}}}},
+        {"if": {"properties": {"stage": {"const": "persistence"}}}, "then": {"properties": {"category": {"enum": ["permission_denied", "disk_full", "state_unavailable", "state_corrupt", "state_unsupported", "state_contended", "state_indeterminate"]}}}},
+        {"if": {"properties": {"stage": {"const": "extraction"}}}, "then": {"properties": {"category": {"enum": ["http_403", "http_429", "network_timeout", "network_offline", "dns_failure", "tls_failure", "resource_unavailable", "resource_restricted", "authentication_required", "unsupported_resource", "extractor_failed"]}}}},
+        {"if": {"properties": {"stage": {"const": "ejs_preprocess"}}}, "then": {"properties": {"category": {"enum": ["preprocess_failed"]}}}},
+        {"if": {"properties": {"stage": {"const": "ejs_solve"}}}, "then": {"properties": {"category": {"enum": ["solve_failed", "invalid_solver_result"]}}}},
+        {"if": {"properties": {"stage": {"const": "helper"}}}, "then": {"properties": {"category": {"enum": ["helper_start_failed", "helper_timeout", "helper_crashed", "helper_security_limit"]}}}},
+        {"if": {"properties": {"stage": {"const": "media_transfer"}}}, "then": {"properties": {"category": {"enum": ["http_403", "http_429", "network_timeout", "network_offline", "dns_failure", "tls_failure", "range_rejected", "resume_invalid", "remote_content_changed", "incomplete_transfer", "transfer_failed"]}}}},
+        {"if": {"properties": {"stage": {"const": "postprocessing"}}}, "then": {"properties": {"category": {"enum": ["ffmpeg_missing", "ffmpeg_start_failed", "ffmpeg_failed"]}}}},
+        {"if": {"properties": {"stage": {"const": "filesystem"}}}, "then": {"properties": {"category": {"enum": ["permission_denied", "disk_full", "path_unavailable", "destination_conflict", "unsafe_path"]}}}},
+        {"if": {"properties": {"stage": {"const": "frontend"}}}, "then": {"properties": {"category": {"enum": ["frontend_unhandled"]}}}},
+        {"if": {"properties": {"stage": {"const": "internal"}}}, "then": {"properties": {"category": {"enum": ["backend_panic", "unexpected_internal"]}}}}
+      ]
+    }
+  }
+}

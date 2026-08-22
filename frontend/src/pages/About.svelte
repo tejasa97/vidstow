@@ -12,15 +12,15 @@
       'VidStow is an open-source desktop app that downloads public YouTube videos, Shorts, playlists, and audio. ' +
       'Analyze a URL, choose the items and output, and let the queue run — no account or tracking required.',
     license: 'Apache-2.0',
-    source: 'https://github.com/tejasa97/vidstow',
-    docs: 'https://github.com/tejasa97/vidstow#readme',
+    source: 'https://github.com/vidstow/vidstow',
+    docs: 'https://github.com/vidstow/vidstow#readme',
   };
 
   const builtWith: Array<{ name: string; url: string }> = [
     { name: 'Go', url: 'https://go.dev' },
     { name: 'Wails', url: 'https://wails.io' },
     { name: 'Svelte', url: 'https://svelte.dev' },
-    { name: 'yt-dlp', url: 'https://github.com/yt-dlp/yt-dlp' },
+    { name: 'ytdlp-go', url: 'https://github.com/tejasa97/ytdlp-go' },
     { name: 'FFmpeg', url: 'https://ffmpeg.org' },
   ];
 
@@ -60,7 +60,7 @@
       </div>
       <div>
         <dt>Engine</dt>
-        <dd>youtube_dlp {formatEngineVersion(build.engineVersion)}</dd>
+        <dd>ytdlp-go {formatEngineVersion(build.engineVersion)}</dd>
       </div>
       <div>
         <dt>Platform</dt>
@@ -110,8 +110,8 @@
     <h2 id="legal-title">Legal</h2>
     <p class="legal">
       VidStow is distributed under the Apache License 2.0. It is not affiliated with, or endorsed by,
-      YouTube or Google. Video and audio content is downloaded only where you have the right to do so —
-      please respect each creator's terms and local laws. FFmpeg, yt-dlp, Go, Wails, and Svelte are
+      YouTube, Google, or yt-dlp. Video and audio content is downloaded only where you have the right to do so —
+      please respect each creator's terms and local laws. FFmpeg, ytdlp-go, Go, Wails, and Svelte are
       independent open-source projects with their own licenses.
     </p>
   </section>

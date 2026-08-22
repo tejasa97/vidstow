@@ -20,6 +20,7 @@ const MaxCollectionChildren = 500
 // Collection describes the durable parent identity. Policy is a reviewed,
 // server-authored label such as "video:1080p"; raw selectors never enter it.
 type Collection struct {
+	Kind       jobmodel.CollectionKind
 	PlaylistID string
 	SourceURL  string
 	Title      string
@@ -35,6 +36,10 @@ type CollectionChildRequest struct {
 	// ResolvedPlan is selected from private backend analysis metadata. It must
 	// never be decoded from a renderer request.
 	ResolvedPlan outputplan.Plan
+	// Root optionally binds this child to a distinct caller-owned output root.
+	// Playlist children normally share the collection root; pasted batches may
+	// use per-video subfolders without weakening atomic reservation admission.
+	Root *reservationfs.Root
 }
 
 type CollectionRequest struct {
@@ -60,9 +65,18 @@ type preparedCollectionChild struct {
 	plan         outputplan.Plan
 	artifacts    []engine.ArtifactDeclaration
 	declarations []reservation.ArtifactDeclaration
+	selector     *reservation.Selector
+	volume       reservation.Volume
+	rootRef      jobmodel.OutputRootRef
 	jobID        string
 	attemptID    string
 	sessionID    string
+}
+
+type preparedReservationRoot struct {
+	selector *reservation.Selector
+	volume   reservation.Volume
+	rootRef  jobmodel.OutputRootRef
 }
 
 // AdmitCollection chooses every child reservation and commits the parent and
@@ -81,28 +95,58 @@ func (c *Coordinator) AdmitCollection(ctx context.Context, root *reservationfs.R
 	if err := ctx.Err(); err != nil {
 		return CollectionResult{}, err
 	}
-	if strings.TrimSpace(request.Collection.PlaylistID) == "" || strings.TrimSpace(request.Collection.SourceURL) == "" ||
-		strings.TrimSpace(request.Collection.Title) == "" || strings.TrimSpace(request.Collection.Policy) == "" {
+	if request.Collection.Kind == "" {
+		request.Collection.Kind = jobmodel.CollectionKindPlaylist
+	}
+	if strings.TrimSpace(request.Collection.Title) == "" || strings.TrimSpace(request.Collection.Policy) == "" {
 		return CollectionResult{}, errors.New("admission: incomplete collection identity")
+	}
+	switch request.Collection.Kind {
+	case jobmodel.CollectionKindPlaylist:
+		if strings.TrimSpace(request.Collection.PlaylistID) == "" || strings.TrimSpace(request.Collection.SourceURL) == "" {
+			return CollectionResult{}, errors.New("admission: incomplete playlist collection identity")
+		}
+	case jobmodel.CollectionKindBatch:
+		if request.Collection.PlaylistID != "" || request.Collection.SourceURL != "" {
+			return CollectionResult{}, errors.New("admission: batch collection cannot retain playlist source metadata")
+		}
+	default:
+		return CollectionResult{}, errors.New("admission: unsupported collection kind")
 	}
 	if len(request.Children) == 0 || len(request.Children) > MaxCollectionChildren {
 		return CollectionResult{}, fmt.Errorf("admission: collection must contain between 1 and %d children", MaxCollectionChildren)
 	}
 
-	facts := root.Facts()
-	if facts.Volume.CanonicalPath == "" || facts.Volume.Identity == "" || facts.Policies().Names == nil || facts.Policies().Volumes == nil || facts.Probe == nil {
-		return CollectionResult{}, errors.New("admission: incomplete reservation root facts")
+	rootCache := make(map[*reservationfs.Root]preparedReservationRoot)
+	prepareRoot := func(candidate *reservationfs.Root) (preparedReservationRoot, error) {
+		if prepared, ok := rootCache[candidate]; ok {
+			return prepared, nil
+		}
+		facts := candidate.Facts()
+		if facts.Volume.CanonicalPath == "" || facts.Volume.Identity == "" || facts.Policies().Names == nil || facts.Policies().Volumes == nil || facts.Probe == nil {
+			return preparedReservationRoot{}, errors.New("admission: incomplete reservation root facts")
+		}
+		engineRoot, err := engine.ValidateOutputRoot(facts.Volume.CanonicalPath)
+		if err != nil {
+			return preparedReservationRoot{}, fmt.Errorf("admission: engine output root validation: %w", err)
+		}
+		if engineRoot.CanonicalPath != facts.Volume.CanonicalPath {
+			return preparedReservationRoot{}, errors.New("admission: engine and reservation output roots differ")
+		}
+		selector, err := reservation.NewSelector(reservation.Options{Policies: facts.Policies(), Probe: facts.Probe, MaxSuffix: c.maxSuffix})
+		if err != nil {
+			return preparedReservationRoot{}, fmt.Errorf("admission: configure reservation selector: %w", err)
+		}
+		prepared := preparedReservationRoot{
+			selector: selector,
+			volume:   facts.Volume,
+			rootRef:  jobmodel.OutputRootRef{CanonicalPath: facts.Volume.CanonicalPath, Identity: facts.Volume.Identity, EngineIdentity: engineRoot.Identity},
+		}
+		rootCache[candidate] = prepared
+		return prepared, nil
 	}
-	engineRoot, err := engine.ValidateOutputRoot(facts.Volume.CanonicalPath)
-	if err != nil {
-		return CollectionResult{}, fmt.Errorf("admission: engine output root validation: %w", err)
-	}
-	if engineRoot.CanonicalPath != facts.Volume.CanonicalPath {
-		return CollectionResult{}, errors.New("admission: engine and reservation output roots differ")
-	}
-	selector, err := reservation.NewSelector(reservation.Options{Policies: facts.Policies(), Probe: facts.Probe, MaxSuffix: c.maxSuffix})
-	if err != nil {
-		return CollectionResult{}, fmt.Errorf("admission: configure reservation selector: %w", err)
+	if _, err := prepareRoot(root); err != nil {
+		return CollectionResult{}, err
 	}
 
 	collectionID := c.deps.NewCollectionID()
@@ -119,7 +163,15 @@ func (c *Coordinator) AdmitCollection(ctx context.Context, root *reservationfs.R
 		if child.Queue.URL == "" || child.Queue.VideoID == "" || child.Queue.Title == "" || child.Queue.OutputDir == "" || child.Queue.PlanID == "" {
 			return CollectionResult{}, fmt.Errorf("admission: incomplete collection child %d", index+1)
 		}
-		if err := verifyOutputRoot(child.Queue.OutputDir, facts.Volume.CanonicalPath); err != nil {
+		childRoot := collectionChild.Root
+		if childRoot == nil {
+			childRoot = root
+		}
+		preparedRoot, err := prepareRoot(childRoot)
+		if err != nil {
+			return CollectionResult{}, fmt.Errorf("admission: prepare collection child %d root: %w", index+1, err)
+		}
+		if err := verifyOutputRoot(child.Queue.OutputDir, preparedRoot.volume.CanonicalPath); err != nil {
 			return CollectionResult{}, err
 		}
 		plan := collectionChild.ResolvedPlan
@@ -156,25 +208,28 @@ func (c *Coordinator) AdmitCollection(ctx context.Context, root *reservationfs.R
 			}
 			seenIDs[id] = struct{}{}
 		}
-		prepared[index] = preparedCollectionChild{request: child, plan: plan, artifacts: artifacts, declarations: declarations, jobID: jobID, attemptID: attemptID, sessionID: sessionID}
+		prepared[index] = preparedCollectionChild{
+			request: child, plan: plan, artifacts: artifacts, declarations: declarations,
+			selector: preparedRoot.selector, volume: preparedRoot.volume, rootRef: preparedRoot.rootRef,
+			jobID: jobID, attemptID: attemptID, sessionID: sessionID,
+		}
 	}
 
 	now := c.deps.Now().UTC()
 	if now.IsZero() {
 		return CollectionResult{}, errors.New("admission: clock returned zero time")
 	}
-	rootRef := jobmodel.OutputRootRef{CanonicalPath: facts.Volume.CanonicalPath, Identity: facts.Volume.Identity, EngineIdentity: engineRoot.Identity}
 	result := CollectionResult{Children: make([]CollectionChildResult, len(prepared))}
-	err = c.deps.Store.Transaction(nil, func(state *jobmodel.State) error {
+	err := c.deps.Store.Transaction(nil, func(state *jobmodel.State) error {
 		if state.NextQueueOrdinal > ^uint64(0)-uint64(len(prepared)) {
 			return errors.New("admission: queue ordinal exhausted")
 		}
 		active := activeReservations(*state)
 		childIDs := make([]string, len(prepared))
 		for index, child := range prepared {
-			selected, selectErr := selector.Select(ctx, reservation.SelectionRequest{
+			selected, selectErr := child.selector.Select(ctx, reservation.SelectionRequest{
 				GroupID:   child.jobID,
-				Directory: reservation.Volume{CanonicalPath: facts.Volume.CanonicalPath, Identity: facts.Volume.Identity},
+				Directory: child.volume,
 				Artifacts: child.declarations,
 			}, active)
 			if selectErr != nil {
@@ -195,7 +250,7 @@ func (c *Coordinator) AdmitCollection(ctx context.Context, root *reservationfs.R
 				Phase: jobmodel.PhasePreparing, Desired: jobmodel.DesiredRunning,
 				Request:    jobmodel.PersistedRequest{SourceURL: child.request.Queue.URL, VideoID: child.request.Queue.VideoID, Title: child.request.Queue.Title, Channel: child.request.Queue.Channel, Quality: string(quality), PlanID: child.request.Queue.PlanID, Duration: child.request.Queue.Duration, OutputOptions: child.request.Queue.Options.Clone()},
 				Plan:       jobmodel.PersistedPlan{ID: child.plan.ID, Kind: string(child.plan.Kind), Label: child.plan.Label, Container: child.plan.Container, VideoCodec: child.plan.VideoCodec, AudioCodec: child.plan.AudioCodec, RequiresFFmpeg: child.plan.RequiresFFmpeg, PrivateSelector: child.plan.Selector},
-				OutputRoot: rootRef, Reservation: jobReservation, RetryMode: jobmodel.RetryModeNone,
+				OutputRoot: child.rootRef, Reservation: jobReservation, RetryMode: jobmodel.RetryModeNone,
 				CreatedAt: now, UpdatedAt: now,
 			}
 			state.Jobs = append(state.Jobs, durable)
@@ -205,7 +260,7 @@ func (c *Coordinator) AdmitCollection(ctx context.Context, root *reservationfs.R
 			result.Children[index] = CollectionChildResult{Job: durable, Plan: child.plan, Reservation: jobReservation, Artifacts: child.artifacts}
 		}
 		result.Collection = jobmodel.DurableCollection{
-			ID: collectionID, Revision: 1, PlaylistID: request.Collection.PlaylistID,
+			ID: collectionID, Revision: 1, Kind: request.Collection.Kind, PlaylistID: request.Collection.PlaylistID,
 			SourceURL: request.Collection.SourceURL, Title: request.Collection.Title,
 			Channel: request.Collection.Channel, Thumbnail: request.Collection.Thumbnail,
 			Policy: request.Collection.Policy, ChildJobIDs: childIDs, CreatedAt: now, UpdatedAt: now,

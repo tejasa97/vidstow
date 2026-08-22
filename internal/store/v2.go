@@ -21,6 +21,9 @@ import (
 type StartupMode string
 
 const (
+	// StartupStarting is returned while Wails has not yet invoked App.startup.
+	// It is not a persistence result and must not be rendered as recovery.
+	StartupStarting         StartupMode = "starting"
 	StartupHealthy          StartupMode = "healthy"
 	StartupRecoveryRequired StartupMode = "recovery-required"
 )
@@ -149,16 +152,49 @@ func OpenV2(path string) (store *V2Store, status StartupStatus, returnErr error)
 			returnErr = nil
 		}
 	}()
-	if _, exists, markerErr := readRecoveryMarker(s.markerPath); markerErr != nil || exists {
-		if markerErr != nil && errors.Is(markerErr, errUnsafePermissions) {
+	var state decodedState
+	stateLoaded := false
+	marker, markerExists, markerErr := readRecoveryMarker(s.markerPath)
+	if markerErr != nil {
+		if errors.Is(markerErr, errUnsafePermissions) {
 			return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryUnsafePermissions}, nil
 		}
 		return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryIndeterminate}, nil
 	}
+	if markerExists {
+		// A marker can survive a process exit after the target replacement has
+		// committed but before marker cleanup. Only clear that evidence when the
+		// current target itself proves the exact marked revision is authoritative.
+		// Candidate promotion and cleanup remain deliberately out of scope.
+		if marker.TargetPath != path {
+			return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryIndeterminate}, nil
+		}
+		markedState, missing, readErr := readStateV2(path)
+		if readErr != nil {
+			if errors.Is(readErr, errUnsafePermissions) {
+				return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryUnsafePermissions}, nil
+			}
+			return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryIndeterminate}, nil
+		}
+		if missing || markedState.Version != jobmodel.StateVersion || markedState.StoreRevision != marker.StoreRevision || validateState(markedState.State) != nil {
+			return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryIndeterminate}, nil
+		}
+		if err := removeRecoveryMarker(s.markerPath); err != nil {
+			if errors.Is(err, errUnsafePermissions) {
+				return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryUnsafePermissions}, nil
+			}
+			return nil, StartupStatus{Mode: StartupRecoveryRequired, Reason: RecoveryIndeterminate}, nil
+		}
+		state = markedState
+		stateLoaded = true
+	}
 
-	state, missing, err := readStateV2(path)
-	if err != nil {
-		return nil, recoveryStatus(err), nil
+	var missing bool
+	if !stateLoaded {
+		state, missing, err = readStateV2(path)
+		if err != nil {
+			return nil, recoveryStatus(err), nil
+		}
 	}
 	if missing {
 		state = decodedState{State: defaultStateV2()}
@@ -310,6 +346,7 @@ func (s *V2Store) Transaction(preconditions []JobPrecondition, mutate func(*jobm
 	if err := mutate(&next); err != nil {
 		return err
 	}
+	normalizeStateV2(&next)
 	next.Version = jobmodel.StateVersion
 	if next.StoreRevision == maxDurableCounter {
 		return &commitError{err: errors.New("store: store revision exhausted")}
@@ -525,6 +562,7 @@ func readStateV2(path string) (decodedState, bool, error) {
 		max  int
 	}{
 		{name: "jobs", max: maxJobs},
+		{name: "collections", max: maxCollections},
 		{name: "history", max: maxHistory},
 		{name: "cleanup", max: maxCleanup},
 	} {
@@ -542,7 +580,23 @@ func readStateV2(path string) (decodedState, bool, error) {
 	if err := decodeStrict(data, &state); err != nil {
 		return decodedState{}, false, fmt.Errorf("store: invalid v2 state: %w", err)
 	}
+	normalizeStateV2(&state)
 	return decodedState{State: state, raw: data}, false, nil
+}
+
+// normalizeStateV2 upgrades fields added within the State v2 schema. Older
+// playlist collections predate the explicit kind discriminator; treating an
+// absent kind as playlist preserves strict decoding while ensuring the next
+// transaction writes the normalized representation.
+func normalizeStateV2(state *jobmodel.State) {
+	if state == nil {
+		return
+	}
+	for index := range state.Collections {
+		if state.Collections[index].Kind == "" {
+			state.Collections[index].Kind = jobmodel.CollectionKindPlaylist
+		}
+	}
 }
 
 // preflightJSONArray counts one top-level JSON array without materializing its
@@ -716,7 +770,7 @@ func validateState(state jobmodel.State) error {
 	if len(state.Jobs) > maxJobs || len(state.Collections) > maxCollections || len(state.History) > maxHistory || len(state.Cleanup) > maxCleanup {
 		return errors.New("store: state collection exceeds limit")
 	}
-	seen, attempts, sessions, ordinals, cleanupJobs := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[uint64]struct{}{}, map[string]struct{}{}
+	seen, attempts, sessions, ordinals, cleanupSessions := map[string]struct{}{}, map[string]struct{}{}, map[string]string{}, map[uint64]struct{}{}, map[string]struct{}{}
 	jobsByID := map[string]jobmodel.DurableJob{}
 	collectionJobs := map[string]map[int]string{}
 	reservationClaims := map[string]string{}
@@ -752,12 +806,15 @@ func validateState(state jobmodel.State) error {
 			}
 			members[job.CollectionIndex] = job.ID
 		}
-		attempts[job.AttemptID], sessions[job.SessionID], ordinals[job.QueueOrdinal] = struct{}{}, struct{}{}, struct{}{}
+		attempts[job.AttemptID], sessions[job.SessionID], ordinals[job.QueueOrdinal] = struct{}{}, job.ID, struct{}{}
 		if !validLifecycle(job.Lifecycle) || !validPhase(job.Phase) || !validDesired(job.Desired) || !validRetryMode(job.RetryMode) {
 			return errors.New("store: invalid durable job enum")
 		}
 		if !validRequest(job.Request) || !validPlan(job.Plan) || !validText(job.ActionRequiredCode, maxShortText, job.Lifecycle == jobmodel.LifecycleActionRequired) || (job.Lifecycle != jobmodel.LifecycleActionRequired && job.ActionRequiredCode != "") || !validText(job.LastErrorCode, maxShortText, false) {
 			return errors.New("store: unsafe persisted request or plan")
+		}
+		if job.LastFailureCommittedBytes < 0 || job.ZeroProgressResumes < 0 || job.ZeroProgressResumes > maxRetryEscalationCounter || job.SessionRestarts < 0 || job.SessionRestarts > maxRetryEscalationCounter {
+			return errors.New("store: invalid retry escalation counters")
 		}
 		if job.Lifecycle == jobmodel.LifecycleActionRequired && (job.ActionRequiredCode == "migration-reanalysis-required" || job.ActionRequiredCode == "migration-private-plan-unverified") && job.Phase == jobmodel.PhasePreparing && job.OutputRoot == (jobmodel.OutputRootRef{}) && job.Reservation.GroupID == "" && job.Reservation.Directory == (jobmodel.OutputRootRef{}) && len(job.Reservation.Artifacts) == 0 {
 			// V1 has no engine-rendered artifact declaration. Preserve such rows
@@ -781,10 +838,10 @@ func validateState(state jobmodel.State) error {
 	seenCollections := map[string]struct{}{}
 	for _, collection := range state.Collections {
 		if !validID(collection.ID) || collection.Revision == 0 || collection.Revision > maxDurableCounter ||
-			!validText(collection.PlaylistID, maxIDBytes, true) || !validText(collection.SourceURL, maxText, true) ||
-			!validText(collection.Title, maxText, true) || !validText(collection.Channel, maxText, false) ||
-			!validText(collection.Thumbnail, maxText, false) || !validText(collection.Policy, maxShortText, true) ||
-			!validTimestampPair(collection.CreatedAt, collection.UpdatedAt) || len(collection.ChildJobIDs) == 0 || len(collection.ChildJobIDs) > maxCollectionChildren {
+			!validCollectionSource(collection) || !validText(collection.Title, maxText, true) ||
+			!validText(collection.Channel, maxText, false) || !validText(collection.Thumbnail, maxText, false) ||
+			!validText(collection.Policy, maxShortText, true) || !validTimestampPair(collection.CreatedAt, collection.UpdatedAt) ||
+			len(collection.ChildJobIDs) == 0 || len(collection.ChildJobIDs) > maxCollectionChildren {
 			return errors.New("store: invalid durable collection")
 		}
 		if _, duplicate := seenCollections[collection.ID]; duplicate {
@@ -826,21 +883,25 @@ func validateState(state jobmodel.State) error {
 			return errors.New("store: cleanup group does not match job")
 		}
 		if live, liveExists := jobsByID[tombstone.JobID]; liveExists {
-			if live.Lifecycle != jobmodel.LifecycleCanceled || live.SessionID != tombstone.SessionID || live.OutputRoot != tombstone.OutputRoot || !reflect.DeepEqual(live.Reservation, tombstone.Reservation) {
+			// A cleanup record may describe either the live row's canceled
+			// session or an older session retired by a fresh-link retry. Both
+			// must retain the exact root and reservation owned by that row.
+			if live.OutputRoot != tombstone.OutputRoot || !reflect.DeepEqual(live.Reservation, tombstone.Reservation) {
 				return errors.New("store: cleanup tombstone overlaps incompatible live job")
 			}
 		}
-		if _, duplicate := cleanupJobs[tombstone.JobID]; duplicate {
-			return errors.New("store: duplicate cleanup job")
-		}
-		cleanupJobs[tombstone.JobID] = struct{}{}
-		if _, duplicate := sessions[tombstone.SessionID]; duplicate && jobsByID[tombstone.JobID].Lifecycle != jobmodel.LifecycleCanceled {
+		cleanupKey := tombstone.JobID + "\x00" + tombstone.SessionID
+		if _, duplicate := cleanupSessions[cleanupKey]; duplicate {
 			return errors.New("store: duplicate cleanup session")
 		}
-		sessions[tombstone.SessionID] = struct{}{}
+		cleanupSessions[cleanupKey] = struct{}{}
+		if owner, duplicate := sessions[tombstone.SessionID]; duplicate && owner != tombstone.JobID {
+			return errors.New("store: duplicate cleanup session")
+		}
+		sessions[tombstone.SessionID] = tombstone.JobID
 		for _, artifact := range tombstone.Reservation.Artifacts {
 			key := reservationKey(tombstone.OutputRoot, artifact.Basename)
-			if _, exists := reservationClaims[key]; exists {
+			if owner, exists := reservationClaims[key]; exists && owner != tombstone.JobID {
 				return errors.New("store: duplicate cleanup reservation claim")
 			}
 			reservationClaims[key] = tombstone.JobID
@@ -874,6 +935,17 @@ func validateReservation(root jobmodel.OutputRootRef, reservation jobmodel.Reser
 		seenNames[name], seenIdentities[artifactKey] = struct{}{}, struct{}{}
 	}
 	return nil
+}
+
+func validCollectionSource(collection jobmodel.DurableCollection) bool {
+	switch collection.Kind {
+	case jobmodel.CollectionKindPlaylist:
+		return validText(collection.PlaylistID, maxIDBytes, true) && validText(collection.SourceURL, maxText, true)
+	case jobmodel.CollectionKindBatch:
+		return collection.PlaylistID == "" && collection.SourceURL == ""
+	default:
+		return false
+	}
 }
 
 func validLifecycle(v jobmodel.Lifecycle) bool {
@@ -930,25 +1002,26 @@ func writeTempFile(target string, data []byte) (string, error) {
 }
 
 const (
-	maxStateBytes          = 8 << 20
-	maxJobs                = 10_000
-	maxCollections         = 2_000
-	maxCollectionChildren  = 500
-	maxHistory             = 10_000
-	maxCleanup             = 10_000
-	maxArtifacts           = 32
-	maxPreconditions       = 10_000
-	maxDurableCounter      = uint64(1<<63 - 1)
-	maxIDBytes             = 128
-	maxGroupIDBytes        = 128
-	maxKindBytes           = 64
-	maxIdentityBytes       = 256
-	maxCanonicalPathBytes  = 4096
-	maxVolumeIdentityBytes = 256
-	maxBasenameBytes       = 255
-	maxShortText           = 256
-	maxText                = 4096
-	maxPathBytes           = 32767
+	maxStateBytes             = 8 << 20
+	maxJobs                   = 10_000
+	maxCollections            = 2_000
+	maxCollectionChildren     = 500
+	maxHistory                = 10_000
+	maxCleanup                = 10_000
+	maxArtifacts              = 32
+	maxPreconditions          = 10_000
+	maxDurableCounter         = uint64(1<<63 - 1)
+	maxRetryEscalationCounter = 8
+	maxIDBytes                = 128
+	maxGroupIDBytes           = 128
+	maxKindBytes              = 64
+	maxIdentityBytes          = 256
+	maxCanonicalPathBytes     = 4096
+	maxVolumeIdentityBytes    = 256
+	maxBasenameBytes          = 255
+	maxShortText              = 256
+	maxText                   = 4096
+	maxPathBytes              = 32767
 )
 
 func validText(value string, max int, required bool) bool {
@@ -1055,7 +1128,8 @@ func validHistory(h jobmodel.HistoryEntry) bool {
 }
 
 func validSettings(s jobmodel.Settings) bool {
-	return validText(s.DownloadFolder, maxPathBytes, false) && validText(s.FFmpegPath, maxPathBytes, false) && s.WindowWidth >= 0 && s.WindowWidth <= 10000 && s.WindowHeight >= 0 && s.WindowHeight <= 10000
+	validDiagnostics := s.AutomaticDiagnostics == "" || s.AutomaticDiagnostics == "enabled" || s.AutomaticDiagnostics == "disabled"
+	return validDiagnostics && validText(s.DownloadFolder, maxPathBytes, false) && validText(s.FFmpegPath, maxPathBytes, false) && s.WindowWidth >= 0 && s.WindowWidth <= 10000 && s.WindowHeight >= 0 && s.WindowHeight <= 10000
 }
 func validatePreconditionsInput(values []JobPrecondition) error {
 	if len(values) > maxPreconditions {

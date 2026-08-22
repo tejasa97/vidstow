@@ -70,6 +70,7 @@ type Settings struct {
 	DownloadConcurrency   int    `json:"downloadConcurrency"`
 	PerVideoSubfolder     bool   `json:"perVideoSubfolder"`
 	ConfirmBeforeDownload bool   `json:"confirmBeforeDownload"`
+	AutomaticDiagnostics  string `json:"automaticDiagnostics,omitempty"`
 	// OutputOptions seeds the per-download output choices shown before a
 	// download is queued. The zero value keeps VidStow's historical output.
 	OutputOptions OutputOptions `json:"outputOptions"`
@@ -258,18 +259,26 @@ type JobPrecondition struct {
 	OutputRoot OutputRootRef
 }
 
+type CollectionKind string
+
+const (
+	CollectionKindPlaylist CollectionKind = "playlist"
+	CollectionKindBatch    CollectionKind = "batch"
+)
+
 type DurableCollection struct {
-	ID          string    `json:"id"`
-	Revision    uint64    `json:"revision"`
-	PlaylistID  string    `json:"playlistId"`
-	SourceURL   string    `json:"sourceUrl"`
-	Title       string    `json:"title"`
-	Channel     string    `json:"channel,omitempty"`
-	Thumbnail   string    `json:"thumbnail,omitempty"`
-	Policy      string    `json:"policy"`
-	ChildJobIDs []string  `json:"childJobIds"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID          string         `json:"id"`
+	Revision    uint64         `json:"revision"`
+	Kind        CollectionKind `json:"kind"`
+	PlaylistID  string         `json:"playlistId,omitempty"`
+	SourceURL   string         `json:"sourceUrl,omitempty"`
+	Title       string         `json:"title"`
+	Channel     string         `json:"channel,omitempty"`
+	Thumbnail   string         `json:"thumbnail,omitempty"`
+	Policy      string         `json:"policy"`
+	ChildJobIDs []string       `json:"childJobIds"`
+	CreatedAt   time.Time      `json:"createdAt"`
+	UpdatedAt   time.Time      `json:"updatedAt"`
 }
 
 type DurableJob struct {
@@ -290,8 +299,15 @@ type DurableJob struct {
 	RetryMode          RetryMode        `json:"retryMode"`
 	ActionRequiredCode string           `json:"actionRequiredCode,omitempty"`
 	LastErrorCode      string           `json:"lastErrorCode,omitempty"`
-	CreatedAt          time.Time        `json:"createdAt"`
-	UpdatedAt          time.Time        `json:"updatedAt"`
+	// Retry escalation bookkeeping for mid-transfer failures. Strict-schema
+	// readers that predate these fields reject rows containing them, while
+	// this build decodes older rows as zero values and simply disables
+	// escalation until a new failure records fresh evidence.
+	LastFailureCommittedBytes int64     `json:"lastFailureCommittedBytes,omitempty"`
+	ZeroProgressResumes       int       `json:"zeroProgressResumes,omitempty"`
+	SessionRestarts           int       `json:"sessionRestarts,omitempty"`
+	CreatedAt                 time.Time `json:"createdAt"`
+	UpdatedAt                 time.Time `json:"updatedAt"`
 }
 
 // PersistedRequest is deliberately limited to safe, user-originated metadata.

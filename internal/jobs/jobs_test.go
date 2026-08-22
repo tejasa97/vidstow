@@ -567,6 +567,20 @@ func TestHandleEventUsesPublicDownloadEventKinds(t *testing.T) {
 	}
 }
 
+func TestHandleEventDoesNotSurfaceJavaScriptDiagnosticsAsStatus(t *testing.T) {
+	manager := New(nil, nil)
+	state := &jobState{snap: JobSnapshot{Status: StatusActive, Message: "Downloading"}}
+
+	manager.handleEvent(state, engine.Event{
+		Kind:    engine.EventJavaScriptChallenge,
+		Message: "stage=ejs cache=miss preprocess=100ms_1s solve=lt_10ms",
+	})
+
+	if state.snap.Message != "Downloading" {
+		t.Fatalf("message = %q; want existing user-facing status", state.snap.Message)
+	}
+}
+
 func TestHandleEventMapsLifecycleCopy(t *testing.T) {
 	manager := New(nil, nil)
 	state := &jobState{snap: JobSnapshot{Status: StatusActive}}

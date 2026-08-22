@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/tejasa97/vidstow/internal/admission"
+	"github.com/tejasa97/vidstow/internal/jobmodel"
 	"github.com/tejasa97/vidstow/internal/jobs"
 	"github.com/tejasa97/vidstow/internal/outputplan"
 	"github.com/tejasa97/vidstow/internal/reservationfs"
@@ -122,7 +123,7 @@ func (a *App) StartPlaylistDownload(req StartPlaylistRequest) (string, error) {
 	}
 	result, err := a.coordinator.AdmitCollection(a.ctx, root, admission.CollectionRequest{
 		Collection: admission.Collection{
-			PlaylistID: preview.ID, SourceURL: preview.URL, Title: preview.Title,
+			Kind: jobmodel.CollectionKindPlaylist, PlaylistID: preview.ID, SourceURL: preview.URL, Title: preview.Title,
 			Channel: preview.Channel, Thumbnail: preview.Thumbnail, Policy: policy,
 		},
 		Children: admissionChildren,

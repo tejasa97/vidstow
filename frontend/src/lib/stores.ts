@@ -14,6 +14,7 @@ export const settings = writable<Settings>({
   perVideoSubfolder: true,
   confirmBeforeDownload: false,
   outputOptions: {},
+  automaticDiagnostics: '',
 });
 
 export const ffmpeg = writable<FFmpegStatus>({

@@ -10,7 +10,7 @@ test('approved navigation and window branding are used', async () => {
     read('../../main.go'),
   ]);
   for (const label of ['Home', 'Queue', 'Downloads', 'Settings']) assert.match(sidebar, new RegExp(`label: '${label}'`));
-  assert.match(sidebar, /brand-mark\.png/);
+  assert.match(sidebar, /brand-mark\.svg/);
   for (const rejected of ['v0 · single video', 'Single public YouTube videos only', 'brand-name', 'class="logo"', 'logo-universal']) assert.doesNotMatch(sidebar, new RegExp(rejected));
   assert.match(main, /Title:\s+"VidStow"/);
   assert.match(await read('../index.html'), /<title>VidStow<\/title>/);
@@ -21,7 +21,11 @@ test('page titles and controls match the approved redesign', async () => {
     read('../src/pages/Home.svelte'), read('../src/pages/Queue.svelte'),
     read('../src/pages/Downloads.svelte'), read('../src/pages/Settings.svelte'),
   ]);
-  assert.match(home, /<h1 id="home-title">Download from YouTube<\/h1>/);
+  assert.match(home, /inputMode === 'batch' \? 'Batch URLs' : 'Download from YouTube'/);
+  assert.match(home, />Single URL<\/button>/);
+  assert.match(home, />Batch URLs<\/button>/);
+  assert.match(home, /Start \$\{batchReadyCount\} downloads/);
+  assert.match(home, /<small>\{item\.message\}<\/small>/);
   assert.match(home, /Paste a public YouTube video, Short, or playlist URL to analyze it and choose your download\./);
   assert.match(home, /This link includes a playlist/);
   assert.match(home, /Review the playlist instead/);
@@ -37,8 +41,8 @@ test('page titles and controls match the approved redesign', async () => {
   assert.match(queue, /<QueueOverview/);
   assert.match(queue, /api\.queue\.pauseAll/);
   assert.match(queue, /api\.queue\.clearCompleted/);
-  assert.match(queue, /Cancel this playlist\?/);
-  assert.match(queue, /Remove this playlist from the queue\?/);
+  assert.match(queue, /collectionLabel = collection\?\.kind === 'batch' \? 'batch' : 'playlist'/);
+  assert.match(queue, /Completed files remain on disk\./);
   assert.match(queue, /Jobs are saved automatically\./);
   assert.match(downloads, /View your recently downloaded items\./);
   assert.match(downloads, /placeholder="Search downloads…"/);
@@ -47,7 +51,32 @@ test('page titles and controls match the approved redesign', async () => {
   assert.match(settings, />FFmpeg path</);
   assert.match(settings, />Diagnostics</);
   assert.match(settings, />Copy Diagnostics</);
+  assert.match(settings, />Clear history</);
+  assert.match(settings, /> Send diagnostics<\/label>/);
+  assert.match(settings, /> Don’t send<\/label>/);
+  assert.match(settings, /automaticDiagnostics === 'enabled'/);
+  assert.match(settings, /automaticDiagnostics === 'disabled'/);
+  assert.match(settings, /Disabling this immediately deletes anything waiting to be sent/);
+  assert.match(settings, /api\.settings\.setAutomaticDiagnostics\(value\)/);
   assert.match(settings, /await api\.diagnostics\.copy\(\)/);
+  assert.match(settings, /await api\.diagnostics\.clear\(\)/);
+});
+
+test('first launch asks for explicit diagnostic consent without a default', async () => {
+  const [app, dialog] = await Promise.all([
+    read('../src/App.svelte'),
+    read('../src/lib/lifecycle-ui/DiagnosticConsentDialog.svelte'),
+  ]);
+  assert.match(app, /if \(!savedSettings\.automaticDiagnostics\)/);
+  assert.match(app, /chooseAutomaticDiagnostics\('enabled'\)/);
+  assert.match(app, /chooseAutomaticDiagnostics\('disabled'\)/);
+  assert.match(app, /api\.settings\.setAutomaticDiagnostics\(value\)/);
+  assert.match(app, /https:\/\/diagnostics\.vidstow\.workers\.dev\/privacy/);
+  assert.match(dialog, />Send diagnostics<\/button>/);
+  assert.match(dialog, />Don’t send<\/button>/);
+  assert.match(dialog, /cannot complete a requested download or encounters an app failure/);
+  assert.match(dialog, /never include video IDs, links, paths, filenames, cookies, tokens, or error text/);
+  assert.doesNotMatch(dialog, /checked|selected/);
 });
 
 test('analysis failures use the redesigned error modal', async () => {

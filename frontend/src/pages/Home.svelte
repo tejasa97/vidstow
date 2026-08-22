@@ -1,16 +1,25 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onDestroy } from 'svelte';
   import { api } from '../lib/api.js';
   import { errorMessage, ffmpeg, modal, pendingUrl, settings, showBanner } from '../lib/stores.js';
   import { formatBytes, formatViewCount, shortTitle } from '../lib/format.js';
-  import type { InfoSummary, OutputOptions, OutputPlan, PlaylistSummary, Quality, SubtitleLanguage, UrlCheckResult } from '../lib/types.js';
+  import type { BatchAnalysisView, InfoSummary, OutputOptions, OutputPlan, PlaylistSummary, Quality, SubtitleLanguage, UrlCheckResult } from '../lib/types.js';
   import OutputOptionsEditor from '../lib/components/OutputOptionsEditor.svelte';
 
   const dispatch = createEventDispatcher<{ goto: 'home' | 'queue' | 'downloads' | 'settings' | 'about' }>();
 
+  let inputMode: 'single' | 'batch' = 'single';
   let url = '';
   let analysisGeneration = 0;
   let busy = false;
+  let batchText = '';
+  let batchGeneration = 0;
+  let batchBusy = false;
+  let batchReview: BatchAnalysisView | null = null;
+  let batchNow = Date.now();
+  let batchTab: 'video' | 'audio' = 'video';
+  let batchQuality: Quality = '1080p';
+  let batchAudioChoice = 'original';
   let folder = '';
   let selectedPlanId = '';
   let search = '';
@@ -28,6 +37,8 @@
   let videoOptions: OutputOptions = {};
   let playlistOptions: OutputOptions = {};
   const PLAYLIST_ADMIT_CAP = 500;
+  const batchExpiryTimer = setInterval(() => batchNow = Date.now(), 1000);
+  onDestroy(() => clearInterval(batchExpiryTimer));
 
   $: folder = $settings.downloadFolder || folder;
   $: plans = preview?.plans ?? [];
@@ -40,6 +51,11 @@
   $: playlistLastIndex = playlist?.entries.at(-1)?.index ?? playlist?.entryCount ?? 1;
   $: allAvailableSelected = availableCount > 0 && selectedItems.size === availableCount;
   $: playlistAtCap = (playlist?.entries.length ?? 0) >= PLAYLIST_ADMIT_CAP;
+  $: batchInputLineCount = batchText.split(/\r?\n/).filter((line) => line.trim()).length;
+  $: batchReadyCount = batchReview?.counts.ready ?? 0;
+  $: batchExpiry = batchReview?.expiresAt ? Date.parse(batchReview.expiresAt) : Number.NaN;
+  $: batchTokenValid = !!batchReview?.token && Number.isFinite(batchExpiry) && batchExpiry > batchNow;
+  $: batchCanStart = batchTokenValid && batchReadyCount >= 2 && !!folder && !batchBusy;
   $: if (selectAllBox && playlist) {
     selectAllBox.indeterminate = selectedItems.size > 0 && selectedItems.size < availableCount;
   }
@@ -47,11 +63,24 @@
   $: if ($pendingUrl) {
     const droppedURL = $pendingUrl;
     pendingUrl.set('');
+    inputMode = 'single';
     url = droppedURL;
     analyze();
   }
 
   const fallbackThumbnail = (videoId: string) => (videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '');
+  const batchReviewSummary = (review: BatchAnalysisView) => {
+    const { pasted, ready, duplicate, invalid, analysisFailed } = review.counts;
+    if (ready === pasted && duplicate === 0 && invalid === 0 && analysisFailed === 0) {
+      return `${ready} ${ready === 1 ? 'video' : 'videos'} ready to download`;
+    }
+    return [
+      ready ? `${ready} ready` : '',
+      duplicate ? `${duplicate} duplicate` : '',
+      invalid ? `${invalid} invalid` : '',
+      analysisFailed ? `${analysisFailed} could not be analyzed` : '',
+    ].filter(Boolean).join(' · ');
+  };
   const hideBrokenImage = (event: Event) => {
     (event.currentTarget as HTMLImageElement).style.display = 'none';
   };
@@ -74,6 +103,67 @@
     busy = false;
     linkedPlaylist = null;
     if (preview || playlist) clearAnalysis();
+  }
+
+  function setInputMode(mode: 'single' | 'batch') {
+    inputMode = mode;
+  }
+
+  function updateBatchText(event: Event) {
+    const nextText = (event.currentTarget as HTMLTextAreaElement).value;
+    if (nextText === batchText) return;
+    batchText = nextText;
+    batchGeneration += 1;
+    batchBusy = false;
+    batchReview = null;
+  }
+
+  async function analyzeBatch() {
+    if (!batchText.trim() || batchBusy) return;
+    const requestGeneration = ++batchGeneration;
+    batchBusy = true;
+    try {
+      const review = await api.analyse.batch(batchText);
+      if (requestGeneration !== batchGeneration) return;
+      batchReview = review;
+    } catch (err) {
+      if (requestGeneration !== batchGeneration) return;
+      modal.set({
+        kind: 'error',
+        title: 'Batch could not be reviewed',
+        message: errorMessage(err, 'Paste between 2 and 20 individual public YouTube video or Short URLs.'),
+      });
+    } finally {
+      if (requestGeneration === batchGeneration) batchBusy = false;
+    }
+  }
+
+  function editBatchURLs() {
+    batchGeneration += 1;
+    batchBusy = false;
+    batchReview = null;
+  }
+
+  async function enqueueBatch() {
+    if (!batchReview?.token || !batchCanStart) return;
+    const quality: Quality = batchTab === 'audio' ? 'audio' : batchQuality;
+    const audioBitrate = batchTab === 'audio' && batchAudioChoice !== 'original' ? Number(batchAudioChoice) : 0;
+    if (audioBitrate && !$ffmpeg.available) {
+      requireFFmpeg('MP3 conversion needs FFmpeg. Choose original audio or configure FFmpeg.');
+      return;
+    }
+    batchBusy = true;
+    try {
+      const result = await api.jobs.startBatch({ token: batchReview.token, quality, audioBitrate });
+      showBanner('success', `Added ${result.admitted} downloads to the queue`);
+      batchReview = null;
+      batchText = '';
+      dispatch('goto', 'queue');
+    } catch (err) {
+      modal.set({ kind: 'error', title: 'Batch could not start', message: errorMessage(err, 'Could not add this batch to the queue.') });
+    } finally {
+      batchBusy = false;
+    }
   }
 
   async function analyzeTarget(target: UrlCheckResult, requestGeneration: number) {
@@ -356,19 +446,115 @@
   }
 </script>
 
-<section class="page" class:fill={!!playlist || !!preview} aria-labelledby="home-title">
+<section class="page" class:fill={inputMode === 'single' && (!!playlist || !!preview)} aria-labelledby="home-title">
   <header class="page-header">
-    <h1 id="home-title">Download from YouTube</h1>
-    {#if !playlist && !preview}
+    <h1 id="home-title">{inputMode === 'batch' ? 'Batch URLs' : 'Download from YouTube'}</h1>
+    {#if inputMode === 'batch'}
+      <p>Review 2–20 individual public YouTube video or Short URLs before adding them to the queue.</p>
+    {:else if !playlist && !preview}
       <p>Paste a public YouTube video, Short, or playlist URL to analyze it and choose your download.</p>
     {/if}
   </header>
 
-  <form class="analyze-bar" on:submit|preventDefault={analyze}>
-    <label class="visually-hidden" for="video-url">YouTube video, Short, or playlist URL</label>
-    <input id="video-url" type="url" value={url} on:input={updateURL} placeholder="https://www.youtube.com/watch?v=…, shorts/…, or playlist?list=…" autocomplete="off" />
-    <button class="app-btn primary" type="submit" disabled={busy || !url.trim()}>{busy ? 'Analyzing…' : 'Analyze'}</button>
-  </form>
+  <div class="input-mode" aria-label="Download input mode">
+    <button type="button" aria-pressed={inputMode === 'single'} class:active={inputMode === 'single'} on:click={() => setInputMode('single')}>Single URL</button>
+    <button type="button" aria-pressed={inputMode === 'batch'} class:active={inputMode === 'batch'} on:click={() => setInputMode('batch')}>Batch URLs</button>
+  </div>
+
+  {#if inputMode === 'batch'}
+    {#if batchReview}
+      <section class="batch-review" aria-labelledby="batch-review-title">
+        <header class="batch-review-header">
+          <div>
+            <h2 id="batch-review-title">Review URLs</h2>
+            <p aria-live="polite">{batchReviewSummary(batchReview)}</p>
+            {#if !batchTokenValid}<p class="batch-expired" role="alert">This review expired. Edit the lines and review them again.</p>{/if}
+          </div>
+          <button type="button" class="app-btn" on:click={editBatchURLs} disabled={batchBusy}>Edit URLs</button>
+        </header>
+
+        <div class="batch-lines" role="list" aria-label="Reviewed batch URLs">
+          {#each batchReview.items as item (item.lineNumber)}
+            <article class="batch-line" data-status={item.status} role="listitem">
+              <span class="batch-line-number" aria-label={`Line ${item.lineNumber}`}>{item.lineNumber}</span>
+              <div class="batch-thumbnail" aria-hidden="true">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+                  <path d="m10 9 5 3-5 3Z"></path>
+                </svg>
+                {#if item.status === 'ready' && item.thumbnail}
+                  <img src={item.thumbnail} alt="" referrerpolicy="no-referrer" on:error={hideBrokenImage} />
+                {/if}
+              </div>
+              <div class="batch-line-copy">
+                <strong title={item.title || item.input}>{item.title || item.input}</strong>
+                <span title={item.input}>{item.input}</span>
+                {#if item.title && (item.channel || item.duration)}<small>{[item.channel, item.duration].filter(Boolean).join(' · ')}</small>{/if}
+              </div>
+              <div class="batch-line-state">
+                <span class="batch-state">{item.status === 'analysis_failed' ? 'Analysis failed' : item.status === 'duplicate' ? 'Duplicate' : item.status === 'invalid' ? 'Invalid URL' : 'Ready'}</span>
+                {#if item.status !== 'ready'}<small>{item.message}</small>{/if}
+              </div>
+            </article>
+          {/each}
+        </div>
+
+        <div class="batch-policy">
+          <div>
+            <strong>Format</strong>
+            <small>Every ready video uses this format.</small>
+          </div>
+          <div class="segment" aria-label="Batch output type">
+            <button type="button" aria-pressed={batchTab === 'video'} class:active={batchTab === 'video'} on:click={() => batchTab = 'video'}>Video</button>
+            <button type="button" aria-pressed={batchTab === 'audio'} class:active={batchTab === 'audio'} on:click={() => batchTab = 'audio'}>Audio</button>
+          </div>
+          {#if batchTab === 'video'}
+            <label class="visually-hidden" for="batch-quality">Batch video quality</label>
+            <select id="batch-quality" bind:value={batchQuality}>
+              <option value="best">Best available</option>
+              <option value="4k">Up to 4K</option>
+              <option value="1440p">Up to 1440p</option>
+              <option value="1080p">Up to 1080p</option>
+              <option value="720p">Up to 720p</option>
+            </select>
+          {:else}
+            <label class="visually-hidden" for="batch-audio">Batch audio format</label>
+            <select id="batch-audio" bind:value={batchAudioChoice}>
+              <option value="original">Original audio</option>
+              <option value="128">MP3 · 128 kbps</option>
+              <option value="192">MP3 · 192 kbps</option>
+              <option value="256">MP3 · 256 kbps</option>
+            </select>
+          {/if}
+        </div>
+
+        <footer class="batch-save-bar">
+          <div class="destination">
+            <span>Save to</span>
+            <strong title={folder}>{folder || 'Choose a download folder'}</strong>
+          </div>
+          <button type="button" class="app-btn" on:click={pickFolder} disabled={batchBusy}>Change…</button>
+          <button type="button" class="app-btn primary" on:click={enqueueBatch} disabled={!batchCanStart}>
+            {batchBusy ? 'Starting…' : `Start ${batchReadyCount} downloads`}
+          </button>
+        </footer>
+      </section>
+    {:else}
+      <form class="batch-composer" on:submit|preventDefault={analyzeBatch}>
+        <label for="batch-urls">YouTube video or Short URLs</label>
+        <textarea id="batch-urls" value={batchText} on:input={updateBatchText} rows="9" placeholder={'https://www.youtube.com/watch?v=…\nhttps://youtu.be/…\nhttps://www.youtube.com/shorts/…'} autocomplete="off"></textarea>
+        <div class="batch-composer-footer">
+          <p>One URL per line. Blank lines are ignored; duplicates are identified before anything downloads.</p>
+          <button class="app-btn primary" type="submit" disabled={batchBusy || batchInputLineCount < 2}>{batchBusy ? 'Analyzing…' : 'Review URLs'}</button>
+        </div>
+      </form>
+    {/if}
+  {:else}
+    <form class="analyze-bar" on:submit|preventDefault={analyze}>
+      <label class="visually-hidden" for="video-url">YouTube video, Short, or playlist URL</label>
+      <input id="video-url" type="url" value={url} on:input={updateURL} placeholder="https://www.youtube.com/watch?v=…, shorts/…, or playlist?list=…" autocomplete="off" />
+      <button class="app-btn primary" type="submit" disabled={busy || !url.trim()}>{busy ? 'Analyzing…' : 'Analyze'}</button>
+    </form>
 
   {#if playlist}
     <section class="workspace" aria-label="Playlist">
@@ -549,6 +735,7 @@
       <h2>Add a YouTube link</h2>
       <p>VidStow reviews a public video, Short, or playlist, then shows the files you’ll get before anything downloads.</p>
     </section>
+    {/if}
   {/if}
 </section>
 
@@ -559,6 +746,120 @@
     overflow: hidden;
     padding-bottom: 20px;
   }
+  .input-mode {
+    display: inline-flex;
+    align-self: flex-start;
+    padding: 3px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-md);
+    background: var(--surface-sunken);
+  }
+  .input-mode button,
+  .segment button {
+    min-height: 36px;
+  }
+  .input-mode button {
+    padding: 0 var(--sp-4);
+    border: 0;
+    border-radius: calc(var(--r-md) - 2px);
+    background: transparent;
+    color: var(--text-secondary);
+    font-weight: 650;
+  }
+  .input-mode button.active { background: var(--surface-base); color: var(--text-primary); box-shadow: var(--shadow-card); }
+
+  .batch-composer,
+  .batch-review {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-lg);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-card);
+  }
+  .batch-composer { padding: var(--sp-5); gap: var(--sp-3); }
+  .batch-composer > label { font-weight: 700; }
+  .batch-composer textarea {
+    width: 100%;
+    min-height: 210px;
+    resize: vertical;
+    padding: var(--sp-4);
+    border: 1px solid var(--border-default);
+    border-radius: var(--r-md);
+    background: var(--surface-base);
+    color: var(--text-primary);
+    font: inherit;
+    line-height: 1.6;
+  }
+  .batch-composer-footer,
+  .batch-review-header,
+  .batch-save-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-4);
+  }
+  .batch-composer-footer p,
+  .batch-review-header p { margin: 0; color: var(--text-muted); font-size: var(--fs-sm); }
+  .batch-review { overflow: hidden; }
+  .batch-review-header { padding: var(--sp-4); }
+  .batch-review-header h2 { margin: 0 0 3px; font-size: var(--fs-lg); }
+  .batch-review-header .batch-expired { margin-top: var(--sp-2); color: var(--status-danger); }
+  .batch-lines { display: flex; min-height: 0; flex-direction: column; border-top: 1px solid var(--border-subtle); }
+  .batch-line {
+    display: grid;
+    grid-template-columns: 34px 112px minmax(0, 1fr) minmax(150px, 230px);
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface-base);
+  }
+  .batch-line-number { color: var(--text-muted); font-variant-numeric: tabular-nums; text-align: center; }
+  .batch-thumbnail {
+    width: 112px;
+    aspect-ratio: 16 / 9;
+    position: relative;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border-radius: var(--r-sm);
+    background: var(--surface-sunken);
+    color: var(--text-muted);
+  }
+  .batch-thumbnail img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .batch-thumbnail svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+  .batch-thumbnail svg path { fill: currentColor; stroke: none; }
+  .batch-line-copy,
+  .batch-line-state { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+  .batch-line-copy strong,
+  .batch-line-copy span,
+  .batch-line-state small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .batch-line-copy span,
+  .batch-line-copy small,
+  .batch-line-state small { color: var(--text-muted); font-size: var(--fs-xs); }
+  .batch-line-state { align-items: flex-end; text-align: right; }
+  .batch-state { display: inline-flex; padding: 3px 8px; border-radius: var(--r-full); font-size: var(--fs-xs); font-weight: 700; }
+  .batch-line[data-status='ready'] .batch-state { color: var(--status-success); background: var(--status-success-soft); }
+  .batch-line[data-status='duplicate'] .batch-state { color: var(--status-warning); background: var(--status-warning-soft); }
+  .batch-line[data-status='invalid'] .batch-state,
+  .batch-line[data-status='analysis_failed'] .batch-state { color: var(--status-danger); background: var(--status-danger-soft); }
+  .batch-policy {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) auto minmax(170px, 220px);
+    align-items: center;
+    gap: var(--sp-4);
+    padding: var(--sp-4);
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--surface-sunken);
+  }
+  .batch-policy > div:first-child { display: flex; flex-direction: column; }
+  .batch-policy small { color: var(--text-muted); }
+  .batch-policy select { height: 40px; }
+  .batch-save-bar { padding: var(--sp-4); }
+  .batch-save-bar .destination { flex: 1; min-width: 0; }
+
   .analyze-bar {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 118px;
@@ -892,11 +1193,22 @@
   }
 
   @media (max-width: 860px) {
+    .batch-policy { grid-template-columns: 1fr auto; }
+    .batch-policy select { grid-column: 1 / -1; width: 100%; }
     .identity { grid-template-columns: 72px 1fr; }
     .policy { grid-column: 1 / -1; }
     .toolbar input[type='search'] { margin-left: 0; width: 100%; flex-basis: 100%; }
   }
   @media (max-width: 720px) {
+    .batch-composer-footer,
+    .batch-review-header,
+    .batch-save-bar { align-items: stretch; flex-direction: column; }
+    .batch-composer-footer .app-btn,
+    .batch-review-header .app-btn,
+    .batch-save-bar .app-btn { width: 100%; }
+    .batch-line { grid-template-columns: 28px 72px minmax(0, 1fr); }
+    .batch-thumbnail { width: 72px; }
+    .batch-line-state { grid-column: 3; align-items: flex-start; text-align: left; }
     .save-bar { grid-template-columns: 1fr auto; }
     .destination { grid-column: 1 / -1; }
     .queue { grid-column: 1 / -1; }
