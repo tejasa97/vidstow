@@ -173,7 +173,7 @@ export interface PersistenceStatus {
 }
 
 export interface StartupStatus {
-  mode: 'healthy' | 'recovery-required';
+  mode: 'starting' | 'healthy' | 'recovery-required';
   reason?: string;
   warning?: string;
 }

@@ -106,6 +106,137 @@ func TestStartupRecoveryRequiredFailsClosedWithoutRuntimeFallback(t *testing.T) 
 	}
 }
 
+func TestGetStartupStatusReturnsStartingUntilStartupCompletes(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	want := store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryUnsupportedVersion}
+	openStateV2 = func(string) (*store.V2Store, store.StartupStatus, error) {
+		close(entered)
+		<-release
+		return nil, want, nil
+	}
+
+	app := NewApp()
+	if got := app.GetStartupStatus(); got.Mode != store.StartupStarting {
+		t.Fatalf("initial startup status = %#v, want starting", got)
+	}
+	startupReturned := make(chan struct{})
+	go func() {
+		app.startupAt(context.Background(), filepath.Join(t.TempDir(), "state.json"))
+		close(startupReturned)
+	}()
+	<-entered
+	if got := app.GetStartupStatus(); got.Mode != store.StartupStarting {
+		t.Fatalf("in-flight startup status = %#v, want starting", got)
+	}
+
+	close(release)
+	select {
+	case <-startupReturned:
+	case <-time.After(time.Second):
+		t.Fatal("startupAt did not return")
+	}
+	if got := app.GetStartupStatus(); got != want {
+		t.Fatalf("startup status = %#v, want %#v", got, want)
+	}
+}
+
+func TestStartupStatusStaysStartingUntilRuntimeAuthorityIsReady(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+
+	enteredRootValidation := make(chan struct{})
+	releaseRootValidation := make(chan struct{})
+	prepareStartupStateRoots = func(jobmodel.State) error {
+		close(enteredRootValidation)
+		<-releaseRootValidation
+		return nil
+	}
+
+	app := NewApp()
+	statePath := filepath.Join(secureAppTempDir(t), "state.json")
+	startupReturned := make(chan struct{})
+	go func() {
+		app.startupAt(context.Background(), statePath)
+		close(startupReturned)
+	}()
+	<-enteredRootValidation
+	if app.store == nil {
+		t.Fatal("store was not opened before root validation")
+	}
+	if got := app.GetStartupStatus(); got.Mode != store.StartupStarting {
+		t.Fatalf("partially initialized startup status = %#v, want starting", got)
+	}
+	if app.jobs != nil || app.coordinator != nil {
+		t.Fatalf("runtime authority existed before root validation completed: %#v", app)
+	}
+
+	close(releaseRootValidation)
+	select {
+	case <-startupReturned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("startupAt did not return")
+	}
+	if got := app.GetStartupStatus(); !got.Healthy() {
+		t.Fatalf("completed startup status = %#v, want healthy", got)
+	}
+	if err := app.requireReady(); err != nil {
+		t.Fatalf("completed runtime authority is not ready: %v", err)
+	}
+	app.stopCleanup(context.Background())
+	if err := app.jobs.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStartupPathFailureSignalsTerminalStatus(t *testing.T) {
+	restore := installAppTestSeams(t)
+	defer restore()
+	oldDefaultStatePath := defaultStatePath
+	defer func() { defaultStatePath = oldDefaultStatePath }()
+	defaultStatePath = func() (string, error) { return "", errors.New("path unavailable") }
+
+	app := NewApp()
+	app.startup(context.Background())
+	want := store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryUnsafePermissions}
+	if got := app.GetStartupStatus(); got != want {
+		t.Fatalf("startup status = %#v, want %#v", got, want)
+	}
+}
+
+func TestPrepareStartupRootsIgnoresTerminalJobWorkspaceIdentity(t *testing.T) {
+	root := secureAppTempDir(t)
+	state := jobmodel.State{
+		Settings: jobmodel.Settings{DownloadFolder: root},
+		Jobs: []jobmodel.DurableJob{{
+			Lifecycle: jobmodel.LifecycleCompleted,
+			OutputRoot: jobmodel.OutputRootRef{
+				CanonicalPath: root,
+				Identity:      "stale-after-publication",
+			},
+		}},
+	}
+	for _, lifecycle := range []jobmodel.Lifecycle{jobmodel.LifecycleCompleted, jobmodel.LifecycleFailed, jobmodel.LifecycleCanceled} {
+		state.Jobs[0].Lifecycle = lifecycle
+		if err := prepareStartupRoots(state); err != nil {
+			t.Fatalf("%s workspace blocked startup: %v", lifecycle, err)
+		}
+	}
+
+	for _, lifecycle := range []jobmodel.Lifecycle{jobmodel.LifecyclePaused, jobmodel.LifecycleActionRequired} {
+		state.Jobs[0].Lifecycle = lifecycle
+		if err := prepareStartupRoots(state); err == nil {
+			t.Fatalf("%s workspace identity mismatch did not fail closed", lifecycle)
+		}
+	}
+}
+
 func TestStartupDurabilityWarningRecordsIndeterminateState(t *testing.T) {
 	restore := installAppTestSeams(t)
 	defer restore()

@@ -41,6 +41,130 @@ func TestOpenV2CreatesPrivateStateAndLock(t *testing.T) {
 	}
 }
 
+func TestOpenV2HealsMarkerForProvablyCommittedTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	initial, status, err := OpenV2(path)
+	if err != nil || initial == nil || !status.Healthy() {
+		t.Fatalf("initial OpenV2 = %v, %#v, %v", initial, status, err)
+	}
+	state := initial.Snapshot()
+	if err := initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	markerPath := path + ".recovery"
+	candidatePath := path + ".candidate"
+	candidateEvidence := []byte("preserve candidate evidence")
+	if err := os.WriteFile(candidatePath, candidateEvidence, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := recoveryMarker{
+		Version:       recoveryMarkerVersion,
+		TargetPath:    path,
+		TempPath:      candidatePath,
+		StoreRevision: state.StoreRevision,
+		CreatedAt:     time.Now().UTC(),
+	}
+	if result := writeRecoveryMarker(markerPath, marker); result.err != nil {
+		t.Fatal(result.err)
+	}
+
+	recovered, status, err := OpenV2(path)
+	if err != nil || recovered == nil || !status.Healthy() {
+		t.Fatalf("recovery OpenV2 = %v, %#v, %v", recovered, status, err)
+	}
+	if got := recovered.Snapshot(); got.StoreRevision != state.StoreRevision || got.Version != jobmodel.StateVersion {
+		t.Fatalf("recovered state = %#v, want revision %d", got, state.StoreRevision)
+	}
+	if _, statErr := os.Stat(markerPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("committed marker still exists: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(candidatePath); readErr != nil || !bytes.Equal(got, candidateEvidence) {
+		t.Fatalf("candidate evidence changed: %q, %v", got, readErr)
+	}
+	if err := recovered.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, status, err := OpenV2(path)
+	if err != nil || second == nil || !status.Healthy() {
+		t.Fatalf("second OpenV2 = %v, %#v, %v", second, status, err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenV2RecoveryMarkerMismatchStaysFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		marker func(string, jobmodel.State) recoveryMarker
+	}{
+		{
+			name: "revision",
+			marker: func(path string, state jobmodel.State) recoveryMarker {
+				return recoveryMarker{Version: recoveryMarkerVersion, TargetPath: path, TempPath: path + ".candidate", StoreRevision: state.StoreRevision + 1, CreatedAt: time.Now().UTC()}
+			},
+		},
+		{
+			name: "target path",
+			marker: func(path string, state jobmodel.State) recoveryMarker {
+				return recoveryMarker{Version: recoveryMarkerVersion, TargetPath: path + ".other", TempPath: path + ".candidate", StoreRevision: state.StoreRevision, CreatedAt: time.Now().UTC()}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			initial, status, err := OpenV2(path)
+			if err != nil || initial == nil || !status.Healthy() {
+				t.Fatalf("initial OpenV2 = %v, %#v, %v", initial, status, err)
+			}
+			state := initial.Snapshot()
+			if err := initial.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if result := writeRecoveryMarker(path+".recovery", tc.marker(path, state)); result.err != nil {
+				t.Fatal(result.err)
+			}
+
+			recovered, status, err := OpenV2(path)
+			if err != nil || recovered != nil || status.Reason != RecoveryIndeterminate {
+				t.Fatalf("mismatched marker OpenV2 = %v, %#v, %v", recovered, status, err)
+			}
+			if _, statErr := os.Stat(path + ".recovery"); statErr != nil {
+				t.Fatalf("mismatched marker was removed: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestOpenV2RecoveryMarkerCleanupFailureStaysFailClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	initial, status, err := OpenV2(path)
+	if err != nil || initial == nil || !status.Healthy() {
+		t.Fatalf("initial OpenV2 = %v, %#v, %v", initial, status, err)
+	}
+	state := initial.Snapshot()
+	if err := initial.Close(); err != nil {
+		t.Fatal(err)
+	}
+	marker := recoveryMarker{Version: recoveryMarkerVersion, TargetPath: path, TempPath: path + ".candidate", StoreRevision: state.StoreRevision, CreatedAt: time.Now().UTC()}
+	if result := writeRecoveryMarker(path+".recovery", marker); result.err != nil {
+		t.Fatal(result.err)
+	}
+
+	oldSync := syncPrivateParent
+	syncPrivateParent = func(string) error { return errors.New("marker cleanup sync failure") }
+	defer func() { syncPrivateParent = oldSync }()
+	recovered, status, err := OpenV2(path)
+	syncPrivateParent = oldSync
+	if err != nil || recovered != nil || status.Reason != RecoveryIndeterminate {
+		t.Fatalf("cleanup failure OpenV2 = %v, %#v, %v", recovered, status, err)
+	}
+	if _, statErr := os.Stat(path + ".recovery"); statErr != nil {
+		t.Fatalf("cleanup failure dropped marker evidence: %v", statErr)
+	}
+}
+
 func TestOpenV2FailsClosedForCorruptUnknownAndUnsafeState(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string

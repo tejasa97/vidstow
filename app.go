@@ -91,7 +91,7 @@ type App struct {
 // NewApp constructs the App. The Wails bind() call wires every public
 // method to the JS side.
 func NewApp() *App {
-	return &App{startupStatus: store.StartupStatus{Mode: store.StartupRecoveryRequired, Reason: store.RecoveryCorruptState}}
+	return &App{startupStatus: store.StartupStatus{Mode: store.StartupStarting}}
 }
 
 // startup is called once by Wails after the window is ready.
@@ -149,7 +149,6 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 		return
 	}
 	a.store = st
-	a.setStartupStatus(status)
 
 	if err := prepareStartupStateRoots(st.Snapshot()); err != nil {
 		a.recordDiagnosticProblem("", classifyStartupRootProblem(err))
@@ -229,6 +228,10 @@ func (a *App) startupAt(ctx context.Context, statePath string) {
 	if err := a.configureAutomaticDiagnostics(settings.AutomaticDiagnostics); err != nil {
 		logAppErrorf(ctx, "desktop: clear disabled diagnostics outbox: %v", err)
 	}
+	// Publish healthy only after every authority needed by bound methods is
+	// installed. The frontend polls this status, so exposing the store's early
+	// healthy result would let it race root validation and queue restoration.
+	a.setStartupStatus(status)
 }
 
 // shutdown is called by Wails after the native close gate has permitted the
@@ -460,9 +463,10 @@ func (a *App) GetPersistenceStatus() jobs.PersistenceStatus {
 	return a.jobs.PersistenceStatus()
 }
 
-// GetStartupStatus is the first app contract the frontend should read. A
-// recovery-required result is authoritative and never accompanied by an
-// ephemeral queue manager.
+// GetStartupStatus is the first app contract the frontend should read. It is
+// intentionally non-blocking: Wails can receive this call before it dispatches
+// the asynchronous startup callback. The frontend renders the explicit
+// "starting" state until this returns a terminal result.
 func (a *App) GetStartupStatus() store.StartupStatus { return a.startupStatusSnapshot() }
 
 // ProbeFFmpeg re-runs detection and broadcasts the result.
@@ -1357,6 +1361,12 @@ func prepareStartupRoots(state jobmodel.State) error {
 		stateKeyRoot(settingsRoot, ""): {CanonicalPath: settingsRoot},
 	}
 	for _, job := range state.Jobs {
+		// Recovery deliberately does not inspect terminal job workspaces: they
+		// may have been moved, deleted, or recreated after publication. Cleanup
+		// authority, when any remains, is represented by a tombstone below.
+		if job.Lifecycle == jobmodel.LifecycleCanceled || job.Lifecycle == jobmodel.LifecycleCompleted || job.Lifecycle == jobmodel.LifecycleFailed {
+			continue
+		}
 		if job.OutputRoot.CanonicalPath != "" {
 			refs[stateKeyRoot(job.OutputRoot.CanonicalPath, job.OutputRoot.Identity)] = job.OutputRoot
 		}

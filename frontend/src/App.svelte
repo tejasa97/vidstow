@@ -52,8 +52,8 @@
     ].filter(Boolean) as Array<() => void>;
 
     try {
-      startupStatus = await api.app.startupStatus();
-      if (startupStatus?.mode === 'recovery-required') {
+      startupStatus = await waitForStartupStatus();
+      if (startupStatus.mode === 'recovery-required') {
         recoveryModel = {
           ...DEFAULT_RECOVERY_REQUIRED,
           stateFileStatus: startupStatus.reason ? `State v2: ${startupStatus.reason}` : DEFAULT_RECOVERY_REQUIRED.stateFileStatus,
@@ -98,6 +98,16 @@
   // fixed frontend_unhandled category and applies the session caps.
   function reportFrontendFailure(): void {
     void api.diagnostics.frontendFailure().catch(() => {});
+  }
+
+  async function waitForStartupStatus(): Promise<StartupStatus> {
+    // Wails can bind frontend calls before dispatching App.startup. Polling the
+    // explicit non-terminal status leaves that callback free to run.
+    for (;;) {
+      const status = await api.app.startupStatus();
+      if (status.mode !== 'starting') return status;
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
   }
 
   function updateJobInList(updated: JobSnapshot) {
@@ -214,7 +224,14 @@
 
 <svelte:window on:dragover={acceptDrop} on:drop={handleDrop} on:error={reportFrontendFailure} on:unhandledrejection={reportFrontendFailure} />
 
-{#if startupStatus?.mode === 'recovery-required'}
+{#if startupStatus === null}
+  <main class="main startup-shell" aria-busy="true" aria-label="Starting VidStow">
+    <div class="startup-indicator">
+      <span class="startup-spinner" aria-hidden="true"></span>
+      <p>Restoring saved downloads…</p>
+    </div>
+  </main>
+{:else if startupStatus.mode === 'recovery-required'}
   <main class="main">
     <div class="scroll">
       <RecoveryRequiredShell
@@ -275,5 +292,29 @@
   .scroll {
     flex: 1;
     overflow-y: auto;
+  }
+  .startup-shell {
+    align-items: center;
+    justify-content: center;
+  }
+  .startup-indicator {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--sp-3);
+    color: var(--text-muted);
+  }
+  .startup-indicator p { margin: 0; }
+  .startup-spinner {
+    width: 28px;
+    height: 28px;
+    border: 2px solid var(--border-default);
+    border-top-color: var(--accent-400);
+    border-radius: 50%;
+    animation: startup-spin 0.8s linear infinite;
+  }
+  @keyframes startup-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .startup-spinner { animation: none; }
   }
 </style>
