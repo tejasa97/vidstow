@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -212,15 +213,30 @@ func TestStartDownloadRecordsFFmpegMissingWithoutFilesystemSideEffects(t *testin
 		_ = app.store.Close()
 	}()
 	app.lastFFmpeg = ffmpegdetect.Status{Available: false, Message: "ffmpeg missing"}
-	app.jobs.CachePlans("dQw4w9WgXcQ", []outputplan.Plan{{
-		ID: "mp3-192", Kind: outputplan.KindAudio, Label: "MP3", Container: "MP3",
-		RequiresFFmpeg: true, AudioBitrateKbps: 192, Available: true, Selector: "140",
-	}})
+	resolveDownloadPlan = func(_ *jobs.Manager, videoID, planID string) (outputplan.Plan, error) {
+		if videoID != "dQw4w9WgXcQ" || planID != "mp3-192" {
+			return outputplan.Plan{}, errors.New("unexpected output plan request")
+		}
+		return outputplan.Plan{
+			ID: "mp3-192", Kind: outputplan.KindAudio, Label: "MP3", Container: "MP3",
+			RequiresFFmpeg: true, AudioBitrateKbps: 192, Available: true, Selector: "140",
+		}, nil
+	}
+	outputDir := filepath.Join(secureAppTempDir(t), "must-not-exist")
 	if _, err := app.StartDownload(jobs.Request{
 		URL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", VideoID: "dQw4w9WgXcQ",
-		Title: "Demo", PlanID: "mp3-192",
+		Title: "Demo", PlanID: "mp3-192", OutputDir: outputDir,
 	}); err == nil {
 		t.Fatal("StartDownload accepted a plan that requires missing FFmpeg")
+	}
+	if _, err := os.Stat(outputDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("FFmpeg rejection touched output directory: %v", err)
+	}
+	if jobs := app.jobs.List(); len(jobs) != 0 {
+		t.Fatalf("FFmpeg rejection added queue jobs: %#v", jobs)
+	}
+	if jobs := app.store.Snapshot().Jobs; len(jobs) != 0 {
+		t.Fatalf("FFmpeg rejection persisted jobs: %#v", jobs)
 	}
 	events, err := app.diagnostics.Recent()
 	if err != nil {

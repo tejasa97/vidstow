@@ -783,6 +783,7 @@ func installAppTestSeams(t *testing.T) func() {
 	oldPrepare := prepareStartupStateRoots
 	oldReconcile := reconcileStartupState
 	oldRestore := restoreStartupManager
+	oldResolveDownloadPlan := resolveDownloadPlan
 	oldCleanup := startStartupCleanup
 	oldLog := logAppErrorf
 	oldEmit := emitAppEvent
@@ -800,6 +801,7 @@ func installAppTestSeams(t *testing.T) func() {
 		prepareStartupStateRoots = oldPrepare
 		reconcileStartupState = oldReconcile
 		restoreStartupManager = oldRestore
+		resolveDownloadPlan = oldResolveDownloadPlan
 		startStartupCleanup = oldCleanup
 		logAppErrorf = oldLog
 		emitAppEvent = oldEmit
