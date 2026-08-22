@@ -7,7 +7,7 @@ and versions follow semantic versioning where practical for a desktop
 application.
 
 `v0.1.0-beta.1` is the first public VidStow prerelease. The current packaged
-preview is `v0.1.0-beta.4` for macOS Apple Silicon; a later stable `0.1.0`
+preview is `v0.1.0-beta.5` for macOS Apple Silicon; a later stable `0.1.0`
 does not exist yet.
 
 ## [Unreleased]
@@ -18,6 +18,34 @@ does not exist yet.
 
 ### Changed
 
+- No entries yet.
+
+### Fixed
+
+- No entries yet.
+
+## [0.1.0-beta.5] - 2026-08-22
+
+### Added
+
+- Home can review 2–20 pasted public YouTube video or Short URLs, identify
+  invalid and duplicate lines, and, when at least two items are ready,
+  atomically admit all ready items under one durable, expandable queue parent.
+  Child order, completed-sibling outcomes, and aggregate completion progress
+  are preserved across failures and app restarts.
+- VidStow keeps a bounded, owner-only history of sanitized terminal failures for
+  Copy Diagnostics and Clear history. A separate explicit consent choice can
+  send those allowlisted reports in the background; neither choice is
+  preselected, and reports exclude video identities, links, paths, filenames,
+  cookies, tokens, and error text.
+
+### Changed
+
+- The packaged application version is `0.1.0-beta.5`.
+- Failed queue items show category-specific guidance and capability-backed next
+  steps, including Start again for disk-space and folder-permission failures.
+- The macOS window uses a light native title bar so its title remains legible
+  above VidStow's light application shell.
 - Migrated the engine dependency and package imports to the published
   `github.com/tejasa97/ytdlp-go v0.3.0` module path.
 
@@ -26,6 +54,8 @@ does not exist yet.
 - Startup waits for the saved queue check instead of briefly reporting recovery,
   ignores stale workspace identities for terminal jobs, and clears a leftover
   recovery marker only when the committed state is provably intact.
+- Completed queue rows no longer show stale transfer speed or time-remaining
+  values and consistently report full progress.
 
 ## [0.1.0-beta.4] - 2026-08-18
 
@@ -109,7 +139,8 @@ does not exist yet.
 - Release automation creates a draft prerelease and cannot publish it.
 - The desktop engine pin is `github.com/tejasa97/youtube_dlp v0.2.1`.
 
-[Unreleased]: https://github.com/vidstow/vidstow/compare/v0.1.0-beta.4...HEAD
+[Unreleased]: https://github.com/vidstow/vidstow/compare/v0.1.0-beta.5...HEAD
+[0.1.0-beta.5]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.5
 [0.1.0-beta.4]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.4
 [0.1.0-beta.3]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.3
 [0.1.0-beta.2]: https://github.com/vidstow/vidstow/releases/tag/v0.1.0-beta.2

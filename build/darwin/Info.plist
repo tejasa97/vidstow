@@ -10,13 +10,13 @@
         <key>CFBundleIdentifier</key>
         <string>app.vidstow.desktop</string>
         <key>CFBundleVersion</key>
-        <string>{{.Info.ProductVersion}}</string>
+        <string>5</string>
         <key>CFBundleGetInfoString</key>
         <string>{{.Info.Comments}}</string>
         <key>CFBundleShortVersionString</key>
-        <string>{{.Info.ProductVersion}}</string>
+        <string>0.1.0</string>
         <key>VidStowReleaseVersion</key>
-        <string>0.1.0-beta.4</string>
+        <string>0.1.0-beta.5</string>
         <key>VidStowReleaseChannel</key>
         <string>beta</string>
         <key>CFBundleIconFile</key>

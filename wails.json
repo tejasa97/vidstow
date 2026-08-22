@@ -21,7 +21,7 @@
     "productName": "VidStow",
     "productVersion": "0.1.0",
     "companyName": "VidStow",
-    "comments": "Single-video YouTube downloader powered by ytdlp-go",
+    "comments": "YouTube video, playlist, and batch downloader powered by ytdlp-go",
     "copyright": "Apache-2.0"
   }
 }
